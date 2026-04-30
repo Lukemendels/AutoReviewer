@@ -227,7 +227,23 @@ Public Sub ExportWordDocForLLM()
     End With
     Set stm = Nothing
     
-    MsgBox "Export complete (UTF-8):" & vbCrLf & savePath, vbInformation
+    Dim promptText As String
+    promptText = "I am attaching an exported Word document containing text and bookmark IDs. Please review the text according to the established style rules, and output a JSON list of edits targeting the specific bookmark IDs."
+    modPromptHelpers.CopyToClipboard promptText
+    
+    Dim gptUrl As String
+    gptUrl = "https://chatgpt.com/"
+    On Error Resume Next
+    Dim configUrl As String
+    configUrl = ConfigHelpers.GetConfigValue("CustomGptUrl")
+    If Len(configUrl) > 0 Then gptUrl = configUrl
+    On Error GoTo 0
+    modPromptHelpers.OpenURL gptUrl
+    
+    MsgBox "Export complete (UTF-8):" & vbCrLf & savePath & vbCrLf & vbCrLf & _
+           "A prompt has been copied to your clipboard, and your custom GPT URL has been opened." & vbCrLf & _
+           "1. Paste the prompt (Ctrl+V) into the GPT." & vbCrLf & _
+           "2. Upload/Drop the exported .txt file.", vbInformation, "Export Complete"
     
 Cleanup:
     On Error Resume Next
