@@ -172,7 +172,7 @@ Public Sub ExportWordDocForLLM()
     buffer = buffer & "<<COMMENTS_END>>" & vbCrLf & vbCrLf
     
     '---------------------------
-    ' 4) Decide where to save .txt (UTF-8) – User's Documents
+    ' 4) Decide where to save .txt (UTF-8) â€“ User's Documents
     '---------------------------
     docsFolder = GetUserDocumentsFolder()
     
@@ -234,8 +234,10 @@ Public Sub ExportWordDocForLLM()
     Dim gptUrl As String
     gptUrl = "https://chatgpt.com/"
     On Error Resume Next
+    Dim activePersona As String
+    activePersona = ConfigHelpers.GetConfigValue("ActivePersona")
     Dim configUrl As String
-    configUrl = ConfigHelpers.GetConfigValue("CustomGptUrl")
+    If Len(activePersona) > 0 Then configUrl = modPersonaRegistry.GetAssistantUrl(activePersona)
     If Len(configUrl) > 0 Then gptUrl = configUrl
     On Error GoTo 0
     modPromptHelpers.OpenURL gptUrl
