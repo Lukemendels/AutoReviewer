@@ -3,9 +3,13 @@ Option Explicit
 
 Public Sub SetupConfigAndLLMSheets()
     Dim wsConfig As Worksheet
+    Dim wsPersonas As Worksheet
     
     ' Ensure Config sheet + standard keys
     EnsureConfigSheet wsConfig
+    
+    ' Ensure Personas sheet
+    EnsurePersonasSheet wsPersonas
     
     ' Optional: set up data validation dropdowns
     SetupConfigValidation

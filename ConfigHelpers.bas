@@ -42,8 +42,8 @@ Public Sub EnsureConfigSheet(ByRef wsConfig As Worksheet)
         wsConfig.Range("A7").value = "UseMksAuthorNames"
         wsConfig.Range("B7").value = "FALSE"     ' TRUE | FALSE
         
-        wsConfig.Range("A8").value = "CustomGptUrl"
-        wsConfig.Range("B8").value = "https://chatgpt.com/"
+        wsConfig.Range("A8").value = "ActivePersona"
+        wsConfig.Range("B8").value = ""
         
         wsConfig.Columns("A:B").EntireColumn.AutoFit
     End If
