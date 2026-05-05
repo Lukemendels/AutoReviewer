@@ -1,4 +1,4 @@
-Attribute VB_Name = "modPromptHelpers"
+Attribute VB_Name = "modSysUtils"
 Option Explicit
 
 #If VBA7 Then

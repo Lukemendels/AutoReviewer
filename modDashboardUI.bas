@@ -10,6 +10,9 @@ Public Sub BuildDashboard()
     Dim btnWidth As Double
     Dim btnHeight As Double
     
+    ' First, ensure sheets are set up
+    modAppCore.SetupConfigAndLLMSheets
+    
     Set wb = ThisWorkbook
     
     ' 1. Delete existing Dashboard if it exists
@@ -49,7 +52,7 @@ Public Sub BuildDashboard()
     End With
     
     ' 5. Active Persona Status
-    ws.Cells(5, 2).value = "Active Persona: " & ConfigHelpers.GetConfigValue("ActivePersona", "None")
+    ws.Cells(5, 2).value = "Active Persona: " & modAppCore.GetConfigValue("ActivePersona", "None")
     ws.Cells(5, 2).Font.Name = "Segoe UI"
     ws.Cells(5, 2).Font.Size = 14
     ws.Cells(5, 2).Font.Bold = True
@@ -76,23 +79,23 @@ Public Sub BuildDashboard()
     btnTop = btnTop + btnHeight + 15
         
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "2. Add Doc to Corpus", "modTrainingCorpusBuilder.AddDocToCorpus", RGB(128, 90, 213)
+        "2. Add Doc to Corpus", "modTrainingPipeline.AddDocToCorpus", RGB(128, 90, 213)
     btnTop = btnTop + btnHeight + 15
         
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "3. Reduce Pass 1: Cluster", "modTrainingOrchestrator.RunReducePass1", RGB(128, 90, 213)
+        "3. Reduce Pass 1: Cluster", "modTrainingPipeline.RunReducePass1", RGB(128, 90, 213)
     btnTop = btnTop + btnHeight + 10
         
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "4. Reduce Pass 2: Heuristics", "modTrainingOrchestrator.RunReducePass2", RGB(128, 90, 213)
+        "4. Reduce Pass 2: Heuristics", "modTrainingPipeline.RunReducePass2", RGB(128, 90, 213)
     btnTop = btnTop + btnHeight + 10
     
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "5. Reduce Pass 3: SKILL.md", "modTrainingOrchestrator.RunReducePass3", RGB(128, 90, 213)
+        "5. Reduce Pass 3: SKILL.md", "modTrainingPipeline.RunReducePass3", RGB(128, 90, 213)
     btnTop = btnTop + btnHeight + 15
     
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "6. Save SKILL.md", "modTrainingOrchestrator.SaveSkillMd", RGB(128, 90, 213)
+        "6. Save SKILL.md", "modTrainingPipeline.SaveSkillMd", RGB(128, 90, 213)
         
     ' --- GROUP 2: RUN REVIEW ---
     btnLeft = 340
@@ -111,11 +114,11 @@ Public Sub BuildDashboard()
     btnTop = btnTop + btnHeight + 15
     
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "2. Prepare Document for LLM", "modWordExport.ExportWordDocForLLM", RGB(49, 130, 206)
+        "2. Prepare Document for LLM", "modReviewExport.ExportWordDocForLLM", RGB(49, 130, 206)
     btnTop = btnTop + btnHeight + 15
     
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "3. Apply LLM Edits to Word", "InputEditsIntoWord.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
+        "3. Apply LLM Edits to Word", "modReviewImport.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
     
     btnTop = btnTop + btnHeight + 40
     
@@ -130,12 +133,12 @@ Public Sub SetActivePersona()
     Dim current As String
     Dim choice As String
     
-    current = ConfigHelpers.GetConfigValue("ActivePersona", "")
+    current = modAppCore.GetConfigValue("ActivePersona", "")
     choice = InputBox("Enter the Persona Name:", "Set Active Persona", current)
     
     If Trim(choice) <> "" Then
-        ConfigHelpers.SetConfigValue "ActivePersona", choice
-        modPersonaRegistry.UpsertPersona choice
+        modAppCore.SetConfigValue "ActivePersona", choice
+        modAppCore.UpsertPersona choice
         ' Rebuild dashboard to update label
         BuildDashboard
     End If
