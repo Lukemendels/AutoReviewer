@@ -9,6 +9,7 @@ Public Sub ApplyWordSuggestionsFromJson()
     Const CHANGE_REPLACE_TEXT   As String = "replace_text"
     Const CHANGE_DELETE_ELEMENT As String = "delete_element"
     Const CHANGE_ADD_COMMENT    As String = "add_comment_only"
+    Const CHANGE_REPLY_COMMENT  As String = "reply_to_comment"
     
     ' Late-bound equivalents for Final / No Markup view (kept for consistency)
     Const wdRevisionsMarkupNone As Long = 0   ' hide all markup
@@ -194,8 +195,10 @@ Public Sub ApplyWordSuggestionsFromJson()
         line = Trim$(lines(i))
         logStatus = ""
         logReason = ""
+        Dim commentTarget As Object
         applyThis = True
         Set targetRange = Nothing
+        Set commentTarget = Nothing
         
         Application.StatusBar = "Applying bookmark-based suggestions: " & (i - LBound(lines) + 1) & " of " & totalLines
         DoEvents
@@ -263,16 +266,31 @@ Public Sub ApplyWordSuggestionsFromJson()
             GoTo LogAndNext
         End If
         
-        ' Locate bookmark range
-        On Error Resume Next
-        Set targetRange = wdDoc.Bookmarks(bookmarkId).Range
-        On Error GoTo ErrHandler
-        
-        If targetRange Is Nothing Then
-            logStatus = "Skipped"
-            logReason = "Bookmark not found: " & bookmarkId
-            skippedCount = skippedCount + 1
-            GoTo LogAndNext
+        ' Locate bookmark or comment
+        If Left$(bookmarkId, 12) = "MKS_COMMENT_" Then
+            Dim cIndex As Long
+            cIndex = Val(Mid$(bookmarkId, 13))
+            On Error Resume Next
+            Set commentTarget = wdDoc.Comments(cIndex)
+            On Error GoTo ErrHandler
+            
+            If commentTarget Is Nothing Then
+                logStatus = "Skipped"
+                logReason = "Comment not found: " & bookmarkId
+                skippedCount = skippedCount + 1
+                GoTo LogAndNext
+            End If
+        Else
+            On Error Resume Next
+            Set targetRange = wdDoc.Bookmarks(bookmarkId).Range
+            On Error GoTo ErrHandler
+            
+            If targetRange Is Nothing Then
+                logStatus = "Skipped"
+                logReason = "Bookmark not found: " & bookmarkId
+                skippedCount = skippedCount + 1
+                GoTo LogAndNext
+            End If
         End If
         
         '---------------------------
@@ -350,6 +368,28 @@ Public Sub ApplyWordSuggestionsFromJson()
                 appliedCount = appliedCount + 1
                 logStatus = "Applied"
                 logReason = "add_comment_only"
+                
+            Case CHANGE_REPLY_COMMENT
+                If Not commentTarget Is Nothing Then
+                    If Len(Trim$(addComment)) = 0 Then
+                        logStatus = "Skipped"
+                        logReason = "reply_to_comment requires add_comment text"
+                        skippedCount = skippedCount + 1
+                        GoTo LogAndNext
+                    End If
+                    
+                    AddMksCommentReply wdDoc, commentTarget, addComment, confidenceNorm, _
+                                       useMksPrefix, useMksAuthorNames
+                    
+                    appliedCount = appliedCount + 1
+                    logStatus = "Applied"
+                    logReason = "reply_to_comment"
+                Else
+                    logStatus = "Skipped"
+                    logReason = "reply_to_comment requires a comment target (MKS_COMMENT_#)"
+                    skippedCount = skippedCount + 1
+                    GoTo LogAndNext
+                End If
             
             Case Else
                 logStatus = "Skipped"
@@ -654,6 +694,37 @@ Private Sub AddMksComment(ByVal wdDoc As Object, _
     If useAuthorNames And Not cmNew Is Nothing Then
         cmNew.Author = "MKS (" & confidence & ")"
     End If
+End Sub
+
+Private Sub AddMksCommentReply(ByVal wdDoc As Object, _
+                               ByVal parentComment As Object, _
+                               ByVal commentText As String, _
+                               ByVal confidence As String, _
+                               ByVal usePrefix As Boolean, _
+                               ByVal useAuthorNames As Boolean)
+    Dim finalText As String
+    Dim cmNew As Object
+    Dim prefix As String
+    
+    On Error Resume Next
+    If Len(commentText) = 0 Then Exit Sub
+    
+    finalText = commentText
+    If usePrefix Then
+        prefix = "[MKS " & confidence & "] "
+        finalText = prefix & commentText
+    End If
+    
+    Set cmNew = parentComment.Replies.Add(Range:=parentComment.Scope, Text:=finalText)
+    If cmNew Is Nothing Then
+        ' Fallback to adding a new comment at the same scope
+        Set cmNew = wdDoc.Comments.Add(Range:=parentComment.Scope, Text:=finalText)
+    End If
+    
+    If useAuthorNames And Not cmNew Is Nothing Then
+        cmNew.Author = "MKS (" & confidence & ")"
+    End If
+    On Error GoTo 0
 End Sub
 
 

@@ -131,7 +131,7 @@ Public Sub ExportWordDocForLLM()
         buffer = buffer & "(No comments in document)" & vbCrLf
     Else
         For Each c In wdDoc.Comments
-            buffer = buffer & "## Comment " & c.Index & vbCrLf
+            buffer = buffer & "## MKS_COMMENT_" & c.Index & vbCrLf
             
             ' Author / Date
             On Error Resume Next
