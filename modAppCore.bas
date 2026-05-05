@@ -230,7 +230,14 @@ Public Sub SetupConfigAndLLMSheets()
     ' Ensure baseline LLM_Changes sheet exists
     SetupLLMWorkflowSheets
     
-    MsgBox "Config and LLM_Changes sheets are ready.", vbInformation
+    ' Apply Modern Styling
+    On Error Resume Next
+    ApplyModernStyling ThisWorkbook.Worksheets("Config")
+    ApplyModernStyling ThisWorkbook.Worksheets("Personas")
+    ApplyModernStyling ThisWorkbook.Worksheets("LLM_Changes")
+    On Error GoTo 0
+    
+    MsgBox "Config, Personas, and LLM_Changes sheets are ready and styled.", vbInformation
 End Sub
 
 Public Sub SetupLLMWorkflowSheets()
@@ -375,3 +382,44 @@ Public Function GetAllPersonaNames() As Collection
     Set GetAllPersonaNames = col
 End Function
 
+
+Public Sub ApplyModernStyling(ByVal ws As Worksheet)
+    On Error Resume Next
+    
+    ' Global background
+    ws.Cells.Interior.Color = RGB(30, 34, 42)
+    ws.Cells.Font.Name = "Segoe UI"
+    ws.Cells.Font.Size = 10
+    ws.Cells.Font.Color = RGB(220, 224, 230)
+    
+    ' Header Row Styling
+    With ws.Rows(1)
+        .Interior.Color = RGB(20, 24, 30)
+        .Font.Bold = True
+        .Font.Color = RGB(128, 190, 255)
+        .RowHeight = 25
+        .VerticalAlignment = xlCenter
+    End With
+    
+    ' Draw subtle borders around the used range
+    Dim lastRow As Long
+    Dim lastCol As Long
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    
+    If lastRow > 1 And lastCol > 0 Then
+        With ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Borders
+            .LineStyle = xlContinuous
+            .Color = RGB(60, 65, 75)
+            .Weight = xlThin
+        End With
+    End If
+    
+    ' Specific sheet handling
+    If ws.name = "LLM_Changes" Then
+        ws.Range("A3:A6").Font.Color = RGB(160, 170, 180)
+        ws.Range("A3:A6").Font.Italic = True
+    End If
+    
+    On Error GoTo 0
+End Sub
