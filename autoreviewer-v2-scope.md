@@ -48,7 +48,7 @@ ApplyWordSuggestionsFromJson (existing) — applies as tracked changes
 
 ## Done (existing code, reusable as-is)
 
-- `modWordStamping.bas` — paragraph / table cell / footnote bookmark stamping with stable `MKS_*` IDs
+- `modWordStamping.bas` — paragraph / table cell / footnote bookmark stamping with stable `AR_*` IDs
 - `modWordExport.bas` — DOCUMENT_TEXT + BOOKMARK_INDEX + FOOTNOTES + COMMENTS export, FINAL-copy trick to give LLM clean text without losing original-doc edit anchors
 - `InputEditsIntoWord.bas` — JSONL → Word edits as tracked changes, three change types (`replace_text`, `delete_element`, `add_comment_only`), Log sheet, confidence handling
 - `modPromptHelpers.bas` — clipboard + URL launch via WinAPI, confirmed working in TSA env
@@ -77,7 +77,7 @@ ApplyWordSuggestionsFromJson (existing) — applies as tracked changes
     "target_author": "Jane Doe",
     "record_type": "revision" | "comment",
     "revision_subtype": "insertion" | "deletion" | null,
-    "bookmark_id": "MKS_PARA_00037",
+    "bookmark_id": "AR_PARA_00037",
     "section_heading": "...",
     "context_sentence": "...",
     "original_text": "...",

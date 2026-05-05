@@ -34,13 +34,13 @@ Public Sub EnsureConfigSheet(ByRef wsConfig As Worksheet)
         wsConfig.Range("A4").value = "ExportFormat"
         wsConfig.Range("B4").value = "plain"     ' plain | markdown
         
-        wsConfig.Range("A5").value = "UseMksCommentPrefix"
+        wsConfig.Range("A5").value = "UseArCommentPrefix"
         wsConfig.Range("B5").value = "FALSE"     ' TRUE | FALSE
         
         wsConfig.Range("A6").value = "DefaultConfidenceLevel"
         wsConfig.Range("B6").value = "Medium"    ' High | Medium | Low
         
-        wsConfig.Range("A7").value = "UseMksAuthorNames"
+        wsConfig.Range("A7").value = "UseArAuthorNames"
         wsConfig.Range("B7").value = "FALSE"     ' TRUE | FALSE
         
         wsConfig.Range("A8").value = "ActivePersona"
@@ -141,7 +141,7 @@ Public Sub SetupConfigValidation()
     If Len(CStr(rng.value)) = 0 Then rng.value = "plain"
     
     '---------------------------
-    ' UseMksCommentPrefix (B5): TRUE | FALSE
+    ' UseArCommentPrefix (B5): TRUE | FALSE
     '---------------------------
     Set rng = wsConfig.Range("B5")
     On Error Resume Next
@@ -152,7 +152,7 @@ Public Sub SetupConfigValidation()
              Operator:=xlBetween, Formula1:="TRUE,FALSE"
         .IgnoreBlank = True
         .InCellDropdown = True
-        .ErrorTitle = "Invalid UseMksCommentPrefix"
+        .ErrorTitle = "Invalid UseArCommentPrefix"
         .ErrorMessage = "Choose either TRUE or FALSE."
     End With
     If Len(CStr(rng.value)) = 0 Then rng.value = "FALSE"
@@ -175,7 +175,7 @@ Public Sub SetupConfigValidation()
     If Len(CStr(rng.value)) = 0 Then rng.value = "Medium"
     
     '---------------------------
-    ' UseMksAuthorNames (B7): TRUE | FALSE
+    ' UseArAuthorNames (B7): TRUE | FALSE
     '---------------------------
     Set rng = wsConfig.Range("B7")
     On Error Resume Next
@@ -186,7 +186,7 @@ Public Sub SetupConfigValidation()
              Operator:=xlBetween, Formula1:="TRUE,FALSE"
         .IgnoreBlank = True
         .InCellDropdown = True
-        .ErrorTitle = "Invalid UseMksAuthorNames"
+        .ErrorTitle = "Invalid UseArAuthorNames"
         .ErrorMessage = "Choose either TRUE or FALSE."
     End With
     If Len(CStr(rng.value)) = 0 Then rng.value = "FALSE"
@@ -252,7 +252,7 @@ Public Sub SetupLLMWorkflowSheets()
             .Range("A1").value = "LLM_Changes JSONL"
             .Range("A3").value = "Paste or load one JSON object per line, starting at A8."
             .Range("A5").value = "Schema (example):"
-            .Range("A6").value = "{""bookmark_id"":""MKS_PARA_00001"",""change_type"":""replace_text"",""new_text"":""..."",""add_comment"":""..."",""apply_change"":true,""confidence"":""Medium""}"
+            .Range("A6").value = "{""bookmark_id"":""AR_PARA_00001"",""change_type"":""replace_text"",""new_text"":""..."",""add_comment"":""..."",""apply_change"":true,""confidence"":""Medium""}"
 
         End With
     End If

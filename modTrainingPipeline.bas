@@ -155,7 +155,7 @@ Public Sub AddDocToCorpus()
     Next i
     
     ' Stamp bookmarks
-    modWordUtils.StampDocWithMksBookmarks wdDoc
+    modWordUtils.StampDocWithArBookmarks wdDoc
     
     ' Extract records to JSONL
     Dim fso As Object

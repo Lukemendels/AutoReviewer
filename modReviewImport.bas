@@ -2,7 +2,7 @@ Attribute VB_Name = "modReviewImport"
 Option Explicit
 
 ' Bookmark-only, JSONL-driven Word editing
-' - Anchors exclusively by bookmark_id (e.g., MKS_PARA_00037, MKS_CELL_1_2_3, MKS_FN_001)
+' - Anchors exclusively by bookmark_id (e.g., AR_PARA_00037, AR_CELL_1_2_3, AR_FN_001)
 ' - No para_index or comment_index; no old_text locators
 
 Public Sub ApplyWordSuggestionsFromJson()
@@ -46,8 +46,8 @@ Public Sub ApplyWordSuggestionsFromJson()
     
     ' Config-driven behavior
     Dim defaultConfidenceLevel As String
-    Dim useMksPrefix As Boolean
-    Dim useMksAuthorNames As Boolean
+    Dim useArPrefix As Boolean
+    Dim useArAuthorNames As Boolean
     
     ' For reading JSONL from sheet
     Dim lastRow As Long
@@ -61,7 +61,7 @@ Public Sub ApplyWordSuggestionsFromJson()
     Set wb = ThisWorkbook
     
     '---------------------------
-    ' 1) Get WordDocPath & MKS config from Config (key-based)
+    ' 1) Get WordDocPath & AR config from Config (key-based)
     '---------------------------
     EnsureConfigSheet wsConfig
     wordPath = Trim$(GetConfigValue("WordDocPath", ""))
@@ -82,10 +82,10 @@ Public Sub ApplyWordSuggestionsFromJson()
         End If
     End If
     
-    ' Read MKS-related config flags
+    ' Read AR-related config flags
     defaultConfidenceLevel = NormalizeConfidence(GetConfigValue("DefaultConfidenceLevel", "Medium"), "Medium")
-    useMksPrefix = GetConfigBool("UseMksCommentPrefix", False)
-    useMksAuthorNames = GetConfigBool("UseMksAuthorNames", False)
+    useArPrefix = GetConfigBool("UseArCommentPrefix", False)
+    useArAuthorNames = GetConfigBool("UseArAuthorNames", False)
     
     '---------------------------
     ' 2) Get JSONL from LLM_Changes (A8:A…)
@@ -267,7 +267,7 @@ Public Sub ApplyWordSuggestionsFromJson()
         End If
         
         ' Locate bookmark or comment
-        If Left$(bookmarkId, 12) = "MKS_COMMENT_" Then
+        If Left$(bookmarkId, 12) = "AR_COMMENT_" Then
             Dim cIndex As Long
             cIndex = Val(Mid$(bookmarkId, 13))
             On Error Resume Next
@@ -313,7 +313,7 @@ Public Sub ApplyWordSuggestionsFromJson()
                 
                 ' For paragraph bookmarks, exclude the trailing paragraph mark
                 ' so we don't delete the separator between this paragraph and the next.
-                If Left$(bookmarkId, 9) = "MKS_PARA_" Then
+                If Left$(bookmarkId, 9) = "AR_PARA_" Then
                     txtRange = CStr(editRange.Text)
                     If Len(txtRange) > 0 And Right$(txtRange, 1) = Chr$(13) Then
                         editRange.End = editRange.End - 1   ' trim off the paragraph mark
@@ -333,8 +333,8 @@ Public Sub ApplyWordSuggestionsFromJson()
                 logReason = "replace_text"
                 
                 If Len(addComment) > 0 Then
-                    AddMksComment wdDoc, editRange, addComment, confidenceNorm, _
-                                  useMksPrefix, useMksAuthorNames
+                    AddArComment wdDoc, editRange, addComment, confidenceNorm, _
+                                  useArPrefix, useArAuthorNames
                 End If
            
             Case CHANGE_DELETE_ELEMENT
@@ -351,8 +351,8 @@ Public Sub ApplyWordSuggestionsFromJson()
                 logReason = "delete_element"
                 
                 If Len(addComment) > 0 Then
-                    AddMksComment wdDoc, targetRange, addComment, confidenceNorm, _
-                                  useMksPrefix, useMksAuthorNames
+                    AddArComment wdDoc, targetRange, addComment, confidenceNorm, _
+                                  useArPrefix, useArAuthorNames
                 End If
             
             Case CHANGE_ADD_COMMENT
@@ -363,8 +363,8 @@ Public Sub ApplyWordSuggestionsFromJson()
                     GoTo LogAndNext
                 End If
                 
-                AddMksComment wdDoc, targetRange, addComment, confidenceNorm, _
-                              useMksPrefix, useMksAuthorNames
+                AddArComment wdDoc, targetRange, addComment, confidenceNorm, _
+                              useArPrefix, useArAuthorNames
                 appliedCount = appliedCount + 1
                 logStatus = "Applied"
                 logReason = "add_comment_only"
@@ -378,15 +378,15 @@ Public Sub ApplyWordSuggestionsFromJson()
                         GoTo LogAndNext
                     End If
                     
-                    AddMksCommentReply wdDoc, commentTarget, addComment, confidenceNorm, _
-                                       useMksPrefix, useMksAuthorNames
+                    AddArCommentReply wdDoc, commentTarget, addComment, confidenceNorm, _
+                                       useArPrefix, useArAuthorNames
                     
                     appliedCount = appliedCount + 1
                     logStatus = "Applied"
                     logReason = "reply_to_comment"
                 Else
                     logStatus = "Skipped"
-                    logReason = "reply_to_comment requires a comment target (MKS_COMMENT_#)"
+                    logReason = "reply_to_comment requires a comment target (AR_COMMENT_#)"
                     skippedCount = skippedCount + 1
                     GoTo LogAndNext
                 End If
@@ -664,9 +664,9 @@ Private Function NormalizeConfidence(ByVal raw As String, _
     End Select
 End Function
 
-' High-level helper that applies MKS prefix and optional author labeling
+' High-level helper that applies AR prefix and optional author labeling
 ' based on config and normalized confidence.
-Private Sub AddMksComment(ByVal wdDoc As Object, _
+Private Sub AddArComment(ByVal wdDoc As Object, _
                           ByVal rng As Object, _
                           ByVal commentText As String, _
                           ByVal confidence As String, _
@@ -681,9 +681,9 @@ Private Sub AddMksComment(ByVal wdDoc As Object, _
     
     finalText = commentText
     
-    ' Optional [MKS {LEVEL}] prefix in the comment text
+    ' Optional [AR {LEVEL}] prefix in the comment text
     If usePrefix Then
-        prefix = "[MKS " & confidence & "] "
+        prefix = "[AR " & confidence & "] "
         finalText = prefix & commentText
     End If
     
@@ -692,11 +692,11 @@ Private Sub AddMksComment(ByVal wdDoc As Object, _
     
     ' Optional: set author name based on confidence
     If useAuthorNames And Not cmNew Is Nothing Then
-        cmNew.Author = "MKS (" & confidence & ")"
+        cmNew.Author = "AR (" & confidence & ")"
     End If
 End Sub
 
-Private Sub AddMksCommentReply(ByVal wdDoc As Object, _
+Private Sub AddArCommentReply(ByVal wdDoc As Object, _
                                ByVal parentComment As Object, _
                                ByVal commentText As String, _
                                ByVal confidence As String, _
@@ -711,7 +711,7 @@ Private Sub AddMksCommentReply(ByVal wdDoc As Object, _
     
     finalText = commentText
     If usePrefix Then
-        prefix = "[MKS " & confidence & "] "
+        prefix = "[AR " & confidence & "] "
         finalText = prefix & commentText
     End If
     
@@ -722,7 +722,7 @@ Private Sub AddMksCommentReply(ByVal wdDoc As Object, _
     End If
     
     If useAuthorNames And Not cmNew Is Nothing Then
-        cmNew.Author = "MKS (" & confidence & ")"
+        cmNew.Author = "AR (" & confidence & ")"
     End If
     On Error GoTo 0
 End Sub

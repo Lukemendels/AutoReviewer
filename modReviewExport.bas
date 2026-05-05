@@ -94,17 +94,17 @@ Public Sub ExportWordDocForLLM()
     On Error GoTo ErrHandler
     
     '---------------------------
-    ' 2b) STAMP BOTH DOCS WITH MKS BOOKMARKS
+    ' 2b) STAMP BOTH DOCS WITH AR BOOKMARKS
     '---------------------------
     ' Stamp original (this is the one we will edit later and SAVE to disk)
-    StampDocWithMksBookmarks wdDoc
+    StampDocWithArBookmarks wdDoc
     ' Stamp FINAL copy (used for export text / BOOKMARK_INDEX)
     If Not wdDocFinal Is Nothing Then
-        StampDocWithMksBookmarks wdDocFinal
+        StampDocWithArBookmarks wdDocFinal
     End If
     
     '---------------------------
-    ' 2c) SAVE the original so MKS_* bookmarks persist in the real document
+    ' 2c) SAVE the original so AR_* bookmarks persist in the real document
     '---------------------------
     On Error Resume Next
     wdDoc.Save
@@ -131,7 +131,7 @@ Public Sub ExportWordDocForLLM()
         buffer = buffer & "(No comments in document)" & vbCrLf
     Else
         For Each c In wdDoc.Comments
-            buffer = buffer & "## MKS_COMMENT_" & c.Index & vbCrLf
+            buffer = buffer & "## AR_COMMENT_" & c.Index & vbCrLf
             
             ' Author / Date
             On Error Resume Next
@@ -289,7 +289,7 @@ Private Function BuildBookmarkIndexSection(ByVal wdDocFinal As Object, _
     ' If there are no bookmarks, emit an empty section
     If docForExport.Bookmarks.Count = 0 Then
         sb = "<<BOOKMARK_INDEX_START>>" & vbCrLf & _
-             "(No MKS bookmarks found in document)" & vbCrLf & _
+             "(No AR bookmarks found in document)" & vbCrLf & _
              "<<BOOKMARK_INDEX_END>>" & vbCrLf & vbCrLf
         BuildBookmarkIndexSection = sb
         Exit Function
@@ -302,14 +302,14 @@ Private Function BuildBookmarkIndexSection(ByVal wdDocFinal As Object, _
         name = CStr(bm.name)
         On Error GoTo SafeExit
         
-        ' Only include our MKS_* bookmarks
-        If Left$(name, 4) = "MKS_" Then
+        ' Only include our AR_* bookmarks
+        If Left$(name, 4) = "AR_" Then
             ' Classify type based on prefix
-            If Left$(name, 9) = "MKS_PARA_" Then
+            If Left$(name, 9) = "AR_PARA_" Then
                 t = "paragraph"
-            ElseIf Left$(name, 9) = "MKS_CELL_" Then
+            ElseIf Left$(name, 9) = "AR_CELL_" Then
                 t = "table_cell"
-            ElseIf Left$(name, 7) = "MKS_FN_" Then
+            ElseIf Left$(name, 7) = "AR_FN_" Then
                 t = "footnote"
             Else
                 t = "other"

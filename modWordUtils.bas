@@ -2,9 +2,9 @@ Attribute VB_Name = "modWordUtils"
 Option Explicit
 
 
-' Stamp paragraphs, table cells, and footnotes with stable MKS_ bookmarks.
+' Stamp paragraphs, table cells, and footnotes with stable AR_ bookmarks.
 ' Call this once after opening the Word document (wdDoc) via COM.
-Public Sub StampDocWithMksBookmarks(ByVal wdDoc As Object)
+Public Sub StampDocWithArBookmarks(ByVal wdDoc As Object)
     StampParagraphBookmarks wdDoc
     StampTableCellBookmarks wdDoc
     StampFootnoteBookmarks wdDoc
@@ -22,7 +22,7 @@ Private Sub StampParagraphBookmarks(ByVal wdDoc As Object)
         
         ' Skip empty/whitespace-only paragraphs
         If Len(Trim$(paraRange.Text)) > 0 Then
-            bmName = "MKS_PARA_" & Format$(i, "00000")
+            bmName = "AR_PARA_" & Format$(i, "00000")
             If Not wdDoc.Bookmarks.Exists(bmName) Then
                 wdDoc.Bookmarks.Add name:=bmName, Range:=paraRange
             End If
@@ -52,7 +52,7 @@ Private Sub StampTableCellBookmarks(ByVal wdDoc As Object)
                 ' Exclude end-of-cell marker
                 cellRange.End = cellRange.End - 1
                 If Len(Trim$(cellRange.Text)) > 0 Then
-                    bmName = "MKS_CELL_" & t & "_" & r & "_" & c
+                    bmName = "AR_CELL_" & t & "_" & r & "_" & c
                     If Not wdDoc.Bookmarks.Exists(bmName) Then
                         wdDoc.Bookmarks.Add name:=bmName, Range:=cellRange
                     End If
@@ -81,7 +81,7 @@ Private Sub StampFootnoteBookmarks(ByVal wdDoc As Object)
     For i = 1 To wdDoc.Footnotes.Count
         Set fnRange = wdDoc.Footnotes(i).Range
         If Len(Trim$(fnRange.Text)) > 0 Then
-            bmName = "MKS_FN_" & Format$(i, "000")
+            bmName = "AR_FN_" & Format$(i, "000")
             If Not wdDoc.Bookmarks.Exists(bmName) Then
                 wdDoc.Bookmarks.Add name:=bmName, Range:=fnRange
             End If
@@ -100,7 +100,7 @@ End Sub
 ' Test helper:
 ' - Lets you pick a Word document.
 ' - Opens Word, creates a "Final" copy (revisions accepted).
-' - Calls StampDocWithMksBookmarks on that Final copy.
+' - Calls StampDocWithArBookmarks on that Final copy.
 ' - Leaves Word and both documents open so you can inspect bookmarks.
 Public Sub TestStampFinalCopyBookmarks()
     Const msoFileDialogFilePicker As Long = 3
@@ -121,7 +121,7 @@ Public Sub TestStampFinalCopyBookmarks()
     '---------------------------
     Set fd = Application.FileDialog(msoFileDialogFilePicker)
     With fd
-        .Title = "Select Word document to test MKS bookmark stamping"
+        .Title = "Select Word document to test AR bookmark stamping"
         .AllowMultiSelect = False
         If Len(ThisWorkbook.Path) > 0 Then
             .InitialFileName = ThisWorkbook.Path & "\"
@@ -171,8 +171,8 @@ Public Sub TestStampFinalCopyBookmarks()
     ' 4) Stamp bookmarks on the FINAL copy
     '---------------------------
     ' Requires modWordStamping with:
-    '   Public Sub StampDocWithMksBookmarks(ByVal wdDoc As Object)
-    StampDocWithMksBookmarks wdDocFinal
+    '   Public Sub StampDocWithArBookmarks(ByVal wdDoc As Object)
+    StampDocWithArBookmarks wdDocFinal
 
     '---------------------------
     ' 5) Basic diagnostics (bookmark count, paragraph count)
@@ -182,12 +182,12 @@ Public Sub TestStampFinalCopyBookmarks()
     bmCount = wdDocFinal.Bookmarks.Count
     On Error GoTo ErrHandler
 
-    msg = "Final copy has been created and stamped with MKS bookmarks." & vbCrLf & vbCrLf & _
+    msg = "Final copy has been created and stamped with AR bookmarks." & vbCrLf & vbCrLf & _
           "Document: " & wordPath & vbCrLf & _
           "Paragraphs: " & paraCount & vbCrLf & _
           "Total bookmarks (all types): " & bmCount & vbCrLf & vbCrLf & _
           "Word is left open. In Word, use Insert -> Bookmark to inspect" & vbCrLf & _
-          "MKS_PARA_..., MKS_CELL_..., and MKS_FN_... entries."
+          "AR_PARA_..., AR_CELL_..., and AR_FN_... entries."
 
     MsgBox msg, vbInformation, "TestStampFinalCopyBookmarks"
 

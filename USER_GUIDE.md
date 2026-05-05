@@ -63,7 +63,7 @@ Click **1. Select Persona for Review** and type the name of the persona you want
 ### 2. Prepare the Document
 1. Click **2. Prepare Document for LLM**.
 2. Select the new draft document you want reviewed.
-3. *What happens under the hood?* The macro invisibly stamps every paragraph, table cell, and footnote with a unique `MKS_` bookmark. It then extracts all the text, copies a prompt to your clipboard, and automatically opens your Persona's Assistant URL in your web browser.
+3. *What happens under the hood?* The macro invisibly stamps every paragraph, table cell, and footnote with a unique `AR_` bookmark. It then extracts all the text, copies a prompt to your clipboard, and automatically opens your Persona's Assistant URL in your web browser.
 
 ### 3. Generate Edits in DHSChat
 1. In your browser (which should now be open to your Assistant), **paste** your clipboard contents and hit send.
