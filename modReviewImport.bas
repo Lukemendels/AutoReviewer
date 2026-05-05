@@ -32,6 +32,7 @@ Public Sub ApplyWordSuggestionsFromJson()
     
     Dim bookmarkId As String
     Dim changeType As String
+    Dim oldText As String
     Dim newText As String
     Dim addComment As String
     Dim applyChange As Variant
@@ -214,6 +215,7 @@ Public Sub ApplyWordSuggestionsFromJson()
         ' Reset per-line variables
         bookmarkId = ""
         changeType = ""
+        oldText = ""
         newText = ""
         addComment = ""
         applyChange = Empty
@@ -221,7 +223,7 @@ Public Sub ApplyWordSuggestionsFromJson()
         confidenceNorm = defaultConfidenceLevel
         
         ' Parse JSON line into fields (bookmark-only schema)
-        If Not ParseJsonLine(line, bookmarkId, changeType, newText, _
+        If Not ParseJsonLine(line, bookmarkId, changeType, oldText, newText, _
                              addComment, applyChange, confidenceRaw) Then
             logStatus = "Skipped"
             logReason = "ParseJsonLine failed"
@@ -454,6 +456,7 @@ End Sub
 Private Function ParseJsonLine(ByVal line As String, _
                                ByRef bookmarkId As String, _
                                ByRef changeType As String, _
+                               ByRef oldText As String, _
                                ByRef newText As String, _
                                ByRef addComment As String, _
                                ByRef applyChange As Variant, _
@@ -479,6 +482,12 @@ Private Function ParseJsonLine(ByVal line As String, _
     changeType = ""
     If Not ExtractJsonString(line, "change_type", sVal) Then GoTo ErrFail
     changeType = sVal
+    
+    ' old_text (optional)
+    oldText = ""
+    If ExtractJsonString(line, "old_text", sVal) Then
+        oldText = sVal
+    End If
     
     ' new_text (optional, but required for replace_text)
     newText = ""
