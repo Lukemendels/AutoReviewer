@@ -1,7 +1,7 @@
 Attribute VB_Name = "modReviewExport"
 Option Explicit
 
-Public Sub ExportWordDocForLLM()
+Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     Const wdMainTextStory As Long = 1
     Const wdSentence As Long = 3   ' Word's sentence unit constant
     
@@ -24,6 +24,7 @@ Public Sub ExportWordDocForLLM()
     Dim commentBody As String
     Dim stm As Object            ' ADODB.Stream for UTF-8
     Dim exportFormat As String
+    Dim oldBgSave As Boolean
     
     On Error GoTo ErrHandler
     
@@ -98,6 +99,17 @@ Public Sub ExportWordDocForLLM()
     '---------------------------
     ' Stamp original (this is the one we will edit later and SAVE to disk)
     StampDocWithArBookmarks wdDoc
+    
+    ' NEW: Stamp Revisions in the original document if we are in Respond Mode
+    If isRespondMode Then
+        Dim revIdx As Long
+        For revIdx = 1 To wdDoc.Revisions.Count
+            On Error Resume Next
+            wdDoc.Bookmarks.Add Name:="AR_REV_" & Format(revIdx, "00000"), Range:=wdDoc.Revisions(revIdx).Range
+            On Error GoTo ErrHandler
+        Next revIdx
+    End If
+    
     ' Stamp FINAL copy (used for export text / BOOKMARK_INDEX)
     If Not wdDocFinal Is Nothing Then
         StampDocWithArBookmarks wdDocFinal
@@ -107,7 +119,10 @@ Public Sub ExportWordDocForLLM()
     ' 2c) SAVE the original so AR_* bookmarks persist in the real document
     '---------------------------
     On Error Resume Next
+    oldBgSave = wdApp.Options.BackgroundSave
+    wdApp.Options.BackgroundSave = False
     wdDoc.Save
+    wdApp.Options.BackgroundSave = oldBgSave
     On Error GoTo ErrHandler
     
     '---------------------------
@@ -171,6 +186,44 @@ Public Sub ExportWordDocForLLM()
     
     buffer = buffer & "<<COMMENTS_END>>" & vbCrLf & vbCrLf
     
+    ' 3e) REVISIONS section (from ORIGINAL doc so we can see the tracked changes)
+    If isRespondMode Then
+        buffer = buffer & "<<REVISIONS_START>>" & vbCrLf
+        If wdDoc.Revisions.Count = 0 Then
+            buffer = buffer & "(No revisions in document)" & vbCrLf
+        Else
+            Dim revObj As Object
+            Dim revTypeStr As String
+            Dim revIndexCounter As Long
+            revIndexCounter = 1
+            For Each revObj In wdDoc.Revisions
+                buffer = buffer & "## AR_REV_" & Format(revIndexCounter, "00000") & vbCrLf
+                
+                On Error Resume Next
+                buffer = buffer & "Author: " & CStr(revObj.Author) & vbCrLf
+                buffer = buffer & "Date: " & CStr(revObj.Date) & vbCrLf
+                
+                ' Word Revision Types: wdRevisionInsert = 1, wdRevisionDelete = 2
+                If revObj.Type = 1 Then
+                    revTypeStr = "Insertion"
+                ElseIf revObj.Type = 2 Then
+                    revTypeStr = "Deletion"
+                Else
+                    revTypeStr = "Other (Type " & revObj.Type & ")"
+                End If
+                buffer = buffer & "Type: " & revTypeStr & vbCrLf
+                
+                ' Get the text (for deletion, it's the deleted text; for insertion, it's the new text)
+                buffer = buffer & "Text: " & CleanOneLine(revObj.Range.Text) & vbCrLf
+                On Error GoTo ErrHandler
+                
+                buffer = buffer & "---" & vbCrLf
+                revIndexCounter = revIndexCounter + 1
+            Next revObj
+        End If
+        buffer = buffer & "<<REVISIONS_END>>" & vbCrLf & vbCrLf
+    End If
+    
     '---------------------------
     ' 4) Decide where to save .txt (UTF-8) – User's Documents
     '---------------------------
@@ -228,11 +281,15 @@ Public Sub ExportWordDocForLLM()
     Set stm = Nothing
     
     Dim promptText As String
-    promptText = "I am attaching an exported Word document containing text and bookmark IDs. Please review the text according to the established style rules, and output a JSON list of edits targeting the specific bookmark IDs."
+    If isRespondMode Then
+        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. Please conversationally unpack what the reviewer is asking for in both their comments and their tracked changes. Decide as a team how to edit the document to best address the feedback, and then output a JSON list of edits. You can use 'replace_text' to modify the text, 'reply_to_comment' to respond directly to the reviewer's comments, 'accept_revision' to accept a specific tracked change, and 'reject_revision' to reject a specific tracked change."
+    Else
+        promptText = "I am attaching an exported Word document containing text and bookmark IDs. Please review the text according to the established style rules, and output a JSON list of edits targeting the specific bookmark IDs."
+    End If
     modSysUtils.CopyToClipboard promptText
     
     Dim gptUrl As String
-    gptUrl = "https://chatgpt.com/"
+    gptUrl = "https://chat.dhs.gov/workspaces/4cf75bdf-de55-4f01-8c3f-0444ace52010"
     On Error Resume Next
     Dim activePersona As String
     activePersona = modAppCore.GetConfigValue("ActivePersona")
@@ -265,6 +322,11 @@ ErrHandler:
     MsgBox "Error during export: " & Err.Description, vbCritical
     Resume Cleanup
 End Sub
+
+Public Sub ExportWordDocForRespondMode()
+    ExportWordDocForLLM True
+End Sub
+
 '=== Helpers ========================================================
 Private Function BuildBookmarkIndexSection(ByVal wdDocFinal As Object, _
                                            ByVal wdDoc As Object) As String

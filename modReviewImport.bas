@@ -10,6 +10,8 @@ Public Sub ApplyWordSuggestionsFromJson()
     Const CHANGE_DELETE_ELEMENT As String = "delete_element"
     Const CHANGE_ADD_COMMENT    As String = "add_comment_only"
     Const CHANGE_REPLY_COMMENT  As String = "reply_to_comment"
+    Const CHANGE_ACCEPT_REVISION As String = "accept_revision"
+    Const CHANGE_REJECT_REVISION As String = "reject_revision"
     
     ' Late-bound equivalents for Final / No Markup view (kept for consistency)
     Const wdRevisionsMarkupNone As Long = 0   ' hide all markup
@@ -392,6 +394,50 @@ Public Sub ApplyWordSuggestionsFromJson()
                     skippedCount = skippedCount + 1
                     GoTo LogAndNext
                 End If
+                
+            Case CHANGE_ACCEPT_REVISION
+                If targetRange Is Nothing Then
+                    logStatus = "Skipped"
+                    logReason = "accept_revision requires a bookmark target"
+                    skippedCount = skippedCount + 1
+                    GoTo LogAndNext
+                End If
+                
+                If targetRange.Revisions.Count > 0 Then
+                    Dim rAccept As Object
+                    For Each rAccept In targetRange.Revisions
+                        rAccept.Accept
+                    Next rAccept
+                    appliedCount = appliedCount + 1
+                    logStatus = "Applied"
+                    logReason = "accept_revision"
+                Else
+                    logStatus = "Skipped"
+                    logReason = "No revisions found in target range"
+                    skippedCount = skippedCount + 1
+                End If
+                
+            Case CHANGE_REJECT_REVISION
+                If targetRange Is Nothing Then
+                    logStatus = "Skipped"
+                    logReason = "reject_revision requires a bookmark target"
+                    skippedCount = skippedCount + 1
+                    GoTo LogAndNext
+                End If
+                
+                If targetRange.Revisions.Count > 0 Then
+                    Dim rReject As Object
+                    For Each rReject In targetRange.Revisions
+                        rReject.Reject
+                    Next rReject
+                    appliedCount = appliedCount + 1
+                    logStatus = "Applied"
+                    logReason = "reject_revision"
+                Else
+                    logStatus = "Skipped"
+                    logReason = "No revisions found in target range"
+                    skippedCount = skippedCount + 1
+                End If
             
             Case Else
                 logStatus = "Skipped"
@@ -422,11 +468,16 @@ LogAndNext:
         End If
     Next i
     
+    Dim oldBgSave As Boolean
+    
     '---------------------------
     ' 5) Save and summarize
     '---------------------------
     On Error Resume Next
+    oldBgSave = wdApp.Options.BackgroundSave
+    wdApp.Options.BackgroundSave = False
     wdDoc.Save
+    wdApp.Options.BackgroundSave = oldBgSave
     On Error GoTo ErrHandler
     
     MsgBox "JSONL lines: " & totalLines & vbCrLf & _

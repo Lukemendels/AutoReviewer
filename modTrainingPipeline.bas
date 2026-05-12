@@ -234,9 +234,9 @@ Public Sub RunReducePass1()
     ' Open Explorer and select the file
     Shell "explorer.exe /select,""" & corpusPath & """", vbNormalFocus
     
-    ' Launch DHSChat or default browser to chatgpt
-    Dim url As String
-    url = modAppCore.GetConfigValue("CustomGptUrl", "https://chatgpt.com/")
+    ' Launch DHSChat or default browser to chat
+    
+    url = modAppCore.GetConfigValue("CustomGptUrl", "https://chat.dhs.gov/workspaces/4cf75bdf-de55-4f01-8c3f-0444ace52010")
     If InStr(LCase(url), "http") > 0 Then
         Shell "explorer.exe """ & url & """", vbNormalFocus
     End If

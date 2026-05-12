@@ -120,10 +120,33 @@ Public Sub BuildDashboard()
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
         "3. Apply LLM Edits to Word", "modReviewImport.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
     
+    ' --- GROUP 3: RESPOND TO REVIEW ---
+    btnLeft = 650
+    btnTop = 130
+    
+    Set shp = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, btnLeft, btnTop - 30, 300, 30)
+    shp.Fill.Visible = msoFalse
+    shp.Line.Visible = msoFalse
+    shp.TextFrame2.TextRange.Text = "RESPOND TO REVIEW"
+    shp.TextFrame2.TextRange.Font.Name = "Segoe UI"
+    shp.TextFrame2.TextRange.Font.Size = 14
+    shp.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = RGB(221, 107, 32) ' Orange
+    
+    CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
+        "1. Select Persona for Review", "modDashboardUI.SetActivePersona", RGB(74, 85, 104)
+    btnTop = btnTop + btnHeight + 15
+    
+    CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
+        "2. Export Document for Feedback", "modReviewExport.ExportWordDocForRespondMode", RGB(221, 107, 32)
+    btnTop = btnTop + btnHeight + 15
+    
+    CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
+        "3. Apply LLM Edits to Word", "modReviewImport.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
+    
     btnTop = btnTop + btnHeight + 40
     
-    ' Button 4: Settings
-    CreateModernButton ws, btnLeft, btnTop, 140, 35, _
+    ' Settings
+    CreateModernButton ws, 30, btnTop, 140, 35, _
         "Go to Config", "modDashboardUI.GoToConfigSheet", RGB(74, 85, 104) ' Gray
         
     ws.Range("A1").Select
