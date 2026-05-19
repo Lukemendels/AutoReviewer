@@ -480,17 +480,39 @@ LogAndNext:
     wdApp.Options.BackgroundSave = oldBgSave
     On Error GoTo ErrHandler
     
+    '---------------------------
+    ' 6) Sequential Teardown
+    ' Close Word safely BEFORE showing Excel MsgBoxes
+    '---------------------------
+    On Error Resume Next
+    Application.StatusBar = False
+    If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=True
+    If Not wdApp Is Nothing Then
+        wdApp.NormalTemplate.Saved = True
+        wdApp.Quit SaveChanges:=False
+    End If
+    Set wdDoc = Nothing
+    Set wdApp = Nothing
+    DoEvents
+    On Error GoTo ErrHandler
+    
+    ' 7) Show Final Summary
     MsgBox "JSONL lines: " & totalLines & vbCrLf & _
            "Parsed OK: " & parsedOk & vbCrLf & _
            "Applied: " & appliedCount & vbCrLf & _
            "Skipped: " & skippedCount, _
            vbInformation, "Apply Bookmark-Based Suggestions"
     
+    Exit Sub
+
 Cleanup:
     On Error Resume Next
     Application.StatusBar = False
     If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=True
-    If Not wdApp Is Nothing Then wdApp.Quit
+    If Not wdApp Is Nothing Then
+        wdApp.NormalTemplate.Saved = True
+        wdApp.Quit SaveChanges:=False
+    End If
     Set wdDoc = Nothing
     Set wdApp = Nothing
     Set wsConfig = Nothing

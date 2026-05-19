@@ -197,6 +197,10 @@ Public Sub AddDocToCorpus()
     modAppCore.UpsertPersona activePersona, corpusPath:=corpusPath, incrementTrainingCount:=True
     
     wdDoc.Close False
+    Set wdDoc = Nothing
+    Set wdApp = Nothing
+    DoEvents
+    
     MsgBox "Document added to corpus successfully.", vbInformation
 End Sub
 

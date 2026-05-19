@@ -6,8 +6,7 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     Const wdSentence As Long = 3   ' Word's sentence unit constant
     
     Dim wdApp As Object          ' Word.Application
-    Dim wdDoc As Object          ' Word.Document (original, to be edited later)
-    Dim wdDocFinal As Object     ' Word.Document (temporary "final" copy)
+    Dim wdDoc As Object          ' Word.Document (single, sequentially modified in memory)
     Dim rngMain As Object        ' Word.Range
     Dim c As Object              ' Word.Comment
     Dim rScope As Object         ' Working range for scope sentence
@@ -82,25 +81,12 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     End If
     
     '---------------------------
-    ' 2a) Create a temporary FINAL doc and accept all revisions there
-    '---------------------------
-    On Error Resume Next
-    Set wdDocFinal = wdApp.Documents.Add
-    If Not wdDocFinal Is Nothing Then
-        wdDocFinal.Range.FormattedText = wdDoc.Range.FormattedText
-        wdDocFinal.TrackRevisions = True
-        wdDocFinal.AcceptAllRevisions
-        wdDocFinal.TrackRevisions = False
-    End If
-    On Error GoTo ErrHandler
-    
-    '---------------------------
-    ' 2b) STAMP BOTH DOCS WITH AR BOOKMARKS
+    ' 2a) STAMP DOC WITH AR BOOKMARKS
     '---------------------------
     ' Stamp original (this is the one we will edit later and SAVE to disk)
     StampDocWithArBookmarks wdDoc
     
-    ' NEW: Stamp Revisions in the original document if we are in Respond Mode
+    ' Stamp Revisions in the original document if we are in Respond Mode
     If isRespondMode Then
         Dim revIdx As Long
         For revIdx = 1 To wdDoc.Revisions.Count
@@ -110,13 +96,8 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
         Next revIdx
     End If
     
-    ' Stamp FINAL copy (used for export text / BOOKMARK_INDEX)
-    If Not wdDocFinal Is Nothing Then
-        StampDocWithArBookmarks wdDocFinal
-    End If
-    
     '---------------------------
-    ' 2c) SAVE the original so AR_* bookmarks persist in the real document
+    ' 2b) SAVE the original so AR_* bookmarks persist in the real document
     '---------------------------
     On Error Resume Next
     oldBgSave = wdApp.Options.BackgroundSave
@@ -126,32 +107,25 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     On Error GoTo ErrHandler
     
     '---------------------------
-    ' 3) Build the export buffer (from FINAL + ORIGINAL as needed)
+    ' 3) Extract metadata (comments and revisions) BEFORE accepting revisions
     '---------------------------
     buffer = ""
     
-    ' 3a) DOCUMENT_TEXT (plain or markdown, from FINAL doc)
-    buffer = buffer & BuildDocumentTextSection(wdDocFinal, wdDoc, exportFormat)
+    Dim bufferComments As String
+    Dim bufferRevisions As String
     
-    ' 3b) BOOKMARK_INDEX (paragraphs, table cells, footnotes) from FINAL doc
-    buffer = buffer & BuildBookmarkIndexSection(wdDocFinal, wdDoc)
-    
-    ' 3c) FOOTNOTES section (from FINAL doc so text matches DOCUMENT_TEXT)
-    buffer = buffer & BuildFootnotesSection(wdDocFinal, wdDoc, exportFormat)
-    
-    ' 3d) COMMENTS section (from ORIGINAL doc so comment_index matches real document)
-    buffer = buffer & "<<COMMENTS_START>>" & vbCrLf
+    bufferComments = "<<COMMENTS_START>>" & vbCrLf
     
     If wdDoc.Comments.Count = 0 Then
-        buffer = buffer & "(No comments in document)" & vbCrLf
+        bufferComments = bufferComments & "(No comments in document)" & vbCrLf
     Else
         For Each c In wdDoc.Comments
-            buffer = buffer & "## AR_COMMENT_" & c.Index & vbCrLf
+            bufferComments = bufferComments & "## AR_COMMENT_" & c.Index & vbCrLf
             
             ' Author / Date
             On Error Resume Next
-            buffer = buffer & "Author: " & CStr(c.Author) & vbCrLf
-            buffer = buffer & "Date: " & CStr(c.Date) & vbCrLf
+            bufferComments = bufferComments & "Author: " & CStr(c.Author) & vbCrLf
+            bufferComments = bufferComments & "Date: " & CStr(c.Date) & vbCrLf
             On Error GoTo ErrHandler
             
             ' Compute Scope Sentence for this comment
@@ -176,32 +150,31 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
             On Error GoTo ErrHandler
             
             ' Output
-            buffer = buffer & "Scope Sentence: " & CleanOneLine(scopeSentence) & vbCrLf
-            buffer = buffer & "Highlight: " & CleanOneLine(highlightText) & vbCrLf
-            buffer = buffer & "Text: " & CleanOneLine(commentBody) & vbCrLf
+            bufferComments = bufferComments & "Scope Sentence: " & CleanOneLine(scopeSentence) & vbCrLf
+            bufferComments = bufferComments & "Highlight: " & CleanOneLine(highlightText) & vbCrLf
+            bufferComments = bufferComments & "Text: " & CleanOneLine(commentBody) & vbCrLf
             
-            buffer = buffer & "---" & vbCrLf
+            bufferComments = bufferComments & "---" & vbCrLf
         Next c
     End If
     
-    buffer = buffer & "<<COMMENTS_END>>" & vbCrLf & vbCrLf
+    bufferComments = bufferComments & "<<COMMENTS_END>>" & vbCrLf & vbCrLf
     
-    ' 3e) REVISIONS section (from ORIGINAL doc so we can see the tracked changes)
     If isRespondMode Then
-        buffer = buffer & "<<REVISIONS_START>>" & vbCrLf
+        bufferRevisions = "<<REVISIONS_START>>" & vbCrLf
         If wdDoc.Revisions.Count = 0 Then
-            buffer = buffer & "(No revisions in document)" & vbCrLf
+            bufferRevisions = bufferRevisions & "(No revisions in document)" & vbCrLf
         Else
             Dim revObj As Object
             Dim revTypeStr As String
             Dim revIndexCounter As Long
             revIndexCounter = 1
             For Each revObj In wdDoc.Revisions
-                buffer = buffer & "## AR_REV_" & Format(revIndexCounter, "00000") & vbCrLf
+                bufferRevisions = bufferRevisions & "## AR_REV_" & Format(revIndexCounter, "00000") & vbCrLf
                 
                 On Error Resume Next
-                buffer = buffer & "Author: " & CStr(revObj.Author) & vbCrLf
-                buffer = buffer & "Date: " & CStr(revObj.Date) & vbCrLf
+                bufferRevisions = bufferRevisions & "Author: " & CStr(revObj.Author) & vbCrLf
+                bufferRevisions = bufferRevisions & "Date: " & CStr(revObj.Date) & vbCrLf
                 
                 ' Word Revision Types: wdRevisionInsert = 1, wdRevisionDelete = 2
                 If revObj.Type = 1 Then
@@ -211,21 +184,45 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
                 Else
                     revTypeStr = "Other (Type " & revObj.Type & ")"
                 End If
-                buffer = buffer & "Type: " & revTypeStr & vbCrLf
+                bufferRevisions = bufferRevisions & "Type: " & revTypeStr & vbCrLf
                 
                 ' Get the text (for deletion, it's the deleted text; for insertion, it's the new text)
-                buffer = buffer & "Text: " & CleanOneLine(revObj.Range.Text) & vbCrLf
+                bufferRevisions = bufferRevisions & "Text: " & CleanOneLine(revObj.Range.Text) & vbCrLf
                 On Error GoTo ErrHandler
                 
-                buffer = buffer & "---" & vbCrLf
+                bufferRevisions = bufferRevisions & "---" & vbCrLf
                 revIndexCounter = revIndexCounter + 1
             Next revObj
         End If
-        buffer = buffer & "<<REVISIONS_END>>" & vbCrLf & vbCrLf
+        bufferRevisions = bufferRevisions & "<<REVISIONS_END>>" & vbCrLf & vbCrLf
     End If
+
+    '---------------------------
+    ' 4) Accept All Revisions in memory to get "final" text, maintaining the original bookmark IDs
+    '---------------------------
+    On Error Resume Next
+    wdDoc.TrackRevisions = False
+    wdDoc.AcceptAllRevisions
+    On Error GoTo ErrHandler
     
     '---------------------------
-    ' 4) Decide where to save .txt (UTF-8) – User's Documents
+    ' 5) Build the export buffer (text, bookmarks, footnotes) from the finalized document
+    '---------------------------
+    ' DOCUMENT_TEXT (plain or markdown)
+    buffer = buffer & BuildDocumentTextSection(Nothing, wdDoc, exportFormat)
+    
+    ' BOOKMARK_INDEX (paragraphs, table cells, footnotes)
+    buffer = buffer & BuildBookmarkIndexSection(Nothing, wdDoc)
+    
+    ' FOOTNOTES section
+    buffer = buffer & BuildFootnotesSection(Nothing, wdDoc, exportFormat)
+    
+    ' Append the pre-extracted comments and revisions
+    buffer = buffer & bufferComments
+    buffer = buffer & bufferRevisions
+    
+    '---------------------------
+    ' 6) Decide where to save .txt (UTF-8) – User's Documents
     '---------------------------
     docsFolder = GetUserDocumentsFolder()
     
@@ -261,12 +258,12 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
            vbInformation, "ExportWordDocForLLM (debug)"
     
     '---------------------------
-    ' 4a) Record LastExportTxtPath in Config via key-based helper
+    ' 6a) Record LastExportTxtPath in Config via key-based helper
     '---------------------------
     SetConfigValue "LastExportTxtPath", savePath
     
     '---------------------------
-    ' 5) Write buffer to file as UTF-8
+    ' 7) Write buffer to file as UTF-8
     '---------------------------
     Set stm = CreateObject("ADODB.Stream")
     With stm
@@ -280,6 +277,22 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     End With
     Set stm = Nothing
     
+    '---------------------------
+    ' 8) Sequential Teardown
+    ' Close Word safely BEFORE showing Excel MsgBoxes or opening browsers
+    '---------------------------
+    On Error Resume Next
+    If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=False
+    If Not wdApp Is Nothing Then
+        wdApp.NormalTemplate.Saved = True
+        wdApp.Quit SaveChanges:=False
+    End If
+    Set wdDoc = Nothing
+    Set wdApp = Nothing
+    DoEvents
+    On Error GoTo ErrHandler
+    
+    ' 9) Setup Prompt and Browser
     Dim promptText As String
     If isRespondMode Then
         promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. Please conversationally unpack what the reviewer is asking for in both their comments and their tracked changes. Decide as a team how to edit the document to best address the feedback, and then output a JSON list of edits. You can use 'replace_text' to modify the text, 'reply_to_comment' to respond directly to the reviewer's comments, 'accept_revision' to accept a specific tracked change, and 'reject_revision' to reject a specific tracked change."
@@ -299,18 +312,21 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     On Error GoTo 0
     modSysUtils.OpenURL gptUrl
     
+    ' 10) Final Excel MsgBox (Word is already closed)
     MsgBox "Export complete (UTF-8):" & vbCrLf & savePath & vbCrLf & vbCrLf & _
            "A prompt has been copied to your clipboard, and your custom GPT URL has been opened." & vbCrLf & _
            "1. Paste the prompt (Ctrl+V) into the GPT." & vbCrLf & _
            "2. Upload/Drop the exported .txt file.", vbInformation, "Export Complete"
     
+    Exit Sub
+
 Cleanup:
     On Error Resume Next
-    If Not wdDocFinal Is Nothing Then wdDocFinal.Close SaveChanges:=False
-    ' We already called wdDoc.Save explicitly; now close without prompting
     If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=False
-    If Not wdApp Is Nothing Then wdApp.Quit
-    Set wdDocFinal = Nothing
+    If Not wdApp Is Nothing Then
+        wdApp.NormalTemplate.Saved = True
+        wdApp.Quit SaveChanges:=False
+    End If
     Set wdDoc = Nothing
     Set wdApp = Nothing
     Set fd = Nothing
