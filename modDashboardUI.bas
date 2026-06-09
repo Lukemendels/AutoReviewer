@@ -79,9 +79,13 @@ Public Sub BuildDashboard()
     btnTop = btnTop + btnHeight + 15
         
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "2. Add Doc to Corpus", "modTrainingPipeline.AddDocToCorpus", RGB(128, 90, 213)
+        "2a. Add Doc to Corpus (redlines)", "modTrainingPipeline.AddDocToCorpus", RGB(128, 90, 213)
+    btnTop = btnTop + btnHeight + 12
+
+    CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
+        "2b. Add Finalized Exemplar", "modTrainingPipeline.AddFinalizedExemplar", RGB(128, 90, 213)
     btnTop = btnTop + btnHeight + 15
-        
+
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
         "3. Reduce Pass 1: Cluster", "modTrainingPipeline.RunReducePass1", RGB(128, 90, 213)
     btnTop = btnTop + btnHeight + 10

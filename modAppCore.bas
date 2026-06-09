@@ -285,16 +285,17 @@ Public Sub EnsurePersonasSheet(ByRef wsPersonas As Worksheet)
         
         ' Headers
         wsPersonas.Range("A1").value = "PersonaName"
-        wsPersonas.Range("B1").value = "AssistantUrl"
+        wsPersonas.Range("B1").value = "AssistantUrl"     ' the persona's HOT co-thinker URL
         wsPersonas.Range("C1").value = "CorpusPath"
         wsPersonas.Range("D1").value = "SkillMdPath"
-        wsPersonas.Range("E1").value = "TrainingDocCount"
+        wsPersonas.Range("E1").value = "TrainingDocCount"  ' redline docs mined
         wsPersonas.Range("F1").value = "LastUpdated"
         wsPersonas.Range("G1").value = "Notes"
-        
+        wsPersonas.Range("H1").value = "ExemplarCount"      ' finalized exemplars added
+
         ' Make headers bold
-        wsPersonas.Range("A1:G1").Font.Bold = True
-        wsPersonas.Columns("A:G").EntireColumn.AutoFit
+        wsPersonas.Range("A1:H1").Font.Bold = True
+        wsPersonas.Columns("A:H").EntireColumn.AutoFit
     End If
 End Sub
 
@@ -304,42 +305,54 @@ Public Sub UpsertPersona(ByVal personaName As String, _
                          Optional ByVal corpusPath As String = "", _
                          Optional ByVal skillMdPath As String = "", _
                          Optional ByVal incrementTrainingCount As Boolean = False, _
-                         Optional ByVal notes As String = "")
+                         Optional ByVal notes As String = "", _
+                         Optional ByVal incrementExemplarCount As Boolean = False)
     Dim wsPersonas As Worksheet
     Dim lastRow As Long
     Dim r As Long
     Dim foundRow As Long
-    
+
     EnsurePersonasSheet wsPersonas
-    
+
+    ' Defensive: ensure the ExemplarCount header exists on pre-existing sheets.
+    If Len(CStr(wsPersonas.Range("H1").value)) = 0 Then
+        wsPersonas.Range("H1").value = "ExemplarCount"
+        wsPersonas.Range("H1").Font.Bold = True
+    End If
+
     lastRow = wsPersonas.Cells(wsPersonas.Rows.Count, "A").End(xlUp).row
     foundRow = 0
-    
+
     For r = 2 To lastRow
         If StrComp(Trim(wsPersonas.Cells(r, "A").value), Trim(personaName), vbTextCompare) = 0 Then
             foundRow = r
             Exit For
         End If
     Next r
-    
+
     If foundRow = 0 Then
         foundRow = lastRow + 1
         wsPersonas.Cells(foundRow, "A").value = personaName
-        wsPersonas.Cells(foundRow, "E").value = 0 ' Initialize count
+        wsPersonas.Cells(foundRow, "E").value = 0 ' Initialize training count
+        wsPersonas.Cells(foundRow, "H").value = 0 ' Initialize exemplar count
     End If
-    
+
     If Len(assistantUrl) > 0 Then wsPersonas.Cells(foundRow, "B").value = assistantUrl
     If Len(corpusPath) > 0 Then wsPersonas.Cells(foundRow, "C").value = corpusPath
     If Len(skillMdPath) > 0 Then wsPersonas.Cells(foundRow, "D").value = skillMdPath
-    
+
     If incrementTrainingCount Then
         wsPersonas.Cells(foundRow, "E").value = Val(wsPersonas.Cells(foundRow, "E").value) + 1
     End If
-    
+
+    If incrementExemplarCount Then
+        wsPersonas.Cells(foundRow, "H").value = Val(wsPersonas.Cells(foundRow, "H").value) + 1
+    End If
+
     wsPersonas.Cells(foundRow, "F").value = Now
     If Len(notes) > 0 Then wsPersonas.Cells(foundRow, "G").value = notes
-    
-    wsPersonas.Columns("A:G").EntireColumn.AutoFit
+
+    wsPersonas.Columns("A:H").EntireColumn.AutoFit
 End Sub
 
 ' Gets the Assistant URL for the given persona

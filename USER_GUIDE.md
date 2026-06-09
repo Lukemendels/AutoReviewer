@@ -25,14 +25,20 @@ This guide walks you through the end-to-end user experience (UX) for setting up 
 ### 1. Set the Active Persona
 Click **1. Set Active Persona** and type a name for your new persona (e.g., "Legal Reviewer V1"). This sets the active context for all following actions and creates a new row in the `Personas` registry sheet.
 
-### 2. Build the Training Corpus
-You need 5-10 Word documents (.docx) that your target reviewer has previously redlined or commented on.
-1. Click **2. Add Doc to Corpus**.
-2. Select one of your redlined documents.
-3. Word will open the document, and an InputBox will appear listing all the authors who made edits or comments in that document.
-4. Type the **number** corresponding to your target reviewer.
-5. *What happens under the hood?* The macro automatically accepts all non-target revisions to create a clean baseline, stamps hidden tracking bookmarks, and extracts the target reviewer's edits/comments into a file named `[PersonaName]_corpus.jsonl`.
-6. **Repeat this step** for all 5-10 documents to build a robust corpus.
+### 2. Build the Training Set
+You can train from **two kinds of input**, and you can mix them:
+
+**2a. Redline docs (what the reviewer changes).** Documents the reviewer previously redlined or commented on.
+1. Click **2a. Add Doc to Corpus (redlines)**.
+2. Select a redlined document.
+3. An InputBox lists every author who edited or commented; type the **number** of your target reviewer.
+4. *Under the hood:* the macro accepts non-target revisions to form a clean baseline, stamps tracking bookmarks, and extracts the target's edits/comments into `[PersonaName]_corpus.jsonl`.
+
+**2b. Finalized exemplars (what good looks like).** Known-good *final* documents — no redlines needed. This is the clean path when your redlines are messy (multiple authors, overlapping edit turns).
+1. Click **2b. Add Finalized Exemplar**.
+2. Select a finalized `.docx`. The macro captures its clean final text to `[PersonaName]_exemplar_NN.txt` (your source file is not modified).
+
+**Repeat** to build 5–10 inputs total. You can train from redlines only, exemplars only, or both — exemplars are used as the gold standard; redlines as observed edits.
 
 ### 3. The "Reduce" Passes (AI Analysis)
 Now you will pass the corpus to DHSChat to analyze the patterns.
@@ -40,7 +46,7 @@ Now you will pass the corpus to DHSChat to analyze the patterns.
    - A prompt is copied to your clipboard.
    - File Explorer automatically opens to the folder containing your `corpus.jsonl`.
    - Open a *new, blank* chat in DHSChat.
-   - Drag and drop your `corpus.jsonl` file into the chat, paste the prompt, and hit send.
+   - Drag in your `corpus.jsonl` **and** any `[PersonaName]_exemplar_*.txt` files (whichever you created), paste the prompt, and hit send.
 2. Click **4. Reduce Pass 2: Heuristics**.
    - A new prompt is copied.
    - Paste it into the *same* DHSChat conversation and hit send.

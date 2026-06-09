@@ -205,41 +205,140 @@ Public Sub AddDocToCorpus()
 End Sub
 
 
+' Add a FINALIZED exemplar to the persona's training set.
+' Instead of mining a messy redline diff, this captures the clean final text of
+' a known-good document. Exemplars teach the *target state* (what good looks
+' like); redlines teach the *transformation*. A persona can train on exemplars
+' alone (the escape hatch when redlines are too messy -- multiple authors,
+' overlapping turns) or on a mix of both. Saved as "<persona>_exemplar_NN.txt"
+' beside the corpus and attached alongside it in the Reduce passes.
+Public Sub AddFinalizedExemplar()
+    Dim activePersona As String
+    Dim fd As FileDialog
+    Dim docPath As String
+    Dim wdApp As Object
+    Dim wdDoc As Object
+    Dim docName As String
+    Dim cleanText As String
+    Dim fso As Object
+    Dim ts As Object
+    Dim exPath As String
+    Dim n As Long
+
+    activePersona = modAppCore.GetConfigValue("ActivePersona")
+    If activePersona = "" Then
+        MsgBox "Please select an Active Persona first.", vbExclamation
+        Exit Sub
+    End If
+
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    fd.Title = "Select a FINALIZED Word document (a known-good example)"
+    fd.Filters.Clear
+    fd.Filters.Add "Word Documents", "*.docx"
+    If fd.Show <> -1 Then Exit Sub
+    docPath = fd.SelectedItems(1)
+
+    On Error Resume Next
+    Set wdApp = GetObject(, "Word.Application")
+    If wdApp Is Nothing Then Set wdApp = CreateObject("Word.Application")
+    On Error GoTo 0
+    wdApp.Visible = True
+
+    Set wdDoc = wdApp.Documents.Open(docPath)
+
+    ' Accept any stray revisions in memory so we capture the FINAL clean text.
+    ' The file is closed without saving, so the source is never modified.
+    On Error Resume Next
+    wdDoc.TrackRevisions = False
+    wdDoc.AcceptAllRevisions
+    On Error GoTo 0
+
+    docName = wdDoc.name
+    cleanText = wdDoc.Content.Text
+
+    wdDoc.Close False
+    Set wdDoc = Nothing
+    Set wdApp = Nothing
+    DoEvents
+
+    ' Pick the next free exemplar filename for this persona.
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    n = 1
+    Do
+        exPath = ThisWorkbook.path & "\" & activePersona & "_exemplar_" & Format(n, "00") & ".txt"
+        If Not fso.FileExists(exPath) Then Exit Do
+        n = n + 1
+    Loop
+
+    Set ts = fso.OpenTextFile(exPath, 2, True, -1) ' 2=Write, True=Create, -1=Unicode
+    ts.Write "<<EXEMPLAR doc=""" & docName & """>>" & vbCrLf & cleanText
+    ts.Close
+
+    modAppCore.UpsertPersona activePersona, incrementExemplarCount:=True
+
+    MsgBox "Finalized exemplar saved:" & vbCrLf & exPath & vbCrLf & vbCrLf & _
+           "Add as many as you like, then run the Reduce passes. Exemplars are " & _
+           "used as the gold standard for the persona's style -- with or without " & _
+           "redlines from 'Add Doc to Corpus'.", vbInformation
+End Sub
+
 ' Pass 1: Cluster
 Public Sub RunReducePass1()
     Dim activePersona As String
     Dim corpusPath As String
     Dim prompt As String
     Dim fso As Object
-    
+    Dim url As String
+    Dim hasCorpus As Boolean
+    Dim hasExemplars As Boolean
+    Dim selectPath As String
+
     activePersona = modAppCore.GetConfigValue("ActivePersona")
     If activePersona = "" Then
         MsgBox "Please select an Active Persona first.", vbExclamation
         Exit Sub
     End If
-    
+
     corpusPath = ThisWorkbook.path & "\" & activePersona & "_corpus.jsonl"
-    
+
     Set fso = CreateObject("Scripting.FileSystemObject")
-    If Not fso.FileExists(corpusPath) Then
-        MsgBox "Corpus file not found: " & corpusPath, vbExclamation
+    hasCorpus = fso.FileExists(corpusPath)
+    hasExemplars = fso.FileExists(ThisWorkbook.path & "\" & activePersona & "_exemplar_01.txt")
+
+    If Not hasCorpus And Not hasExemplars Then
+        MsgBox "No training input found for this persona. Add redline docs " & _
+               "(""Add Doc to Corpus"") and/or finalized exemplars " & _
+               "(""Add Finalized Exemplar"") first.", vbExclamation
         Exit Sub
     End If
-    
-    prompt = "Please review the attached corpus of revisions and comments. Cluster these into pattern categories based on the reviewer's implicit style preferences."
-    
+
+    ' One prompt covers redlines-only, exemplars-only, or both. Exemplars are the
+    ' gold standard for what good looks like; redline records are observed edits.
+    prompt = "I am attaching this reviewer's training material. It may include a " & _
+             "corpus of their revisions/comments (observed edits) and/or one or more " & _
+             "FINALIZED exemplar documents (their known-good output -- the gold " & _
+             "standard for voice, structure, and standards). Infer the reviewer's " & _
+             "implicit style preferences and cluster them into pattern categories. " & _
+             "Where you have exemplars, learn what good looks like from them; where " & _
+             "you have redlines, learn what they change and why."
+
     modSysUtils.CopyToClipboard prompt
-    
+
     MsgBox "Reduce Pass 1 Prompt copied to clipboard." & vbCrLf & vbCrLf & _
            "1. Open a new chat in DHSChat." & vbCrLf & _
-           "2. Drag and drop the corpus file from the Explorer window that will open." & vbCrLf & _
+           "2. From the Explorer window that opens, drag in the corpus.jsonl AND " & _
+           "any " & activePersona & "_exemplar_*.txt files for this persona." & vbCrLf & _
            "3. Paste the prompt and send.", vbInformation
-           
-    ' Open Explorer and select the file
-    Shell "explorer.exe /select,""" & corpusPath & """", vbNormalFocus
-    
-    ' Launch DHSChat or default browser to chat
-    
+
+    ' Open Explorer at a present file so the user can grab the corpus and exemplars.
+    If hasCorpus Then
+        selectPath = corpusPath
+    Else
+        selectPath = ThisWorkbook.path & "\" & activePersona & "_exemplar_01.txt"
+    End If
+    Shell "explorer.exe /select,""" & selectPath & """", vbNormalFocus
+
+    ' Launch a fresh DHSChat chat (no assistant) in the browser.
     url = modAppCore.GetConfigValue("CustomGptUrl", "https://chat.dhs.gov/workspaces/4cf75bdf-de55-4f01-8c3f-0444ace52010")
     If InStr(LCase(url), "http") > 0 Then
         Shell "explorer.exe """ & url & """", vbNormalFocus

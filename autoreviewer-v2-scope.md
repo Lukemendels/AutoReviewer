@@ -211,6 +211,19 @@ human-readable decision packet) and a shared **cold serializer** (`serialize_exa
 → JSONL), with **paper ratification** between them. Dashboard flow is now
 hot → ratify → cold → write. See `TEMPLATE_SKILL.md`.
 
+### Post-finalization additions
+
+- **Provenance + teardown.** AI edits are authored "AutoReviewer" (restored
+  after); `AR_` anchors are stripped as the terminal apply step and before any
+  re-stamp, so re-runs don't drift.
+- **Shared Incorporator** (asymmetric model). Incorporating supervisor edits
+  uses one shared, style-agnostic assistant (`TEMPLATE_SKILL_INCORPORATOR.md`,
+  `Config: IncorporatorUrl`), not a persona — mirroring the shared Serializer.
+- **Exemplar training.** A persona can be trained from finalized known-good
+  documents (`Add Finalized Exemplar`) instead of, or alongside, mined
+  redlines — the clean path when redlines are messy. Also fixed an undeclared
+  `url` that prevented `modTrainingPipeline` from compiling.
+
 ### Still open (binding slots from Profile §13, not yet bound)
 
 - Exhaustive action-type → Reversibility Class table beyond CAT.
