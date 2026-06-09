@@ -51,12 +51,38 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     ' We trust Application.FileDialog to only return existing files.
     ' Do NOT call Dir$ on wordPath here; some path formats can cause
     ' "Bad file name or number" even when the file is valid.
-    
+
     '---------------------------
-    ' 1a) Config sheet: record WordDocPath via key-based helper
+    ' 1a) Reversibility hygiene: work on a copy, never the source of record.
+    ' The user's selection is the source; we operate on "<base>_AR.<ext>" so the
+    ' original is never stamped with bookmarks or written back into. Edits stay
+    ' reversible (tracked changes on the copy) and the source stays pristine
+    ' until the human chooses to finalize (Profile s7.2). If the copy cannot be
+    ' made we fall back to operating on the original so the tool still runs.
+    '---------------------------
+    Dim sourcePath As String
+    Dim workingPath As String
+    sourcePath = wordPath
+    workingPath = BuildWorkingCopyPath(sourcePath)
+
+    On Error Resume Next
+    Err.Clear
+    If Len(workingPath) > 0 Then
+        FileCopy sourcePath, workingPath
+    End If
+    If Err.Number <> 0 Or Len(workingPath) = 0 Then
+        workingPath = sourcePath   ' fall back to the original
+    End If
+    On Error GoTo ErrHandler
+    wordPath = workingPath
+
+    '---------------------------
+    ' 1b) Config sheet: record source and working paths via key-based helper.
+    ' WordDocPath is the WORKING copy -- the apply step writes here.
     '---------------------------
     EnsureConfigSheet wsConfig
-    SetConfigValue "WordDocPath", wordPath
+    SetConfigValue "SourceDocPath", sourcePath
+    SetConfigValue "WordDocPath", workingPath
     
     ' Determine export format (plain | markdown)
     exportFormat = LCase$(Trim$(GetConfigValue("ExportFormat", "plain")))
@@ -220,7 +246,18 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     ' Append the pre-extracted comments and revisions
     buffer = buffer & bufferComments
     buffer = buffer & bufferRevisions
-    
+
+    '---------------------------
+    ' 5a) Transport attestation (Profile s4.1 / s9.1): fingerprint the payload
+    ' that will cross the clipboard, embed it self-describingly at the head of
+    ' the artifact, and record it so the apply step can close the loop.
+    '---------------------------
+    Dim exportFingerprint As String
+    exportFingerprint = modSysUtils.ArContentFingerprint(buffer)
+    buffer = "<<PAYLOAD_FINGERPRINT: " & exportFingerprint & ">>" & vbCrLf & vbCrLf & buffer
+    SetConfigValue "LastExportFingerprint", exportFingerprint
+    SetConfigValue "LastExportMode", IIf(isRespondMode, "Respond", "Review")
+
     '---------------------------
     ' 6) Decide where to save .txt (UTF-8) – User's Documents
     '---------------------------
@@ -250,13 +287,7 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     
     baseName = GetFileBaseName(wordPath)
     savePath = docsFolder & "\" & baseName & ".txt"
-    
-    ' DEBUG: show the paths we are about to use
-    MsgBox "Exporting with paths:" & vbCrLf & vbCrLf & _
-           "docsFolder = " & docsFolder & vbCrLf & _
-           "savePath   = " & savePath, _
-           vbInformation, "ExportWordDocForLLM (debug)"
-    
+
     '---------------------------
     ' 6a) Record LastExportTxtPath in Config via key-based helper
     '---------------------------
@@ -293,11 +324,34 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     On Error GoTo ErrHandler
     
     ' 9) Setup Prompt and Browser
+    ' HOT co-thinker prompt (Profile s7.4). This assistant runs divergent: it
+    ' surfaces a *recommended* resolution with its *strongest counter-case* and
+    ' a self-critique, citing the AR_ bookmark ID for each, and outputs a
+    ' human-readable DECISION PACKET -- never JSONL. The human ratifies on paper
+    ' (keep/fix/cut); the cold Serializer assistant converts the kept decisions
+    ' to JSONL afterward. Keeping review and serialization in separate context
+    ' windows is the s7.4 temperature wall.
     Dim promptText As String
+    Dim packetSpec As String
+    packetSpec = vbCrLf & vbCrLf & _
+        "For each recommended change, output a numbered block in exactly this form:" & vbCrLf & _
+        "[n] BOOKMARK: <the exact AR_ id, e.g. AR_PARA_00012 or AR_COMMENT_3>" & vbCrLf & _
+        "    ACTION: replace_text | delete_element | add_comment_only | reply_to_comment | accept_revision | reject_revision" & vbCrLf & _
+        "    OLD_TEXT: <the exact existing substring to change, or omit for a whole-bookmark/element action>" & vbCrLf & _
+        "    NEW_TEXT: <the proposed replacement, when applicable>" & vbCrLf & _
+        "    RATIONALE: <why>" & vbCrLf & _
+        "    COUNTER-CASE: <the strongest argument AGAINST making this change>" & vbCrLf & _
+        "    CONFIDENCE: High | Medium | Low" & vbCrLf & vbCrLf & _
+        "Do NOT output JSON. Surface judgment for a human to ratify; a separate " & _
+        "serializer will convert the ratified decisions to the edit format. Every " & _
+        "block MUST cite a bookmark id that appears in the attached BOOKMARK_INDEX " & _
+        "-- never invent an anchor. Before you finish, self-critique: re-read each " & _
+        "block and flag any that are unsupported by the source text."
+
     If isRespondMode Then
-        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. Please conversationally unpack what the reviewer is asking for in both their comments and their tracked changes. Decide as a team how to edit the document to best address the feedback, and then output a JSON list of edits. You can use 'replace_text' to modify the text, 'reply_to_comment' to respond directly to the reviewer's comments, 'accept_revision' to accept a specific tracked change, and 'reject_revision' to reject a specific tracked change."
+        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. Conversationally unpack what the reviewer is asking for in both their comments and their tracked changes, then recommend how to address the feedback." & packetSpec
     Else
-        promptText = "I am attaching an exported Word document containing text and bookmark IDs. Please review the text according to the established style rules, and output a JSON list of edits targeting the specific bookmark IDs."
+        promptText = "I am attaching an exported Word document containing text and bookmark IDs. Review the text against your established style rules and recommend edits." & packetSpec
     End If
     modSysUtils.CopyToClipboard promptText
     
@@ -310,14 +364,22 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     If Len(activePersona) > 0 Then configUrl = modAppCore.GetAssistantUrl(activePersona)
     If Len(configUrl) > 0 Then gptUrl = configUrl
     On Error GoTo 0
+    ' Record the recommended route so the apply step's logic_trace can log
+    ' recommended-vs-actual (Profile s9.2).
+    SetConfigValue "LastRecommendedRoute", gptUrl
     modSysUtils.OpenURL gptUrl
     
     ' 10) Final Excel MsgBox (Word is already closed)
     MsgBox "Export complete (UTF-8):" & vbCrLf & savePath & vbCrLf & vbCrLf & _
-           "A prompt has been copied to your clipboard, and your custom GPT URL has been opened." & vbCrLf & _
-           "1. Paste the prompt (Ctrl+V) into the GPT." & vbCrLf & _
-           "2. Upload/Drop the exported .txt file.", vbInformation, "Export Complete"
-    
+           "The HOT co-thinker prompt is on your clipboard and the co-thinker " & _
+           "assistant has been opened." & vbCrLf & vbCrLf & _
+           "1. Paste the prompt (Ctrl+V) into the assistant." & vbCrLf & _
+           "2. Upload/Drop the exported .txt file." & vbCrLf & _
+           "3. Read the decision packet it returns and ratify on paper " & _
+           "(keep / fix / cut)." & vbCrLf & _
+           "4. Paste the ratified decisions back into Excel, then run " & _
+           """Hand off to Serializer"".", vbInformation, "Export Complete"
+
     Exit Sub
 
 Cleanup:
@@ -341,6 +403,45 @@ End Sub
 
 Public Sub ExportWordDocForRespondMode()
     ExportWordDocForLLM True
+End Sub
+
+' COLD serializer hand-off (Profile s7.4). After the human ratifies the hot
+' co-thinker's decision packet, this copies the convergent serialize prompt and
+' opens the shared Serializer assistant in a SEPARATE context window. The
+' serializer's only job is serialize_exactly: translate the ratified decisions
+' into the JSONL edit contract, never re-decide them.
+Public Sub HandOffToSerializer()
+    Dim serializerUrl As String
+    Dim promptText As String
+
+    serializerUrl = Trim$(GetConfigValue("SerializerUrl", ""))
+
+    promptText = "Below are ratified document-review decisions, each citing a " & _
+        "bookmark id (AR_PARA_..., AR_CELL_..., AR_FN_..., or AR_COMMENT_...). " & _
+        "Convert ONLY these decisions into the strict JSONL edit contract you " & _
+        "hold, one JSON object per line. Translate exactly: do not re-decide, " & _
+        "soften, reorder, add, or drop any decision, and do not change any " & _
+        "bookmark id. Carry OLD_TEXT through verbatim as old_text when present " & _
+        "so the edit stays surgical. Output only the JSONL block, nothing else." & _
+        vbCrLf & vbCrLf & "RATIFIED DECISIONS:" & vbCrLf & "<paste the ratified packet here>"
+
+    modSysUtils.CopyToClipboard promptText
+
+    If Len(serializerUrl) > 0 Then
+        modSysUtils.OpenURL serializerUrl
+        MsgBox "The COLD serializer prompt is on your clipboard and the " & _
+               "Serializer assistant has been opened." & vbCrLf & vbCrLf & _
+               "1. Paste the prompt, then paste your RATIFIED decisions where " & _
+               "indicated." & vbCrLf & _
+               "2. Copy the JSONL it returns into the LLM_Changes sheet at A8." & vbCrLf & _
+               "3. Run ""Apply LLM Edits to Word"".", vbInformation, "Hand Off to Serializer"
+    Else
+        MsgBox "The COLD serializer prompt is on your clipboard." & vbCrLf & vbCrLf & _
+               "No Serializer URL is set yet. Set one via the dashboard " & _
+               "(""Set Serializer URL"") so this step can open it automatically. " & _
+               "For now, open your Serializer assistant manually and paste the prompt.", _
+               vbExclamation, "Hand Off to Serializer"
+    End If
 End Sub
 
 '=== Helpers ========================================================
@@ -380,14 +481,15 @@ Private Function BuildBookmarkIndexSection(ByVal wdDocFinal As Object, _
         name = CStr(bm.name)
         On Error GoTo SafeExit
         
-        ' Only include our AR_* bookmarks
-        If Left$(name, 4) = "AR_" Then
+        ' Only include our AR_* bookmarks. Prefix lengths are exact:
+        ' "AR_" = 3, "AR_PARA_"/"AR_CELL_" = 8, "AR_FN_" = 6.
+        If Left$(name, 3) = "AR_" Then
             ' Classify type based on prefix
-            If Left$(name, 9) = "AR_PARA_" Then
+            If Left$(name, 8) = "AR_PARA_" Then
                 t = "paragraph"
-            ElseIf Left$(name, 9) = "AR_CELL_" Then
+            ElseIf Left$(name, 8) = "AR_CELL_" Then
                 t = "table_cell"
-            ElseIf Left$(name, 7) = "AR_FN_" Then
+            ElseIf Left$(name, 6) = "AR_FN_" Then
                 t = "footnote"
             Else
                 t = "other"
@@ -641,6 +743,43 @@ FallbackPlain:
     BuildDocumentTextSection = "<<DOCUMENT_TEXT_START>>" & vbCrLf & _
                                docText & _
                                "<<DOCUMENT_TEXT_END>>" & vbCrLf & vbCrLf
+End Function
+
+' Build the working-copy path "<dir>\<base>_AR.<ext>" alongside the source.
+' Returns "" if the path can't be parsed, signalling the caller to fall back
+' to operating on the original.
+Private Function BuildWorkingCopyPath(ByVal sourcePath As String) As String
+    Dim slashPos As Long
+    Dim dotPos As Long
+    Dim dir As String
+    Dim fileName As String
+    Dim baseName As String
+    Dim ext As String
+
+    slashPos = InStrRev(sourcePath, "\")
+    If slashPos = 0 Then
+        BuildWorkingCopyPath = ""
+        Exit Function
+    End If
+
+    dir = Left$(sourcePath, slashPos)            ' includes trailing backslash
+    fileName = Mid$(sourcePath, slashPos + 1)
+
+    dotPos = InStrRev(fileName, ".")
+    If dotPos > 0 Then
+        baseName = Left$(fileName, dotPos - 1)
+        ext = Mid$(fileName, dotPos)             ' includes the dot
+    Else
+        baseName = fileName
+        ext = ""
+    End If
+
+    ' Avoid stacking "_AR_AR" if the user re-selects a working copy.
+    If Right$(baseName, 3) = "_AR" Then
+        BuildWorkingCopyPath = dir & baseName & ext
+    Else
+        BuildWorkingCopyPath = dir & baseName & "_AR" & ext
+    End If
 End Function
 
 Private Function GetFileBaseName(ByVal fullPath As String) As String

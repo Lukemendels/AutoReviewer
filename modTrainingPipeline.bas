@@ -260,15 +260,22 @@ End Sub
 ' Pass 3: Synthesize SKILL.md
 Public Sub RunReducePass3()
     Dim prompt As String
-    prompt = "Synthesize the extracted heuristics into a comprehensive SKILL.md file for a DHSChat Assistant. " & _
-             "Include the style guidance and the strict JSONL output contract required for bookmark-targeted edits. " & _
-             "Return ONLY the markdown code block containing the SKILL.md."
-    
+    prompt = "Synthesize the extracted heuristics into a SKILL.md for a HOT co-thinker " & _
+             "DHSChat assistant (the reviewer persona). It MUST: (a) carry the style " & _
+             "guidance and reviewer voice; (b) instruct the assistant to surface each " & _
+             "recommendation WITH its strongest counter-case, anchored to an AR_ bookmark " & _
+             "id, and to self-critique before finishing; (c) output a human-readable " & _
+             "DECISION PACKET, never JSON. Do NOT include any JSONL output contract -- a " & _
+             "separate cold serializer assistant owns that. Return ONLY the markdown code " & _
+             "block containing the SKILL.md."
+
     modSysUtils.CopyToClipboard prompt
-    
+
     MsgBox "Reduce Pass 3 Prompt copied to clipboard." & vbCrLf & vbCrLf & _
            "1. Paste this prompt into the same DHSChat conversation and send." & vbCrLf & _
-           "2. Once generated, save the SKILL.md and run Save SKILL.md.", vbInformation
+           "2. This generates the HOT co-thinker SKILL.md. Save it via Save SKILL.md." & vbCrLf & _
+           "3. The COLD serializer is set up once from TEMPLATE_SKILL_SERIALIZER.md " & _
+           "(dashboard: Set Serializer URL).", vbInformation
 End Sub
 
 ' Save SKILL.md
@@ -314,8 +321,9 @@ Public Sub SaveSkillMd()
     
     modAppCore.UpsertPersona activePersona, skillMdPath:=skillPath
     
-    MsgBox "SKILL.md saved to: " & skillPath & vbCrLf & vbCrLf & _
-           "Next Step: Create a new DHSChat Assistant, paste the SKILL.md into its system prompt, " & _
-           "and save the Assistant URL into the Persona Registry.", vbInformation
+    MsgBox "Co-thinker SKILL.md saved to: " & skillPath & vbCrLf & vbCrLf & _
+           "Next Step: Create a new DHSChat Assistant (the HOT co-thinker), paste this " & _
+           "SKILL.md into its system prompt, and save its URL in the Personas sheet " & _
+           "(AssistantUrl column). The shared COLD serializer is set up separately, once.", vbInformation
 End Sub
 

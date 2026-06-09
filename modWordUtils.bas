@@ -5,9 +5,30 @@ Option Explicit
 ' Stamp paragraphs, table cells, and footnotes with stable AR_ bookmarks.
 ' Call this once after opening the Word document (wdDoc) via COM.
 Public Sub StampDocWithArBookmarks(ByVal wdDoc As Object)
+    ' Clear any stale AR_ anchors before re-stamping. Paragraph indices shift as
+    ' a document is edited, so a leftover AR_PARA_00005 from a prior pass would
+    ' point at the wrong paragraph; a clean slate keeps anchoring honest.
+    RemoveArBookmarks wdDoc
     StampParagraphBookmarks wdDoc
     StampTableCellBookmarks wdDoc
     StampFootnoteBookmarks wdDoc
+End Sub
+
+' Remove every AR_* bookmark from the document. Used as the terminal step of the
+' apply pipeline (leave the delivered doc clean) and defensively before
+' re-stamping. Iterates descending because Delete reindexes the collection.
+Public Sub RemoveArBookmarks(ByVal wdDoc As Object)
+    Dim i As Long
+    Dim nm As String
+
+    On Error Resume Next
+    For i = wdDoc.Bookmarks.Count To 1 Step -1
+        nm = CStr(wdDoc.Bookmarks(i).name)
+        If Left$(nm, 3) = "AR_" Then
+            wdDoc.Bookmarks(i).Delete
+        End If
+    Next i
+    On Error GoTo 0
 End Sub
 
 Private Sub StampParagraphBookmarks(ByVal wdDoc As Object)

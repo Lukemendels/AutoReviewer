@@ -1,1 +1,86 @@
 # AutoReviewer
+
+A VBA-orchestrated document-review tool for TSA. It extracts a reviewer's
+implicit style from past redlines into a portable **persona**, then uses that
+persona to suggest **tracked changes** on new drafts — every suggestion anchored
+to a source location, every run leaving an audit trail.
+
+AutoReviewer is the **CAT (Comment Adjudication Tool)** instrument described by
+the *MKS TSA Profile v0.2*, which binds the *MKS Normative Core v1.1*. The
+governing idea, end to end:
+
+> **Deterministic work is VBA** (parsing, anchoring, serializing, writing back).
+> **Judgment is DHSChat** (review and recommendation). Every proposed edit traces
+> to a source anchor — no fabrication.
+
+The two spec files (`MKS_TSA_Profile_v0_2.md`, `MKS_Normative_Core_v1.1.md`) are
+the standard this tool implements; read them for the *why* behind the design.
+
+## The pipeline
+
+The clipboard, moved by a human, is the transport — there is no DHSChat API.
+The review leg runs at four temperatures, with the human's ratification at the
+reversibility boundary:
+
+```
+  Word doc
+     │  ExportWordDocForLLM        (VBA: copy → stamp AR_ anchors → extract text/comments/revisions)
+     ▼
+  HOT co-thinker assistant         (DHSChat: review; surface recommendation + counter-case; decision packet)
+     │  ── human ratifies on paper: keep / fix / cut ──
+     ▼
+  COLD serializer assistant        (DHSChat: serialize_exactly → strict JSONL; never re-decide)
+     │  paste JSONL into LLM_Changes!A8
+     ▼
+  ApplyWordSuggestionsFromJson     (VBA: validate → write as tracked changes → logic_trace)
+     │
+     ▼
+  Human accepts/rejects in Word, then finalizes (the irreversible step — outside this tool)
+```
+
+The tool stops at **tracked-change suggestions** (reversible, rejectable). It
+never finalizes or transmits — that irreversible step stays with the human in
+Word (Profile §7.2, §8). It also operates on a `*_AR` **working copy**, so the
+source of record is never mutated.
+
+## Modules
+
+| Module | Role |
+|---|---|
+| `modAppCore.bas` | Config (key/value) sheet, Personas registry, sheet setup, styling |
+| `modSysUtils.bas` | Clipboard, URL launch, and `ArContentFingerprint` (transport attestation) |
+| `modWordUtils.bas` | `StampDocWithArBookmarks` — the `AR_` anchor layer (no-fabrication backbone) |
+| `modReviewExport.bas` | Working-copy + stamp + extract + payload fingerprint; hot-prompt and serializer hand-off |
+| `modReviewImport.bas` | JSONL → tracked changes (six change types), per-edit Log, JSONL fingerprint |
+| `modAudit.bas` | The `Trace` sheet — one `logic_trace` row per run (operator, route, fingerprints) |
+| `modDashboardUI.bas` | The dashboard: Train Persona / Run Review / Respond to Review |
+| `modTrainingPipeline.bas` | Author filter, corpus builder, three Reduce passes, Save SKILL.md |
+
+Assistant prompts: `TEMPLATE_SKILL.md` (index), `TEMPLATE_SKILL_COTHINKER.md`
+(hot, per persona), `TEMPLATE_SKILL_SERIALIZER.md` (cold, shared).
+
+## Getting started
+
+1. Open the `.xlsm` and run `modDashboardUI.BuildDashboard` once. It creates the
+   `Config`, `LLM_Changes`, `Personas` (and on first run, `Log` / `Trace`)
+   sheets and the dashboard.
+2. Set up the shared **Serializer** assistant once: create a DHSChat assistant
+   from `TEMPLATE_SKILL_SERIALIZER.md`, then dashboard → **Set Serializer URL**.
+3. Train a persona (see `USER_GUIDE.md`) to produce a co-thinker assistant.
+4. Run a review: Select Persona → Prepare for Review → ratify → Hand off to
+   Serializer → Apply.
+
+Full walkthrough: `USER_GUIDE.md`. Roadmap and module history:
+`autoreviewer-v2-scope.md`.
+
+## Notes
+
+- Requires Word + Excel with macros enabled. All COM is late-bound; no library
+  references are needed, so it runs on locked-down Office.
+- AI edits and comments are authored **"AutoReviewer"** in the tracked-change
+  layer, so they are visibly attributable and one-click-rejectable; the
+  operator's real Word author name is snapshotted and restored. The `AR_`
+  anchors are stripped as the final apply step, so the delivered document is
+  clean and a second pass re-stamps from scratch.
+- The `Trace` and `Log` sheets are the defensible artifact — on this substrate
+  the audit lineage is the product, not overhead (Profile §1.3).

@@ -31,6 +31,14 @@ Public Sub ApplyWordSuggestionsFromJson()
     Dim wdApp As Object  ' Word.Application
     Dim wdDoc As Object  ' Word.Document
     Dim targetRange As Object
+
+    ' Tracked-change provenance: edits are stamped as "AutoReviewer" so AI
+    ' suggestions are visibly attributable and one-click-rejectable. UserName is
+    ' an application-global Word setting, so we snapshot and MUST restore it on
+    ' every exit path or the operator's real Word name stays overwritten.
+    Dim origUserName As String
+    Dim origInitials As String
+    Dim userNameChanged As Boolean
     
     Dim bookmarkId As String
     Dim changeType As String
@@ -125,6 +133,17 @@ Public Sub ApplyWordSuggestionsFromJson()
     
     ReDim Preserve tmpLines(1 To n)
     lines = tmpLines
+
+    ' Transport attestation (Profile s9.1): fingerprint the exact JSONL block
+    ' the operator pasted, so the logic_trace records the bytes that produced
+    ' the edits.
+    Dim jsonlFingerprint As String
+    Dim joinedJsonl As String
+    Dim k As Long
+    For k = 1 To n
+        joinedJsonl = joinedJsonl & tmpLines(k) & vbLf
+    Next k
+    jsonlFingerprint = modSysUtils.ArContentFingerprint(joinedJsonl)
     
     '---------------------------
     ' 2a) Ensure Log sheet exists (bookmark_id-focused)
@@ -163,8 +182,15 @@ Public Sub ApplyWordSuggestionsFromJson()
     wdApp.Visible = True
     On Error Resume Next
     wdApp.DisplayAlerts = 0   ' wdAlertsNone
+
+    ' Snapshot and override the revision author for the duration of the apply.
+    origUserName = CStr(wdApp.UserName)
+    origInitials = CStr(wdApp.UserInitials)
+    wdApp.UserName = "AutoReviewer"
+    wdApp.UserInitials = "AR"
+    userNameChanged = True
     On Error GoTo ErrHandler
-    
+
     Set wdDoc = Nothing
     On Error Resume Next
     Set wdDoc = wdApp.Documents.Open(Filename:=wordPath, ReadOnly:=False)
@@ -271,9 +297,10 @@ Public Sub ApplyWordSuggestionsFromJson()
         End If
         
         ' Locate bookmark or comment
-        If Left$(bookmarkId, 12) = "AR_COMMENT_" Then
+        ' "AR_COMMENT_" is 11 chars; the index begins at position 12.
+        If Left$(bookmarkId, 11) = "AR_COMMENT_" Then
             Dim cIndex As Long
-            cIndex = Val(Mid$(bookmarkId, 13))
+            cIndex = Val(Mid$(bookmarkId, 12))
             On Error Resume Next
             Set commentTarget = wdDoc.Comments(cIndex)
             On Error GoTo ErrHandler
@@ -311,27 +338,51 @@ Public Sub ApplyWordSuggestionsFromJson()
                 
                 Dim editRange As Object
                 Dim txtRange As String
-                
+                Dim subPos As Long
+
                 ' Work on a copy of the bookmark range
                 Set editRange = targetRange.Duplicate
-                
+
                 ' For paragraph bookmarks, exclude the trailing paragraph mark
                 ' so we don't delete the separator between this paragraph and the next.
-                If Left$(bookmarkId, 9) = "AR_PARA_" Then
+                ' "AR_PARA_" is 8 chars.
+                If Left$(bookmarkId, 8) = "AR_PARA_" Then
                     txtRange = CStr(editRange.Text)
                     If Len(txtRange) > 0 And Right$(txtRange, 1) = Chr$(13) Then
                         editRange.End = editRange.End - 1   ' trim off the paragraph mark
                     End If
                 End If
-                
-                ' Replace the text within the adjusted range
-                editRange.Text = newText
-                
-                ' Re-add bookmark on the updated content range
-                On Error Resume Next
-                wdDoc.Bookmarks.Add name:=bookmarkId, Range:=editRange
-                On Error GoTo ErrHandler
-                
+
+                ' Honor old_text as a surgical, within-bookmark substring replacement
+                ' (the published serializer contract). When old_text is supplied we
+                ' replace only that span; when omitted we replace the whole bookmark.
+                ' serialize_exactly: a claimed old_text that is not present is a defect,
+                ' not a silent whole-paragraph overwrite -- skip and log it.
+                If Len(oldText) > 0 Then
+                    txtRange = CStr(editRange.Text)
+                    subPos = InStr(1, txtRange, oldText, vbBinaryCompare)
+                    If subPos = 0 Then
+                        logStatus = "Skipped"
+                        logReason = "old_text not found within bookmark: " & bookmarkId
+                        skippedCount = skippedCount + 1
+                        GoTo LogAndNext
+                    End If
+                    ' Collapse editRange onto just the matched span.
+                    editRange.End = editRange.Start + (subPos - 1) + Len(oldText)
+                    editRange.Start = editRange.Start + (subPos - 1)
+                    editRange.Text = newText
+                    ' Do NOT re-stamp the bookmark here: a partial replace must not
+                    ' shrink the anchor onto the edited fragment alone.
+                Else
+                    ' Whole-bookmark replacement.
+                    editRange.Text = newText
+
+                    ' Re-add bookmark on the updated content range
+                    On Error Resume Next
+                    wdDoc.Bookmarks.Add name:=bookmarkId, Range:=editRange
+                    On Error GoTo ErrHandler
+                End If
+
                 appliedCount = appliedCount + 1
                 logStatus = "Applied"
                 logReason = "replace_text"
@@ -467,9 +518,16 @@ LogAndNext:
             On Error GoTo ErrHandler
         End If
     Next i
-    
+
+    ' Terminal step: strip all AR_ anchors so the delivered document is clean and
+    ' a future pass re-stamps from scratch (re-run hygiene). Runs after every
+    ' edit/comment is applied, before the save.
+    On Error Resume Next
+    RemoveArBookmarks wdDoc
+    On Error GoTo ErrHandler
+
     Dim oldBgSave As Boolean
-    
+
     '---------------------------
     ' 5) Save and summarize
     '---------------------------
@@ -486,6 +544,12 @@ LogAndNext:
     '---------------------------
     On Error Resume Next
     Application.StatusBar = False
+    ' Restore the operator's Word author name before quitting (it is global).
+    If userNameChanged And Not wdApp Is Nothing Then
+        wdApp.UserName = origUserName
+        wdApp.UserInitials = origInitials
+        userNameChanged = False
+    End If
     If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=True
     If Not wdApp Is Nothing Then
         wdApp.NormalTemplate.Saved = True
@@ -496,11 +560,28 @@ LogAndNext:
     DoEvents
     On Error GoTo ErrHandler
     
+    ' 6a) Append the run's logic_trace (Profile s9.3). This is the defensible
+    ' artifact: who ran it, the recommended route, and the transport
+    ' fingerprints linking export payload -> pasted JSONL -> edits.
+    On Error Resume Next
+    modAudit.AppendReviewTrace _
+        GetConfigValue("LastExportMode", "Review"), _
+        GetConfigValue("ActivePersona", ""), _
+        GetConfigValue("SourceDocPath", ""), _
+        wordPath, _
+        GetConfigValue("LastRecommendedRoute", ""), _
+        GetConfigValue("LastExportFingerprint", ""), _
+        jsonlFingerprint, _
+        totalLines, appliedCount, skippedCount
+    On Error GoTo ErrHandler
+
     ' 7) Show Final Summary
     MsgBox "JSONL lines: " & totalLines & vbCrLf & _
            "Parsed OK: " & parsedOk & vbCrLf & _
            "Applied: " & appliedCount & vbCrLf & _
-           "Skipped: " & skippedCount, _
+           "Skipped: " & skippedCount & vbCrLf & vbCrLf & _
+           "JSONL fingerprint: " & jsonlFingerprint & vbCrLf & _
+           "Logged to the Trace sheet.", _
            vbInformation, "Apply Bookmark-Based Suggestions"
     
     Exit Sub
@@ -508,6 +589,12 @@ LogAndNext:
 Cleanup:
     On Error Resume Next
     Application.StatusBar = False
+    ' Restore the operator's Word author name on the error/early-exit path too.
+    If userNameChanged And Not wdApp Is Nothing Then
+        wdApp.UserName = origUserName
+        wdApp.UserInitials = origInitials
+        userNameChanged = False
+    End If
     If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=True
     If Not wdApp Is Nothing Then
         wdApp.NormalTemplate.Saved = True
