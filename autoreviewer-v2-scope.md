@@ -1,4 +1,13 @@
-# PreFlight Reviewer — V1 Scope
+# AutoReviewer — Scope & Module History
+
+> **Naming note:** this tool is **AutoReviewer**. Earlier drafts called it
+> "PreFlight Reviewer" / "AutoReviewer V2"; those names are retired.
+>
+> **Status note:** the V1 plan below was implemented and then *consolidated* into
+> a smaller set of modules under different names. The original "Done" list and
+> the file-level table at the bottom have been replaced with the **actual**
+> current-state map (see *Current modules* and *Finalization status*). The
+> historical plan is kept for context.
 
 ## What this is
 
@@ -46,15 +55,22 @@ User pastes JSONL into LLM_Changes sheet
 ApplyWordSuggestionsFromJson (existing) — applies as tracked changes
 ```
 
-## Done (existing code, reusable as-is)
+## Current modules (actual, post-consolidation)
 
-- `modWordStamping.bas` — paragraph / table cell / footnote bookmark stamping with stable `AR_*` IDs
-- `modWordExport.bas` — DOCUMENT_TEXT + BOOKMARK_INDEX + FOOTNOTES + COMMENTS export, FINAL-copy trick to give LLM clean text without losing original-doc edit anchors
-- `InputEditsIntoWord.bas` — JSONL → Word edits as tracked changes, three change types (`replace_text`, `delete_element`, `add_comment_only`), Log sheet, confidence handling
-- `modPromptHelpers.bas` — clipboard + URL launch via WinAPI, confirmed working in TSA env
-- `ConfigHelpers.bas` — key-value config sheet
-- `modBookmarkTest.bas` — diagnostic, keep
-- `modSetup.bas` — workbook initialization
+The planned modules below were merged into these seven, plus `modAudit`:
+
+| Module | Absorbs the planned | Role |
+|---|---|---|
+| `modWordUtils.bas` | `modWordStamping`, `modBookmarkTest` | `AR_*` stamping + a stamping diagnostic |
+| `modReviewExport.bas` | `modWordExport`, hot-prompt + serializer hand-off | Working-copy + stamp + extract + payload fingerprint |
+| `modReviewImport.bas` | `InputEditsIntoWord` | JSONL → tracked changes (six change types), Log |
+| `modSysUtils.bas` | `modPromptHelpers` | Clipboard, URL launch, content fingerprint |
+| `modAppCore.bas` | `ConfigHelpers`, `modSetup`, `modPersonaRegistry` | Config + Personas + sheet setup |
+| `modDashboardUI.bas` | the two-mode dashboard | Train / Run / Respond UI |
+| `modTrainingPipeline.bas` | `modAuthorFilter`, `modTrainingCorpusBuilder`, `modTrainingOrchestrator` | Author filter + corpus + Reduce passes |
+| `modAudit.bas` | *(new at finalization)* | `Trace` sheet — per-run `logic_trace` |
+
+The `modAutoReview` / `modRuleExtractor` / `ExportToJSON` modules were cut, as planned.
 
 ## V1 — to build
 
@@ -173,22 +189,35 @@ For each user / team:
 
 Per-user: each user creates their own DHSChat Assistants from the SKILL.md files. Assistant URLs are personal. Persona definitions (corpus + SKILL.md) are shareable.
 
-## File-level summary of changes
+## Finalization status (against the MKS TSA Profile)
 
-| File | Status | Notes |
-|---|---|---|
-| `modWordStamping.bas` | Keep | Bookmark stamping, no changes |
-| `modWordExport.bas` | Modify | Read Assistant URL from active persona |
-| `InputEditsIntoWord.bas` | Keep | Already bookmark-only, applies as tracked changes |
-| `modPromptHelpers.bas` | Keep | Clipboard + URL working |
-| `ConfigHelpers.bas` | Modify | Add `ActivePersona` key |
-| `modSetup.bas` | Modify | Initialize Personas sheet |
-| `modBookmarkTest.bas` | Keep | Diagnostic |
-| `modDashboardUI.bas` | Rewrite | Two-mode dashboard |
-| `modRuleExtractor.bas` | Deprecate | Replaced by `modTrainingCorpusBuilder` |
-| `modAutoReview.bas` | **Delete** | PowerShell branch, restart-trap evidence |
-| `ExportToJSON.bas` | Move out | Generic table-to-JSONL utility, not part of this tool |
-| `modPersonaRegistry.bas` | **New** | Persona CRUD on Personas sheet |
-| `modAuthorFilter.bas` | **New** | Enumerate authors in a doc, support target selection |
-| `modTrainingCorpusBuilder.bas` | **New** | Map step: per-doc → corpus.jsonl |
-| `modTrainingOrchestrator.bas` | **New** | Drive the three reduce passes |
+Finalization brought the tool to conformance with the governing pattern in three
+tiers:
+
+**Tier 1 — correctness.** Fixed a systemic off-by-one in every `AR_` prefix
+check (the worst of which had been shipping an *empty* `BOOKMARK_INDEX`, leaving
+the model with no anchors); made `replace_text` honor `old_text` as a surgical
+substring replace per the contract; removed a debug `MsgBox`.
+
+**Tier 2 — attestation & reversibility.** Added a dependency-free transport
+**fingerprint** (`ArContentFingerprint`) and a `Trace` sheet `logic_trace` (one
+row per run: operator, recommended route, export→JSONL fingerprints). Export now
+works on a `*_AR` **working copy** so the source of record is never mutated
+(Profile §7.2).
+
+**Tier 3 — the temperature wall (§7.4).** Split the single review assistant into
+a **hot co-thinker** (per persona — surfaces recommendation + counter-case as a
+human-readable decision packet) and a shared **cold serializer** (`serialize_exactly`
+→ JSONL), with **paper ratification** between them. Dashboard flow is now
+hot → ratify → cold → write. See `TEMPLATE_SKILL.md`.
+
+### Still open (binding slots from Profile §13, not yet bound)
+
+- Exhaustive action-type → Reversibility Class table beyond CAT.
+- Authority occupant for `AUTH_CAT_PUBLICATION` (the finalization/transmission
+  step — deliberately outside this tool's scope).
+- A planted-violation Wind Tunnel suite + numeric catch-rate gate for the
+  co-thinker/serializer.
+- The Part IV RIA defensible-analysis instrument (graph construction) — the
+  `PythonExcel` and `ria-table-inserter` skills are its DHSChat-side seeds; no
+  VBA materialization pipeline exists yet.
