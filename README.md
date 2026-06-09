@@ -77,5 +77,10 @@ Full walkthrough: `USER_GUIDE.md`. Roadmap and module history:
 
 - Requires Word + Excel with macros enabled. All COM is late-bound; no library
   references are needed, so it runs on locked-down Office.
+- AI edits and comments are authored **"AutoReviewer"** in the tracked-change
+  layer, so they are visibly attributable and one-click-rejectable; the
+  operator's real Word author name is snapshotted and restored. The `AR_`
+  anchors are stripped as the final apply step, so the delivered document is
+  clean and a second pass re-stamps from scratch.
 - The `Trace` and `Log` sheets are the defensible artifact — on this substrate
   the audit lineage is the product, not overhead (Profile §1.3).

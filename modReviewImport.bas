@@ -31,6 +31,14 @@ Public Sub ApplyWordSuggestionsFromJson()
     Dim wdApp As Object  ' Word.Application
     Dim wdDoc As Object  ' Word.Document
     Dim targetRange As Object
+
+    ' Tracked-change provenance: edits are stamped as "AutoReviewer" so AI
+    ' suggestions are visibly attributable and one-click-rejectable. UserName is
+    ' an application-global Word setting, so we snapshot and MUST restore it on
+    ' every exit path or the operator's real Word name stays overwritten.
+    Dim origUserName As String
+    Dim origInitials As String
+    Dim userNameChanged As Boolean
     
     Dim bookmarkId As String
     Dim changeType As String
@@ -174,8 +182,15 @@ Public Sub ApplyWordSuggestionsFromJson()
     wdApp.Visible = True
     On Error Resume Next
     wdApp.DisplayAlerts = 0   ' wdAlertsNone
+
+    ' Snapshot and override the revision author for the duration of the apply.
+    origUserName = CStr(wdApp.UserName)
+    origInitials = CStr(wdApp.UserInitials)
+    wdApp.UserName = "AutoReviewer"
+    wdApp.UserInitials = "AR"
+    userNameChanged = True
     On Error GoTo ErrHandler
-    
+
     Set wdDoc = Nothing
     On Error Resume Next
     Set wdDoc = wdApp.Documents.Open(Filename:=wordPath, ReadOnly:=False)
@@ -503,9 +518,16 @@ LogAndNext:
             On Error GoTo ErrHandler
         End If
     Next i
-    
+
+    ' Terminal step: strip all AR_ anchors so the delivered document is clean and
+    ' a future pass re-stamps from scratch (re-run hygiene). Runs after every
+    ' edit/comment is applied, before the save.
+    On Error Resume Next
+    RemoveArBookmarks wdDoc
+    On Error GoTo ErrHandler
+
     Dim oldBgSave As Boolean
-    
+
     '---------------------------
     ' 5) Save and summarize
     '---------------------------
@@ -522,6 +544,12 @@ LogAndNext:
     '---------------------------
     On Error Resume Next
     Application.StatusBar = False
+    ' Restore the operator's Word author name before quitting (it is global).
+    If userNameChanged And Not wdApp Is Nothing Then
+        wdApp.UserName = origUserName
+        wdApp.UserInitials = origInitials
+        userNameChanged = False
+    End If
     If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=True
     If Not wdApp Is Nothing Then
         wdApp.NormalTemplate.Saved = True
@@ -561,6 +589,12 @@ LogAndNext:
 Cleanup:
     On Error Resume Next
     Application.StatusBar = False
+    ' Restore the operator's Word author name on the error/early-exit path too.
+    If userNameChanged And Not wdApp Is Nothing Then
+        wdApp.UserName = origUserName
+        wdApp.UserInitials = origInitials
+        userNameChanged = False
+    End If
     If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=True
     If Not wdApp Is Nothing Then
         wdApp.NormalTemplate.Saved = True

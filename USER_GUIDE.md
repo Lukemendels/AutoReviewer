@@ -84,4 +84,4 @@ Read the decision packet and decide each item: **keep**, **fix**, or **cut**. Ed
 3. The macro reads the JSONL, finds the corresponding bookmarks in the working-copy document, and applies the suggestions as native **Tracked Changes** or **Comments**. It logs each edit to the `Log` sheet and records one run row (operator, route, transport fingerprints) to the `Trace` sheet.
 
 ### 6. Human Review & Finalize
-Switch to Microsoft Word (the `*_AR` working copy). Use the standard **Accept** / **Reject** buttons to adjudicate each suggestion, then finalize the document yourself — the irreversible step always stays with you.
+Switch to Microsoft Word (the `*_AR` working copy). Every AI edit and comment is authored **"AutoReviewer,"** so it stands out clearly from human edits — use the standard **Accept** / **Reject** buttons to adjudicate each one, then finalize the document yourself. The irreversible step always stays with you. (The hidden `AR_` anchors are removed automatically, so the file is clean.)
