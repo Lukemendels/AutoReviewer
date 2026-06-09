@@ -349,19 +349,28 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
         "block and flag any that are unsupported by the source text."
 
     If isRespondMode Then
-        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. Conversationally unpack what the reviewer is asking for in both their comments and their tracked changes, then recommend how to address the feedback." & packetSpec
+        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. For each comment and each revision, unpack WHAT the reviewer is asking for, then surface the realistic OPTIONS -- accept as-is, modify, reject with rationale, or reply to the comment -- and recommend one with its counter-case. Anchor each to the reviewer's AR_COMMENT_ / AR_REV_ / paragraph id." & packetSpec
     Else
         promptText = "I am attaching an exported Word document containing text and bookmark IDs. Review the text against your established style rules and recommend edits." & packetSpec
     End If
     modSysUtils.CopyToClipboard promptText
     
+    ' Route selection. Synthetic review goes to the active persona's HOT
+    ' co-thinker (style-specific). Incorporating supervisor feedback (Respond
+    ' mode) goes to the single shared Incorporator -- understanding someone
+    ' else's edits is style-agnostic, so it is infrastructure, not a persona
+    ' (asymmetric model; mirrors the shared Serializer).
     Dim gptUrl As String
     gptUrl = "https://chat.dhs.gov/workspaces/4cf75bdf-de55-4f01-8c3f-0444ace52010"
     On Error Resume Next
-    Dim activePersona As String
-    activePersona = modAppCore.GetConfigValue("ActivePersona")
     Dim configUrl As String
-    If Len(activePersona) > 0 Then configUrl = modAppCore.GetAssistantUrl(activePersona)
+    If isRespondMode Then
+        configUrl = modAppCore.GetConfigValue("IncorporatorUrl", "")
+    Else
+        Dim activePersona As String
+        activePersona = modAppCore.GetConfigValue("ActivePersona")
+        If Len(activePersona) > 0 Then configUrl = modAppCore.GetAssistantUrl(activePersona)
+    End If
     If Len(configUrl) > 0 Then gptUrl = configUrl
     On Error GoTo 0
     ' Record the recommended route so the apply step's logic_trace can log
@@ -370,9 +379,11 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     modSysUtils.OpenURL gptUrl
     
     ' 10) Final Excel MsgBox (Word is already closed)
+    Dim assistantLabel As String
+    assistantLabel = IIf(isRespondMode, "Incorporator", "HOT co-thinker")
     MsgBox "Export complete (UTF-8):" & vbCrLf & savePath & vbCrLf & vbCrLf & _
-           "The HOT co-thinker prompt is on your clipboard and the co-thinker " & _
-           "assistant has been opened." & vbCrLf & vbCrLf & _
+           "The " & assistantLabel & " prompt is on your clipboard and the " & _
+           assistantLabel & " assistant has been opened." & vbCrLf & vbCrLf & _
            "1. Paste the prompt (Ctrl+V) into the assistant." & vbCrLf & _
            "2. Upload/Drop the exported .txt file." & vbCrLf & _
            "3. Read the decision packet it returns and ratify on paper " & _

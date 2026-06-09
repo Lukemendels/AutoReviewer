@@ -136,20 +136,17 @@ Public Sub BuildDashboard()
     shp.TextFrame2.TextRange.Font.Size = 14
     shp.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = RGB(221, 107, 32) ' Orange
     
+    ' Incorporation uses the shared Incorporator assistant -- no persona needed.
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "1. Select Persona for Review", "modDashboardUI.SetActivePersona", RGB(74, 85, 104)
+        "1. Export Document for Feedback", "modReviewExport.ExportWordDocForRespondMode", RGB(221, 107, 32)
     btnTop = btnTop + btnHeight + 15
 
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "2. Export Document for Feedback", "modReviewExport.ExportWordDocForRespondMode", RGB(221, 107, 32)
+        "2. Hand off to Serializer", "modReviewExport.HandOffToSerializer", RGB(214, 158, 46) ' Amber: ratify between 1 and 2
     btnTop = btnTop + btnHeight + 15
 
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "3. Hand off to Serializer", "modReviewExport.HandOffToSerializer", RGB(214, 158, 46) ' Amber: ratify between 2 and 3
-    btnTop = btnTop + btnHeight + 15
-
-    CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "4. Apply LLM Edits to Word", "modReviewImport.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
+        "3. Apply LLM Edits to Word", "modReviewImport.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
 
     btnTop = btnTop + btnHeight + 40
 
@@ -160,7 +157,28 @@ Public Sub BuildDashboard()
     CreateModernButton ws, 180, btnTop, 180, 35, _
         "Set Serializer URL", "modDashboardUI.SetSerializerUrl", RGB(74, 85, 104) ' Gray
 
+    CreateModernButton ws, 370, btnTop, 190, 35, _
+        "Set Incorporator URL", "modDashboardUI.SetIncorporatorUrl", RGB(74, 85, 104) ' Gray
+
     ws.Range("A1").Select
+End Sub
+
+Public Sub SetIncorporatorUrl()
+    Dim current As String
+    Dim choice As String
+
+    current = modAppCore.GetConfigValue("IncorporatorUrl", "")
+    choice = InputBox("Enter the shared Incorporator assistant URL." & vbCrLf & vbCrLf & _
+                      "This is one generic assistant (set up once from " & _
+                      "TEMPLATE_SKILL_INCORPORATOR.md) that helps you understand and act " & _
+                      "on reviewer feedback. It is shared across all documents and is not " & _
+                      "tied to any persona.", _
+                      "Set Incorporator URL", current)
+
+    If Trim$(choice) <> "" Then
+        modAppCore.SetConfigValue "IncorporatorUrl", Trim$(choice)
+        MsgBox "Incorporator URL saved.", vbInformation
+    End If
 End Sub
 
 Public Sub SetSerializerUrl()
