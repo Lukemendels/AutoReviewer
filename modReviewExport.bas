@@ -94,8 +94,13 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     ' 2) Start Word and open original doc (READ/WRITE)
     '---------------------------
     Set wdApp = CreateObject("Word.Application")
-    wdApp.Visible = True
+    ' Run Word hidden with screen updates off: this is a headless extraction that
+    ' quits Word at the end regardless, and the per-paragraph/per-revision COM
+    ' loops are far faster without repainting (the ~5-min export on heavily
+    ' tracked docs was dominated by visible repaint).
+    wdApp.Visible = False
     On Error Resume Next
+    wdApp.ScreenUpdating = False
     wdApp.DisplayAlerts = 0
     On Error GoTo ErrHandler
     
@@ -345,11 +350,24 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
         "Do NOT output JSON. Surface judgment for a human to ratify; a separate " & _
         "serializer will convert the ratified decisions to the edit format. Every " & _
         "block MUST cite a bookmark id that appears in the attached BOOKMARK_INDEX " & _
-        "-- never invent an anchor. Before you finish, self-critique: re-read each " & _
-        "block and flag any that are unsupported by the source text."
+        "-- never invent an anchor. The bookmark id belongs ONLY on the BOOKMARK " & _
+        "line: never write an AR_ id inside NEW_TEXT or a comment/reply body (they " & _
+        "are internal anchors, not document content). Before you finish, " & _
+        "self-critique: re-read each block and flag any that are unsupported by the " & _
+        "source text."
+
+    ' Respond mode leads with a middle-seat synthesis so the human grasps the
+    ' feedback as a whole before adjudicating item by item.
+    Dim synthesisSpec As String
+    synthesisSpec = "First, before any per-item blocks, give a SYNTHESIS BRIEF:" & vbCrLf & _
+        "  DIRECTION: in 2-4 sentences, where do these edits and comments push the document?" & vbCrLf & _
+        "  THEMES: cluster the comments and revisions into a few named themes." & vbCrLf & _
+        "  OPEN QUESTIONS: what must be answered to revise the document well?" & vbCrLf & _
+        "Then the per-item blocks below." & vbCrLf
 
     If isRespondMode Then
-        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. For each comment and each revision, unpack WHAT the reviewer is asking for, then surface the realistic OPTIONS -- accept as-is, modify, reject with rationale, or reply to the comment -- and recommend one with its counter-case. Anchor each to the reviewer's AR_COMMENT_ / AR_REV_ / paragraph id." & packetSpec
+        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. " & synthesisSpec & _
+            "For each comment and each revision, unpack WHAT the reviewer is asking for, then surface the realistic OPTIONS -- accept as-is, modify, reject with rationale, or reply to the comment -- and recommend one with its counter-case. Anchor each to the reviewer's AR_COMMENT_ / AR_REV_ / paragraph id. EVERY reviewer comment MUST get a reply_to_comment block." & packetSpec
     Else
         promptText = "I am attaching an exported Word document containing text and bookmark IDs. Review the text against your established style rules and recommend edits." & packetSpec
     End If
@@ -386,10 +404,11 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
            assistantLabel & " assistant has been opened." & vbCrLf & vbCrLf & _
            "1. Paste the prompt (Ctrl+V) into the assistant." & vbCrLf & _
            "2. Upload/Drop the exported .txt file." & vbCrLf & _
-           "3. Read the decision packet it returns and ratify on paper " & _
-           "(keep / fix / cut)." & vbCrLf & _
-           "4. Paste the ratified decisions back into Excel, then run " & _
-           """Hand off to Serializer"".", vbInformation, "Export Complete"
+           "3. Read the decision packet it returns and ratify (keep / fix / cut)." & vbCrLf & _
+           "4. Click ""Hand off to Serializer"" and paste your ratified decisions " & _
+           "into the serializer chat (not Excel)." & vbCrLf & _
+           "5. Paste the JSONL the serializer returns into LLM_Changes!A8, then " & _
+           """Apply LLM Edits to Word"".", vbInformation, "Export Complete"
 
     Exit Sub
 
@@ -638,7 +657,7 @@ Private Function BuildDocumentTextSection(ByVal wdDocFinal As Object, _
     '---------------------------
     If exportFormat = "plain" Then
         On Error Resume Next
-        docText = docForExport.Content.Text
+        docText = modSysUtils.NormalizePunctuation(docForExport.Content.Text)
         On Error GoTo FallbackPlain
         
         BuildDocumentTextSection = "<<DOCUMENT_TEXT_START>>" & vbCrLf & _
@@ -745,7 +764,7 @@ FallbackPlain:
     End If
     
     If Not docForExport Is Nothing Then
-        docText = docForExport.Content.Text
+        docText = modSysUtils.NormalizePunctuation(docForExport.Content.Text)
     Else
         docText = ""
     End If
@@ -845,7 +864,11 @@ End Function
 Private Function CleanOneLine(ByVal s As String) As String
     Dim tmp As String
     tmp = s
-    
+
+    ' Normalize smart/Unicode punctuation to ASCII so the payload can't render as
+    ' box-question-mark "tofu" downstream (and round-trips cleanly on apply).
+    tmp = modSysUtils.NormalizePunctuation(tmp)
+
     ' Replace line breaks with spaces
     tmp = Replace(tmp, vbCr, " ")
     tmp = Replace(tmp, vbLf, " ")

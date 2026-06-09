@@ -18,6 +18,9 @@ the edit stays surgical. If a decision is ambiguous or missing a required field,
 do **not** guess — emit nothing for that decision and note it in a single plain
 line *after* the JSONL block. You are a wall against elaboration, not an author.
 
+`AR_` ids go **only** in the `bookmark_id` field. Never copy an `AR_` id into
+`new_text` or `add_comment` — those are document content, not anchors.
+
 ---
 
 ## Output Contract (Strict JSONL Schema)

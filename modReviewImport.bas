@@ -54,7 +54,13 @@ Public Sub ApplyWordSuggestionsFromJson()
     Dim parsedOk As Long
     Dim appliedCount As Long
     Dim skippedCount As Long
-    
+
+    ' Provenance/completeness tracking
+    Dim madeTextEdit As Boolean         ' did we create at least one tracked text edit
+    Dim origCommentCount As Long        ' reviewer comments present at open
+    Dim repliedComments As Object       ' Scripting.Dictionary of replied comment indices
+    Dim revAuthorSeen As String         ' read-back: author Word actually stamped
+
     ' Config-driven behavior
     Dim defaultConfidenceLevel As String
     Dim useArPrefix As Boolean
@@ -210,7 +216,13 @@ Public Sub ApplyWordSuggestionsFromJson()
     On Error GoTo ErrHandler
     
     wdDoc.TrackRevisions = True
-    
+
+    ' Snapshot reviewer comments present at open, and prepare the replied-to set,
+    ' for the every-comment-addressed completeness check.
+    origCommentCount = wdDoc.Comments.Count
+    Set repliedComments = CreateObject("Scripting.Dictionary")
+    madeTextEdit = False
+
     '---------------------------
     ' 4) Process each JSON line (bookmark-only)
     '---------------------------
@@ -335,10 +347,17 @@ Public Sub ApplyWordSuggestionsFromJson()
                     skippedCount = skippedCount + 1
                     GoTo LogAndNext
                 End If
-                
+
+                ' Anchor ids must never land in the document text.
+                newText = modSysUtils.StripArTokens(newText)
+
                 Dim editRange As Object
                 Dim txtRange As String
                 Dim subPos As Long
+                Dim s0 As Long
+                Dim hayNorm As String
+                Dim ndlNorm As String
+                Dim changed As Boolean
 
                 ' Work on a copy of the bookmark range
                 Set editRange = targetRange.Duplicate
@@ -353,63 +372,62 @@ Public Sub ApplyWordSuggestionsFromJson()
                     End If
                 End If
 
-                ' Honor old_text as a surgical, within-bookmark substring replacement
-                ' (the published serializer contract). When old_text is supplied we
-                ' replace only that span; when omitted we replace the whole bookmark.
-                ' serialize_exactly: a claimed old_text that is not present is a defect,
-                ' not a silent whole-paragraph overwrite -- skip and log it.
+                ' If old_text is supplied, narrow the range to that span first so the
+                ' diff is scoped to the intended occurrence. Match on the normalized
+                ' text so a smart-quote/dash in the doc matches a straight one from the
+                ' model. Normalization is 1:1, so positions map onto real offsets.
                 If Len(oldText) > 0 Then
-                    txtRange = CStr(editRange.Text)
-                    subPos = InStr(1, txtRange, oldText, vbBinaryCompare)
+                    hayNorm = modSysUtils.NormalizePunctuation(CStr(editRange.Text))
+                    ndlNorm = modSysUtils.NormalizePunctuation(oldText)
+                    subPos = InStr(1, hayNorm, ndlNorm, vbBinaryCompare)
                     If subPos = 0 Then
                         logStatus = "Skipped"
                         logReason = "old_text not found within bookmark: " & bookmarkId
                         skippedCount = skippedCount + 1
                         GoTo LogAndNext
                     End If
-                    ' Collapse editRange onto just the matched span.
-                    editRange.End = editRange.Start + (subPos - 1) + Len(oldText)
-                    editRange.Start = editRange.Start + (subPos - 1)
-                    editRange.Text = newText
-                    ' Do NOT re-stamp the bookmark here: a partial replace must not
-                    ' shrink the anchor onto the edited fragment alone.
-                Else
-                    ' Whole-bookmark replacement.
-                    editRange.Text = newText
-
-                    ' Re-add bookmark on the updated content range
-                    On Error Resume Next
-                    wdDoc.Bookmarks.Add name:=bookmarkId, Range:=editRange
-                    On Error GoTo ErrHandler
+                    s0 = editRange.Start
+                    editRange.End = s0 + (subPos - 1) + Len(ndlNorm)
+                    editRange.Start = s0 + (subPos - 1)
                 End If
 
-                appliedCount = appliedCount + 1
-                logStatus = "Applied"
-                logReason = "replace_text"
-                
-                If Len(addComment) > 0 Then
-                    AddArComment wdDoc, editRange, addComment, confidenceNorm, _
-                                  useArPrefix, useArAuthorNames
+                ' Surgical write-back: track-change only the differing middle, so a
+                ' one-word change is a one-word revision, not a whole-paragraph
+                ' delete+insert.
+                changed = ReplaceMinimalSpan(editRange, newText)
+
+                If changed Then
+                    appliedCount = appliedCount + 1
+                    madeTextEdit = True
+                    logStatus = "Applied"
+                    logReason = "replace_text"
+                    If Len(addComment) > 0 Then
+                        AddArComment wdDoc, editRange, addComment, confidenceNorm, useArPrefix
+                    End If
+                Else
+                    logStatus = "Skipped"
+                    logReason = "replace_text: new_text equals existing text"
+                    skippedCount = skippedCount + 1
                 End If
            
             Case CHANGE_DELETE_ELEMENT
                 ' Delete entire range
                 targetRange.Text = ""
-                
+                madeTextEdit = True
+
                 ' Re-add a zero-length bookmark at this location so the ID remains valid
                 On Error Resume Next
                 wdDoc.Bookmarks.Add name:=bookmarkId, Range:=targetRange
                 On Error GoTo ErrHandler
-                
+
                 appliedCount = appliedCount + 1
                 logStatus = "Applied"
                 logReason = "delete_element"
-                
+
                 If Len(addComment) > 0 Then
-                    AddArComment wdDoc, targetRange, addComment, confidenceNorm, _
-                                  useArPrefix, useArAuthorNames
+                    AddArComment wdDoc, targetRange, addComment, confidenceNorm, useArPrefix
                 End If
-            
+
             Case CHANGE_ADD_COMMENT
                 If Len(Trim$(addComment)) = 0 Then
                     logStatus = "Skipped"
@@ -417,13 +435,12 @@ Public Sub ApplyWordSuggestionsFromJson()
                     skippedCount = skippedCount + 1
                     GoTo LogAndNext
                 End If
-                
-                AddArComment wdDoc, targetRange, addComment, confidenceNorm, _
-                              useArPrefix, useArAuthorNames
+
+                AddArComment wdDoc, targetRange, addComment, confidenceNorm, useArPrefix
                 appliedCount = appliedCount + 1
                 logStatus = "Applied"
                 logReason = "add_comment_only"
-                
+
             Case CHANGE_REPLY_COMMENT
                 If Not commentTarget Is Nothing Then
                     If Len(Trim$(addComment)) = 0 Then
@@ -432,10 +449,14 @@ Public Sub ApplyWordSuggestionsFromJson()
                         skippedCount = skippedCount + 1
                         GoTo LogAndNext
                     End If
-                    
-                    AddArCommentReply wdDoc, commentTarget, addComment, confidenceNorm, _
-                                       useArPrefix, useArAuthorNames
-                    
+
+                    AddArCommentReply wdDoc, commentTarget, addComment, confidenceNorm, useArPrefix
+
+                    ' Record that this reviewer comment was addressed (completeness).
+                    On Error Resume Next
+                    repliedComments(CStr(cIndex)) = True
+                    On Error GoTo ErrHandler
+
                     appliedCount = appliedCount + 1
                     logStatus = "Applied"
                     logReason = "reply_to_comment"
@@ -526,6 +547,23 @@ LogAndNext:
     RemoveArBookmarks wdDoc
     On Error GoTo ErrHandler
 
+    ' Read-back author diagnostic: did our text edits actually get authored
+    ' "AutoReviewer"? On account-signed-in Word, revision author can follow the
+    ' signed-in account regardless of Application.UserName -- this reports what
+    ' actually stuck, so the operator isn't guessing.
+    revAuthorSeen = ""
+    If madeTextEdit Then
+        On Error Resume Next
+        Dim rvChk As Object
+        For Each rvChk In wdDoc.Revisions
+            If StrComp(CStr(rvChk.Author), "AutoReviewer", vbTextCompare) = 0 Then
+                revAuthorSeen = "AutoReviewer"
+                Exit For
+            End If
+        Next rvChk
+        On Error GoTo ErrHandler
+    End If
+
     Dim oldBgSave As Boolean
 
     '---------------------------
@@ -576,13 +614,39 @@ LogAndNext:
     On Error GoTo ErrHandler
 
     ' 7) Show Final Summary
-    MsgBox "JSONL lines: " & totalLines & vbCrLf & _
-           "Parsed OK: " & parsedOk & vbCrLf & _
-           "Applied: " & appliedCount & vbCrLf & _
-           "Skipped: " & skippedCount & vbCrLf & vbCrLf & _
-           "JSONL fingerprint: " & jsonlFingerprint & vbCrLf & _
-           "Logged to the Trace sheet.", _
-           vbInformation, "Apply Bookmark-Based Suggestions"
+    Dim summaryMsg As String
+    Dim unaddressed As Long
+
+    summaryMsg = "JSONL lines: " & totalLines & vbCrLf & _
+                 "Parsed OK: " & parsedOk & vbCrLf & _
+                 "Applied: " & appliedCount & vbCrLf & _
+                 "Skipped: " & skippedCount & vbCrLf & vbCrLf & _
+                 "JSONL fingerprint: " & jsonlFingerprint & vbCrLf & _
+                 "Logged to the Trace sheet."
+
+    ' Completeness: were all reviewer comments replied to?
+    If origCommentCount > 0 Then
+        unaddressed = origCommentCount - repliedComments.Count
+        If unaddressed < 0 Then unaddressed = 0
+        summaryMsg = summaryMsg & vbCrLf & vbCrLf & _
+                     "Reviewer comments: " & origCommentCount & _
+                     " | replied: " & repliedComments.Count & _
+                     IIf(unaddressed > 0, " | UNADDRESSED: " & unaddressed, " | all addressed")
+    End If
+
+    ' Author provenance read-back.
+    If madeTextEdit Then
+        If revAuthorSeen = "AutoReviewer" Then
+            summaryMsg = summaryMsg & vbCrLf & "Revision author: AutoReviewer (applied)."
+        Else
+            summaryMsg = summaryMsg & vbCrLf & _
+                         "Revision author: NOT AutoReviewer -- Word used the signed-in " & _
+                         "account. Comments are still authored AutoReviewer. See the guide " & _
+                         "to force insertion author."
+        End If
+    End If
+
+    MsgBox summaryMsg, vbInformation, "Apply Bookmark-Based Suggestions"
     
     Exit Sub
 
@@ -833,67 +897,122 @@ Private Function NormalizeConfidence(ByVal raw As String, _
     End Select
 End Function
 
-' High-level helper that applies AR prefix and optional author labeling
-' based on config and normalized confidence.
+' Add a comment, always authored "AutoReviewer" so AI output is attributable
+' (comment author is settable via the object model even when revision author is
+' account-driven). Anchor ids are scrubbed from the body; confidence may be
+' shown as a text prefix.
 Private Sub AddArComment(ByVal wdDoc As Object, _
                           ByVal rng As Object, _
                           ByVal commentText As String, _
                           ByVal confidence As String, _
-                          ByVal usePrefix As Boolean, _
-                          ByVal useAuthorNames As Boolean)
+                          ByVal usePrefix As Boolean)
     Dim finalText As String
     Dim cmNew As Object
-    Dim prefix As String
-    
+
     On Error Resume Next
-    If Len(commentText) = 0 Then Exit Sub
-    
+    commentText = modSysUtils.StripArTokens(commentText)
+    If Len(Trim$(commentText)) = 0 Then Exit Sub
+
     finalText = commentText
-    
-    ' Optional [AR {LEVEL}] prefix in the comment text
-    If usePrefix Then
-        prefix = "[AR " & confidence & "] "
-        finalText = prefix & commentText
-    End If
-    
-    ' Add the comment
+    If usePrefix Then finalText = "[AR " & confidence & "] " & commentText
+
     Set cmNew = wdDoc.Comments.Add(Range:=rng, Text:=finalText)
-    
-    ' Optional: set author name based on confidence
-    If useAuthorNames And Not cmNew Is Nothing Then
-        cmNew.Author = "AR (" & confidence & ")"
-    End If
+    If Not cmNew Is Nothing Then cmNew.Author = "AutoReviewer"
+    On Error GoTo 0
 End Sub
 
 Private Sub AddArCommentReply(ByVal wdDoc As Object, _
                                ByVal parentComment As Object, _
                                ByVal commentText As String, _
                                ByVal confidence As String, _
-                               ByVal usePrefix As Boolean, _
-                               ByVal useAuthorNames As Boolean)
+                               ByVal usePrefix As Boolean)
     Dim finalText As String
     Dim cmNew As Object
-    Dim prefix As String
-    
+
     On Error Resume Next
-    If Len(commentText) = 0 Then Exit Sub
-    
+    commentText = modSysUtils.StripArTokens(commentText)
+    If Len(Trim$(commentText)) = 0 Then Exit Sub
+
     finalText = commentText
-    If usePrefix Then
-        prefix = "[AR " & confidence & "] "
-        finalText = prefix & commentText
-    End If
-    
+    If usePrefix Then finalText = "[AR " & confidence & "] " & commentText
+
     Set cmNew = parentComment.Replies.Add(Range:=parentComment.Scope, Text:=finalText)
     If cmNew Is Nothing Then
         ' Fallback to adding a new comment at the same scope
         Set cmNew = wdDoc.Comments.Add(Range:=parentComment.Scope, Text:=finalText)
     End If
-    
-    If useAuthorNames And Not cmNew Is Nothing Then
-        cmNew.Author = "AR (" & confidence & ")"
-    End If
+
+    If Not cmNew Is Nothing Then cmNew.Author = "AutoReviewer"
     On Error GoTo 0
 End Sub
+
+' Surgical write-back: replace only the differing middle between the range's
+' existing text and newText, so a one-word change is a one-word tracked revision
+' rather than a whole-paragraph delete+insert. Common prefix/suffix are computed
+' on the punctuation-normalized text (1:1, so offsets map onto the real range),
+' which also means a smart-quote/dash already in the document is treated as equal
+' to a straight one from the model and is left untouched. Returns True if a
+' change was written, False if the text is identical.
+Private Function ReplaceMinimalSpan(ByVal rng As Object, ByVal newText As String) As Boolean
+    Dim existing As String
+    Dim na As String, nb As String
+    Dim p As Long, s As Long, maxS As Long
+    Dim origStart As Long, origEnd As Long
+    Dim newMiddle As String
+
+    existing = CStr(rng.Text)
+    na = modSysUtils.NormalizePunctuation(existing)
+    nb = modSysUtils.NormalizePunctuation(newText)
+
+    p = CommonPrefixLen(na, nb)
+
+    maxS = Len(na)
+    If Len(nb) < maxS Then maxS = Len(nb)
+    maxS = maxS - p
+    If maxS < 0 Then maxS = 0
+    s = CommonSuffixLen(na, nb, maxS)
+
+    ' Identical under normalization -> nothing to change.
+    If (p + s) >= Len(na) And (p + s) >= Len(nb) Then
+        ReplaceMinimalSpan = False
+        Exit Function
+    End If
+
+    origStart = rng.Start
+    origEnd = rng.End
+    newMiddle = Mid$(newText, p + 1, Len(newText) - p - s)
+
+    rng.End = origEnd - s
+    rng.Start = origStart + p
+    rng.Text = newMiddle
+    ReplaceMinimalSpan = True
+End Function
+
+' Length of the longest common prefix of a and b.
+Private Function CommonPrefixLen(ByVal a As String, ByVal b As String) As Long
+    Dim n As Long, i As Long
+    n = Len(a)
+    If Len(b) < n Then n = Len(b)
+    For i = 1 To n
+        If Mid$(a, i, 1) <> Mid$(b, i, 1) Then
+            CommonPrefixLen = i - 1
+            Exit Function
+        End If
+    Next i
+    CommonPrefixLen = n
+End Function
+
+' Length of the longest common suffix of a and b, capped at maxLen (so prefix
+' and suffix do not overlap).
+Private Function CommonSuffixLen(ByVal a As String, ByVal b As String, ByVal maxLen As Long) As Long
+    Dim i As Long
+    For i = 1 To maxLen
+        If Mid$(a, Len(a) - i + 1, 1) <> Mid$(b, Len(b) - i + 1, 1) Then
+            CommonSuffixLen = i - 1
+            Exit Function
+        End If
+    Next i
+    CommonSuffixLen = maxLen
+End Function
 
 

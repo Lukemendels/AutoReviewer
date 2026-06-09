@@ -32,6 +32,8 @@ every change you recommend:
   into a rubber stamp.
 - **Self-critique before you finish.** Re-read each block and flag any
   recommendation that the source text does not actually support.
+- **Never write an `AR_` id inside NEW_TEXT or a comment body.** Anchor ids are
+  internal; they belong only on the BOOKMARK line, never in document content.
 
 Output a human-readable **DECISION PACKET**, never JSON. Use exactly this form
 per recommendation:

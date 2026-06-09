@@ -77,10 +77,21 @@ Full walkthrough: `USER_GUIDE.md`. Roadmap and module history:
 
 - Requires Word + Excel with macros enabled. All COM is late-bound; no library
   references are needed, so it runs on locked-down Office.
-- AI edits and comments are authored **"AutoReviewer"** in the tracked-change
-  layer, so they are visibly attributable and one-click-rejectable; the
-  operator's real Word author name is snapshotted and restored. The `AR_`
-  anchors are stripped as the final apply step, so the delivered document is
-  clean and a second pass re-stamps from scratch.
+- AI **comments/replies** are always authored **"AutoReviewer"** (reliable via
+  the object model). AI **insertions/deletions** take their author from
+  `Application.UserName`, which the tool sets to "AutoReviewer" — but when Word
+  is signed into a Microsoft 365 / DHS account, revision author follows the
+  **account** and ignores `UserName`. To force insertion author to "AutoReviewer"
+  on account-signed-in Word, check, once: **Word → Options → General → "Always
+  use these values regardless of sign in to Office"** (and the tool does the
+  rest). The apply step reports, in its summary, the author Word actually
+  stamped, so you can see which case you're in. Either way edits are tracked and
+  rejectable, and the authored comments are an independent provenance signal.
+- Edits are **surgical**: only the changed span is tracked (minimal-diff), so
+  changing a word is a one-word revision, not a whole-paragraph rewrite. The
+  exported payload is normalized to ASCII punctuation (no "tofu" dashes), and
+  internal `AR_` anchor ids are stripped from anything written into the document.
+- The `AR_` anchors are stripped as the final apply step, so the delivered
+  document is clean and a second pass re-stamps from scratch.
 - The `Trace` and `Log` sheets are the defensible artifact — on this substrate
   the audit lineage is the product, not overhead (Profile §1.3).
