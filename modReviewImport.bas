@@ -271,9 +271,10 @@ Public Sub ApplyWordSuggestionsFromJson()
         End If
         
         ' Locate bookmark or comment
-        If Left$(bookmarkId, 12) = "AR_COMMENT_" Then
+        ' "AR_COMMENT_" is 11 chars; the index begins at position 12.
+        If Left$(bookmarkId, 11) = "AR_COMMENT_" Then
             Dim cIndex As Long
-            cIndex = Val(Mid$(bookmarkId, 13))
+            cIndex = Val(Mid$(bookmarkId, 12))
             On Error Resume Next
             Set commentTarget = wdDoc.Comments(cIndex)
             On Error GoTo ErrHandler
@@ -311,27 +312,51 @@ Public Sub ApplyWordSuggestionsFromJson()
                 
                 Dim editRange As Object
                 Dim txtRange As String
-                
+                Dim subPos As Long
+
                 ' Work on a copy of the bookmark range
                 Set editRange = targetRange.Duplicate
-                
+
                 ' For paragraph bookmarks, exclude the trailing paragraph mark
                 ' so we don't delete the separator between this paragraph and the next.
-                If Left$(bookmarkId, 9) = "AR_PARA_" Then
+                ' "AR_PARA_" is 8 chars.
+                If Left$(bookmarkId, 8) = "AR_PARA_" Then
                     txtRange = CStr(editRange.Text)
                     If Len(txtRange) > 0 And Right$(txtRange, 1) = Chr$(13) Then
                         editRange.End = editRange.End - 1   ' trim off the paragraph mark
                     End If
                 End If
-                
-                ' Replace the text within the adjusted range
-                editRange.Text = newText
-                
-                ' Re-add bookmark on the updated content range
-                On Error Resume Next
-                wdDoc.Bookmarks.Add name:=bookmarkId, Range:=editRange
-                On Error GoTo ErrHandler
-                
+
+                ' Honor old_text as a surgical, within-bookmark substring replacement
+                ' (the published serializer contract). When old_text is supplied we
+                ' replace only that span; when omitted we replace the whole bookmark.
+                ' serialize_exactly: a claimed old_text that is not present is a defect,
+                ' not a silent whole-paragraph overwrite -- skip and log it.
+                If Len(oldText) > 0 Then
+                    txtRange = CStr(editRange.Text)
+                    subPos = InStr(1, txtRange, oldText, vbBinaryCompare)
+                    If subPos = 0 Then
+                        logStatus = "Skipped"
+                        logReason = "old_text not found within bookmark: " & bookmarkId
+                        skippedCount = skippedCount + 1
+                        GoTo LogAndNext
+                    End If
+                    ' Collapse editRange onto just the matched span.
+                    editRange.End = editRange.Start + (subPos - 1) + Len(oldText)
+                    editRange.Start = editRange.Start + (subPos - 1)
+                    editRange.Text = newText
+                    ' Do NOT re-stamp the bookmark here: a partial replace must not
+                    ' shrink the anchor onto the edited fragment alone.
+                Else
+                    ' Whole-bookmark replacement.
+                    editRange.Text = newText
+
+                    ' Re-add bookmark on the updated content range
+                    On Error Resume Next
+                    wdDoc.Bookmarks.Add name:=bookmarkId, Range:=editRange
+                    On Error GoTo ErrHandler
+                End If
+
                 appliedCount = appliedCount + 1
                 logStatus = "Applied"
                 logReason = "replace_text"

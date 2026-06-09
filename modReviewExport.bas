@@ -250,13 +250,7 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     
     baseName = GetFileBaseName(wordPath)
     savePath = docsFolder & "\" & baseName & ".txt"
-    
-    ' DEBUG: show the paths we are about to use
-    MsgBox "Exporting with paths:" & vbCrLf & vbCrLf & _
-           "docsFolder = " & docsFolder & vbCrLf & _
-           "savePath   = " & savePath, _
-           vbInformation, "ExportWordDocForLLM (debug)"
-    
+
     '---------------------------
     ' 6a) Record LastExportTxtPath in Config via key-based helper
     '---------------------------
@@ -380,14 +374,15 @@ Private Function BuildBookmarkIndexSection(ByVal wdDocFinal As Object, _
         name = CStr(bm.name)
         On Error GoTo SafeExit
         
-        ' Only include our AR_* bookmarks
-        If Left$(name, 4) = "AR_" Then
+        ' Only include our AR_* bookmarks. Prefix lengths are exact:
+        ' "AR_" = 3, "AR_PARA_"/"AR_CELL_" = 8, "AR_FN_" = 6.
+        If Left$(name, 3) = "AR_" Then
             ' Classify type based on prefix
-            If Left$(name, 9) = "AR_PARA_" Then
+            If Left$(name, 8) = "AR_PARA_" Then
                 t = "paragraph"
-            ElseIf Left$(name, 9) = "AR_CELL_" Then
+            ElseIf Left$(name, 8) = "AR_CELL_" Then
                 t = "table_cell"
-            ElseIf Left$(name, 7) = "AR_FN_" Then
+            ElseIf Left$(name, 6) = "AR_FN_" Then
                 t = "footnote"
             Else
                 t = "other"
