@@ -324,11 +324,34 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     On Error GoTo ErrHandler
     
     ' 9) Setup Prompt and Browser
+    ' HOT co-thinker prompt (Profile s7.4). This assistant runs divergent: it
+    ' surfaces a *recommended* resolution with its *strongest counter-case* and
+    ' a self-critique, citing the AR_ bookmark ID for each, and outputs a
+    ' human-readable DECISION PACKET -- never JSONL. The human ratifies on paper
+    ' (keep/fix/cut); the cold Serializer assistant converts the kept decisions
+    ' to JSONL afterward. Keeping review and serialization in separate context
+    ' windows is the s7.4 temperature wall.
     Dim promptText As String
+    Dim packetSpec As String
+    packetSpec = vbCrLf & vbCrLf & _
+        "For each recommended change, output a numbered block in exactly this form:" & vbCrLf & _
+        "[n] BOOKMARK: <the exact AR_ id, e.g. AR_PARA_00012 or AR_COMMENT_3>" & vbCrLf & _
+        "    ACTION: replace_text | delete_element | add_comment_only | reply_to_comment | accept_revision | reject_revision" & vbCrLf & _
+        "    OLD_TEXT: <the exact existing substring to change, or omit for a whole-bookmark/element action>" & vbCrLf & _
+        "    NEW_TEXT: <the proposed replacement, when applicable>" & vbCrLf & _
+        "    RATIONALE: <why>" & vbCrLf & _
+        "    COUNTER-CASE: <the strongest argument AGAINST making this change>" & vbCrLf & _
+        "    CONFIDENCE: High | Medium | Low" & vbCrLf & vbCrLf & _
+        "Do NOT output JSON. Surface judgment for a human to ratify; a separate " & _
+        "serializer will convert the ratified decisions to the edit format. Every " & _
+        "block MUST cite a bookmark id that appears in the attached BOOKMARK_INDEX " & _
+        "-- never invent an anchor. Before you finish, self-critique: re-read each " & _
+        "block and flag any that are unsupported by the source text."
+
     If isRespondMode Then
-        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. Please conversationally unpack what the reviewer is asking for in both their comments and their tracked changes. Decide as a team how to edit the document to best address the feedback, and then output a JSON list of edits. You can use 'replace_text' to modify the text, 'reply_to_comment' to respond directly to the reviewer's comments, 'accept_revision' to accept a specific tracked change, and 'reject_revision' to reject a specific tracked change."
+        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. Conversationally unpack what the reviewer is asking for in both their comments and their tracked changes, then recommend how to address the feedback." & packetSpec
     Else
-        promptText = "I am attaching an exported Word document containing text and bookmark IDs. Please review the text according to the established style rules, and output a JSON list of edits targeting the specific bookmark IDs."
+        promptText = "I am attaching an exported Word document containing text and bookmark IDs. Review the text against your established style rules and recommend edits." & packetSpec
     End If
     modSysUtils.CopyToClipboard promptText
     
@@ -348,10 +371,15 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     
     ' 10) Final Excel MsgBox (Word is already closed)
     MsgBox "Export complete (UTF-8):" & vbCrLf & savePath & vbCrLf & vbCrLf & _
-           "A prompt has been copied to your clipboard, and your custom GPT URL has been opened." & vbCrLf & _
-           "1. Paste the prompt (Ctrl+V) into the GPT." & vbCrLf & _
-           "2. Upload/Drop the exported .txt file.", vbInformation, "Export Complete"
-    
+           "The HOT co-thinker prompt is on your clipboard and the co-thinker " & _
+           "assistant has been opened." & vbCrLf & vbCrLf & _
+           "1. Paste the prompt (Ctrl+V) into the assistant." & vbCrLf & _
+           "2. Upload/Drop the exported .txt file." & vbCrLf & _
+           "3. Read the decision packet it returns and ratify on paper " & _
+           "(keep / fix / cut)." & vbCrLf & _
+           "4. Paste the ratified decisions back into Excel, then run " & _
+           """Hand off to Serializer"".", vbInformation, "Export Complete"
+
     Exit Sub
 
 Cleanup:
@@ -375,6 +403,45 @@ End Sub
 
 Public Sub ExportWordDocForRespondMode()
     ExportWordDocForLLM True
+End Sub
+
+' COLD serializer hand-off (Profile s7.4). After the human ratifies the hot
+' co-thinker's decision packet, this copies the convergent serialize prompt and
+' opens the shared Serializer assistant in a SEPARATE context window. The
+' serializer's only job is serialize_exactly: translate the ratified decisions
+' into the JSONL edit contract, never re-decide them.
+Public Sub HandOffToSerializer()
+    Dim serializerUrl As String
+    Dim promptText As String
+
+    serializerUrl = Trim$(GetConfigValue("SerializerUrl", ""))
+
+    promptText = "Below are ratified document-review decisions, each citing a " & _
+        "bookmark id (AR_PARA_..., AR_CELL_..., AR_FN_..., or AR_COMMENT_...). " & _
+        "Convert ONLY these decisions into the strict JSONL edit contract you " & _
+        "hold, one JSON object per line. Translate exactly: do not re-decide, " & _
+        "soften, reorder, add, or drop any decision, and do not change any " & _
+        "bookmark id. Carry OLD_TEXT through verbatim as old_text when present " & _
+        "so the edit stays surgical. Output only the JSONL block, nothing else." & _
+        vbCrLf & vbCrLf & "RATIFIED DECISIONS:" & vbCrLf & "<paste the ratified packet here>"
+
+    modSysUtils.CopyToClipboard promptText
+
+    If Len(serializerUrl) > 0 Then
+        modSysUtils.OpenURL serializerUrl
+        MsgBox "The COLD serializer prompt is on your clipboard and the " & _
+               "Serializer assistant has been opened." & vbCrLf & vbCrLf & _
+               "1. Paste the prompt, then paste your RATIFIED decisions where " & _
+               "indicated." & vbCrLf & _
+               "2. Copy the JSONL it returns into the LLM_Changes sheet at A8." & vbCrLf & _
+               "3. Run ""Apply LLM Edits to Word"".", vbInformation, "Hand Off to Serializer"
+    Else
+        MsgBox "The COLD serializer prompt is on your clipboard." & vbCrLf & vbCrLf & _
+               "No Serializer URL is set yet. Set one via the dashboard " & _
+               "(""Set Serializer URL"") so this step can open it automatically. " & _
+               "For now, open your Serializer assistant manually and paste the prompt.", _
+               vbExclamation, "Hand Off to Serializer"
+    End If
 End Sub
 
 '=== Helpers ========================================================

@@ -112,14 +112,18 @@ Public Sub BuildDashboard()
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
         "1. Select Persona for Review", "modDashboardUI.SetActivePersona", RGB(74, 85, 104)
     btnTop = btnTop + btnHeight + 15
-    
+
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "2. Prepare Document for LLM", "modReviewExport.ExportWordDocForLLM", RGB(49, 130, 206)
+        "2. Prepare for Review (Co-thinker)", "modReviewExport.ExportWordDocForLLM", RGB(49, 130, 206)
     btnTop = btnTop + btnHeight + 15
-    
+
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "3. Apply LLM Edits to Word", "modReviewImport.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
-    
+        "3. Hand off to Serializer", "modReviewExport.HandOffToSerializer", RGB(214, 158, 46) ' Amber: ratify between 2 and 3
+    btnTop = btnTop + btnHeight + 15
+
+    CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
+        "4. Apply LLM Edits to Word", "modReviewImport.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
+
     ' --- GROUP 3: RESPOND TO REVIEW ---
     btnLeft = 650
     btnTop = 130
@@ -135,21 +139,45 @@ Public Sub BuildDashboard()
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
         "1. Select Persona for Review", "modDashboardUI.SetActivePersona", RGB(74, 85, 104)
     btnTop = btnTop + btnHeight + 15
-    
+
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
         "2. Export Document for Feedback", "modReviewExport.ExportWordDocForRespondMode", RGB(221, 107, 32)
     btnTop = btnTop + btnHeight + 15
-    
+
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "3. Apply LLM Edits to Word", "modReviewImport.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
-    
+        "3. Hand off to Serializer", "modReviewExport.HandOffToSerializer", RGB(214, 158, 46) ' Amber: ratify between 2 and 3
+    btnTop = btnTop + btnHeight + 15
+
+    CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
+        "4. Apply LLM Edits to Word", "modReviewImport.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
+
     btnTop = btnTop + btnHeight + 40
-    
+
     ' Settings
     CreateModernButton ws, 30, btnTop, 140, 35, _
         "Go to Config", "modDashboardUI.GoToConfigSheet", RGB(74, 85, 104) ' Gray
-        
+
+    CreateModernButton ws, 180, btnTop, 180, 35, _
+        "Set Serializer URL", "modDashboardUI.SetSerializerUrl", RGB(74, 85, 104) ' Gray
+
     ws.Range("A1").Select
+End Sub
+
+Public Sub SetSerializerUrl()
+    Dim current As String
+    Dim choice As String
+
+    current = modAppCore.GetConfigValue("SerializerUrl", "")
+    choice = InputBox("Enter the shared COLD Serializer assistant URL." & vbCrLf & vbCrLf & _
+                      "This is a single, generic assistant that holds the JSONL output " & _
+                      "contract and is shared across all personas. The per-persona HOT " & _
+                      "co-thinker URL lives in the Personas sheet (AssistantUrl column).", _
+                      "Set Serializer URL", current)
+
+    If Trim$(choice) <> "" Then
+        modAppCore.SetConfigValue "SerializerUrl", Trim$(choice)
+        MsgBox "Serializer URL saved.", vbInformation
+    End If
 End Sub
 
 Public Sub SetActivePersona()
