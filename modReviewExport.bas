@@ -51,12 +51,38 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     ' We trust Application.FileDialog to only return existing files.
     ' Do NOT call Dir$ on wordPath here; some path formats can cause
     ' "Bad file name or number" even when the file is valid.
-    
+
     '---------------------------
-    ' 1a) Config sheet: record WordDocPath via key-based helper
+    ' 1a) Reversibility hygiene: work on a copy, never the source of record.
+    ' The user's selection is the source; we operate on "<base>_AR.<ext>" so the
+    ' original is never stamped with bookmarks or written back into. Edits stay
+    ' reversible (tracked changes on the copy) and the source stays pristine
+    ' until the human chooses to finalize (Profile s7.2). If the copy cannot be
+    ' made we fall back to operating on the original so the tool still runs.
+    '---------------------------
+    Dim sourcePath As String
+    Dim workingPath As String
+    sourcePath = wordPath
+    workingPath = BuildWorkingCopyPath(sourcePath)
+
+    On Error Resume Next
+    Err.Clear
+    If Len(workingPath) > 0 Then
+        FileCopy sourcePath, workingPath
+    End If
+    If Err.Number <> 0 Or Len(workingPath) = 0 Then
+        workingPath = sourcePath   ' fall back to the original
+    End If
+    On Error GoTo ErrHandler
+    wordPath = workingPath
+
+    '---------------------------
+    ' 1b) Config sheet: record source and working paths via key-based helper.
+    ' WordDocPath is the WORKING copy -- the apply step writes here.
     '---------------------------
     EnsureConfigSheet wsConfig
-    SetConfigValue "WordDocPath", wordPath
+    SetConfigValue "SourceDocPath", sourcePath
+    SetConfigValue "WordDocPath", workingPath
     
     ' Determine export format (plain | markdown)
     exportFormat = LCase$(Trim$(GetConfigValue("ExportFormat", "plain")))
@@ -220,7 +246,18 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     ' Append the pre-extracted comments and revisions
     buffer = buffer & bufferComments
     buffer = buffer & bufferRevisions
-    
+
+    '---------------------------
+    ' 5a) Transport attestation (Profile s4.1 / s9.1): fingerprint the payload
+    ' that will cross the clipboard, embed it self-describingly at the head of
+    ' the artifact, and record it so the apply step can close the loop.
+    '---------------------------
+    Dim exportFingerprint As String
+    exportFingerprint = modSysUtils.ArContentFingerprint(buffer)
+    buffer = "<<PAYLOAD_FINGERPRINT: " & exportFingerprint & ">>" & vbCrLf & vbCrLf & buffer
+    SetConfigValue "LastExportFingerprint", exportFingerprint
+    SetConfigValue "LastExportMode", IIf(isRespondMode, "Respond", "Review")
+
     '---------------------------
     ' 6) Decide where to save .txt (UTF-8) – User's Documents
     '---------------------------
@@ -304,6 +341,9 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     If Len(activePersona) > 0 Then configUrl = modAppCore.GetAssistantUrl(activePersona)
     If Len(configUrl) > 0 Then gptUrl = configUrl
     On Error GoTo 0
+    ' Record the recommended route so the apply step's logic_trace can log
+    ' recommended-vs-actual (Profile s9.2).
+    SetConfigValue "LastRecommendedRoute", gptUrl
     modSysUtils.OpenURL gptUrl
     
     ' 10) Final Excel MsgBox (Word is already closed)
@@ -636,6 +676,43 @@ FallbackPlain:
     BuildDocumentTextSection = "<<DOCUMENT_TEXT_START>>" & vbCrLf & _
                                docText & _
                                "<<DOCUMENT_TEXT_END>>" & vbCrLf & vbCrLf
+End Function
+
+' Build the working-copy path "<dir>\<base>_AR.<ext>" alongside the source.
+' Returns "" if the path can't be parsed, signalling the caller to fall back
+' to operating on the original.
+Private Function BuildWorkingCopyPath(ByVal sourcePath As String) As String
+    Dim slashPos As Long
+    Dim dotPos As Long
+    Dim dir As String
+    Dim fileName As String
+    Dim baseName As String
+    Dim ext As String
+
+    slashPos = InStrRev(sourcePath, "\")
+    If slashPos = 0 Then
+        BuildWorkingCopyPath = ""
+        Exit Function
+    End If
+
+    dir = Left$(sourcePath, slashPos)            ' includes trailing backslash
+    fileName = Mid$(sourcePath, slashPos + 1)
+
+    dotPos = InStrRev(fileName, ".")
+    If dotPos > 0 Then
+        baseName = Left$(fileName, dotPos - 1)
+        ext = Mid$(fileName, dotPos)             ' includes the dot
+    Else
+        baseName = fileName
+        ext = ""
+    End If
+
+    ' Avoid stacking "_AR_AR" if the user re-selects a working copy.
+    If Right$(baseName, 3) = "_AR" Then
+        BuildWorkingCopyPath = dir & baseName & ext
+    Else
+        BuildWorkingCopyPath = dir & baseName & "_AR" & ext
+    End If
 End Function
 
 Private Function GetFileBaseName(ByVal fullPath As String) As String

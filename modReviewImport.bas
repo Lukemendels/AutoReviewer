@@ -125,6 +125,17 @@ Public Sub ApplyWordSuggestionsFromJson()
     
     ReDim Preserve tmpLines(1 To n)
     lines = tmpLines
+
+    ' Transport attestation (Profile s9.1): fingerprint the exact JSONL block
+    ' the operator pasted, so the logic_trace records the bytes that produced
+    ' the edits.
+    Dim jsonlFingerprint As String
+    Dim joinedJsonl As String
+    Dim k As Long
+    For k = 1 To n
+        joinedJsonl = joinedJsonl & tmpLines(k) & vbLf
+    Next k
+    jsonlFingerprint = modSysUtils.ArContentFingerprint(joinedJsonl)
     
     '---------------------------
     ' 2a) Ensure Log sheet exists (bookmark_id-focused)
@@ -521,11 +532,28 @@ LogAndNext:
     DoEvents
     On Error GoTo ErrHandler
     
+    ' 6a) Append the run's logic_trace (Profile s9.3). This is the defensible
+    ' artifact: who ran it, the recommended route, and the transport
+    ' fingerprints linking export payload -> pasted JSONL -> edits.
+    On Error Resume Next
+    modAudit.AppendReviewTrace _
+        GetConfigValue("LastExportMode", "Review"), _
+        GetConfigValue("ActivePersona", ""), _
+        GetConfigValue("SourceDocPath", ""), _
+        wordPath, _
+        GetConfigValue("LastRecommendedRoute", ""), _
+        GetConfigValue("LastExportFingerprint", ""), _
+        jsonlFingerprint, _
+        totalLines, appliedCount, skippedCount
+    On Error GoTo ErrHandler
+
     ' 7) Show Final Summary
     MsgBox "JSONL lines: " & totalLines & vbCrLf & _
            "Parsed OK: " & parsedOk & vbCrLf & _
            "Applied: " & appliedCount & vbCrLf & _
-           "Skipped: " & skippedCount, _
+           "Skipped: " & skippedCount & vbCrLf & vbCrLf & _
+           "JSONL fingerprint: " & jsonlFingerprint & vbCrLf & _
+           "Logged to the Trace sheet.", _
            vbInformation, "Apply Bookmark-Based Suggestions"
     
     Exit Sub
