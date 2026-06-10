@@ -14,6 +14,20 @@ Public Sub StampDocWithArBookmarks(ByVal wdDoc As Object)
     StampFootnoteBookmarks wdDoc
 End Sub
 
+' Stamp one AR_REV_NNNNN bookmark over each tracked revision, in revision order.
+' The numbering is a pure function of the (unchanged) document, so the export
+' and the apply step produce identical AR_REV ids without persisting anything.
+Public Sub StampRevisionBookmarks(ByVal wdDoc As Object)
+    Dim revIdx As Long
+    On Error Resume Next
+    If wdDoc.Revisions.Count = 0 Then Exit Sub
+    For revIdx = 1 To wdDoc.Revisions.Count
+        wdDoc.Bookmarks.Add Name:="AR_REV_" & Format$(revIdx, "00000"), _
+                            Range:=wdDoc.Revisions(revIdx).Range
+    Next revIdx
+    On Error GoTo 0
+End Sub
+
 ' Remove every AR_* bookmark from the document. Used as the terminal step of the
 ' apply pipeline (leave the delivered doc clean) and defensively before
 ' re-stamping. Iterates descending because Delete reindexes the collection.

@@ -23,8 +23,7 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     Dim commentBody As String
     Dim stm As Object            ' ADODB.Stream for UTF-8
     Dim exportFormat As String
-    Dim oldBgSave As Boolean
-    
+
     On Error GoTo ErrHandler
     
     '---------------------------
@@ -112,31 +111,16 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     End If
     
     '---------------------------
-    ' 2a) STAMP DOC WITH AR BOOKMARKS
+    ' 2a) STAMP DOC WITH AR BOOKMARKS (in memory only)
     '---------------------------
-    ' Stamp original (this is the one we will edit later and SAVE to disk)
+    ' Stamp the working copy so we can build the BOOKMARK_INDEX. We do NOT save
+    ' these bookmarks: the apply step re-stamps the same (unchanged) working copy
+    ' and gets identical ids, so the working copy left on disk stays a clean copy
+    ' of the source. That way an abandoned export does not leave AR_ bookmarks
+    ' lying around in the *_AR file.
     StampDocWithArBookmarks wdDoc
-    
-    ' Stamp Revisions in the original document if we are in Respond Mode
-    If isRespondMode Then
-        Dim revIdx As Long
-        For revIdx = 1 To wdDoc.Revisions.Count
-            On Error Resume Next
-            wdDoc.Bookmarks.Add Name:="AR_REV_" & Format(revIdx, "00000"), Range:=wdDoc.Revisions(revIdx).Range
-            On Error GoTo ErrHandler
-        Next revIdx
-    End If
-    
-    '---------------------------
-    ' 2b) SAVE the original so AR_* bookmarks persist in the real document
-    '---------------------------
-    On Error Resume Next
-    oldBgSave = wdApp.Options.BackgroundSave
-    wdApp.Options.BackgroundSave = False
-    wdDoc.Save
-    wdApp.Options.BackgroundSave = oldBgSave
-    On Error GoTo ErrHandler
-    
+    If isRespondMode Then StampRevisionBookmarks wdDoc
+
     '---------------------------
     ' 3) Extract metadata (comments and revisions) BEFORE accepting revisions
     '---------------------------

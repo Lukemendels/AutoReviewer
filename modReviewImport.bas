@@ -64,7 +64,6 @@ Public Sub ApplyWordSuggestionsFromJson()
     ' Config-driven behavior
     Dim defaultConfidenceLevel As String
     Dim useArPrefix As Boolean
-    Dim useArAuthorNames As Boolean
     
     ' For reading JSONL from sheet
     Dim lastRow As Long
@@ -102,7 +101,6 @@ Public Sub ApplyWordSuggestionsFromJson()
     ' Read AR-related config flags
     defaultConfidenceLevel = NormalizeConfidence(GetConfigValue("DefaultConfidenceLevel", "Medium"), "Medium")
     useArPrefix = GetConfigBool("UseArCommentPrefix", False)
-    useArAuthorNames = GetConfigBool("UseArAuthorNames", False)
     
     '---------------------------
     ' 2) Get JSONL from LLM_Changes (A8:A...)
@@ -241,7 +239,15 @@ Public Sub ApplyWordSuggestionsFromJson()
         .View = wdRevisionsViewFinal
     End With
     On Error GoTo ErrHandler
-    
+
+    ' Re-stamp the AR_ anchors. The export deliberately does not persist them, so
+    ' an abandoned *_AR working copy stays clean; we reproduce them here. Because
+    ' this is the identical (unchanged) working copy the export stamped, the ids
+    ' match what the model saw in the BOOKMARK_INDEX. Done before TrackRevisions
+    ' so the stamping itself is never recorded as a revision.
+    StampDocWithArBookmarks wdDoc
+    StampRevisionBookmarks wdDoc
+
     wdDoc.TrackRevisions = True
 
     ' Snapshot reviewer comments present at open, and prepare the replied-to set,

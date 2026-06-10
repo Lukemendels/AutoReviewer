@@ -39,13 +39,10 @@ Public Sub EnsureConfigSheet(ByRef wsConfig As Worksheet)
         
         wsConfig.Range("A6").value = "DefaultConfidenceLevel"
         wsConfig.Range("B6").value = "Medium"    ' High | Medium | Low
-        
-        wsConfig.Range("A7").value = "UseArAuthorNames"
-        wsConfig.Range("B7").value = "FALSE"     ' TRUE | FALSE
-        
-        wsConfig.Range("A8").value = "ActivePersona"
-        wsConfig.Range("B8").value = ""
-        
+
+        wsConfig.Range("A7").value = "ActivePersona"
+        wsConfig.Range("B7").value = ""
+
         wsConfig.Columns("A:B").EntireColumn.AutoFit
     End If
 End Sub
@@ -173,24 +170,7 @@ Public Sub SetupConfigValidation()
         .ErrorMessage = "Choose High, Medium, or Low."
     End With
     If Len(CStr(rng.value)) = 0 Then rng.value = "Medium"
-    
-    '---------------------------
-    ' UseArAuthorNames (B7): TRUE | FALSE
-    '---------------------------
-    Set rng = wsConfig.Range("B7")
-    On Error Resume Next
-    rng.Validation.Delete
-    On Error GoTo 0
-    With rng.Validation
-        .Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
-             Operator:=xlBetween, Formula1:="TRUE,FALSE"
-        .IgnoreBlank = True
-        .InCellDropdown = True
-        .ErrorTitle = "Invalid UseArAuthorNames"
-        .ErrorMessage = "Choose either TRUE or FALSE."
-    End With
-    If Len(CStr(rng.value)) = 0 Then rng.value = "FALSE"
-    
+
     wsConfig.Columns("A:B").EntireColumn.AutoFit
     
     MsgBox "Config validation has been set up. Please review the dropdowns on the Config sheet.", _
