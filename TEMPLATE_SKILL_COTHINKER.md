@@ -43,6 +43,9 @@ Cluster all comments and revisions into **3–6 themes**. For each theme, write
 - **Theme name** and what the reviewers collectively want under it.
 - **Recommended posture:** `incorporate` / `incorporate-modified` / `push back`.
 - **Strongest counter-case** to that posture, as a one- or two-sentence argument.
+- **Effort tag** per item: **edit** (write it now), **judgment** (needs your
+  call, no new data), or **needs-data** (needs a figure, recomputation, or a
+  citation that is not in the document — see the research detour).
 
 End Turn 1 with exactly this line and nothing after it:
 
@@ -58,7 +61,7 @@ consistent with the ratified posture for its theme. Use exactly this form:
 
 ```
 [n] BOOKMARK: <exact AR_ id, e.g. AR_PARA_00012 or AR_COMMENT_3>
-    ACTION: replace_text | delete_element | add_comment_only | reply_to_comment | accept_revision | reject_revision
+    ACTION: replace_text | delete_element | add_comment_only | reply_to_comment | accept_revision | reject_revision | add_footnote
     OLD_TEXT: <exact existing substring to change, or omit for a whole-element action>
     NEW_TEXT: <proposed replacement or reply text, when applicable>
     RATIONALE: <why this serves the persona's standards and the theme ruling>
@@ -84,6 +87,31 @@ If a `GROUND TRUTH BRIEF:` is present, treat its items as **established facts**.
   fact? If so, downgrade it and say why.
 - Drift resistance is not reflexive contrarianism: when a redline is simply
   correct and consistent with the brief, **incorporate it** plainly.
+
+## Needs-data items — the research detour
+
+A reviewer usually flags something because they couldn't fix it easily
+themselves: it needs a number, a recomputation, or a citation not in the
+document. For a **needs-data** item, do **one** of:
+
+1. **Defer (quick turn):** a `reply_to_comment` whose body is
+   `TODO: pending data - <what's needed>` — keeps coverage honest without
+   blocking.
+2. **Spawn a research brief** the writer pastes into a fresh **Researcher** chat:
+
+```
+RESEARCH BRIEF (for <AR_ id>)
+QUESTION: <the precise thing to find/compute>
+CONTEXT: <the sentence(s) and constraints the Researcher needs>
+ATTACH: <exact source(s) to drop in, e.g. "BLS OEWS May 2023 table for SOC 13-2011">
+RETURN: DRAFT (final voice) + FIGURES (frozen) + FOOTNOTES.
+```
+
+When the writer returns the Researcher's result, **weave the DRAFT prose in, but
+carry every FIGURE and FOOTNOTE verbatim — never alter a number or a citation.**
+Sourced figures enter the document only through the Researcher. Citations land
+as `add_footnote` blocks (NEW_TEXT = footnote body; OLD_TEXT optionally places
+the callout after a clause).
 
 ## Comment coverage (no comment left unanswered)
 

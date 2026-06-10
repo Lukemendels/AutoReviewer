@@ -164,7 +164,60 @@ Public Sub BuildDashboard()
     CreateModernButton ws, 370, btnTop, 190, 35, _
         "Set Incorporator URL", "modDashboardUI.SetIncorporatorUrl", RGB(74, 85, 104) ' Gray
 
+    btnTop = btnTop + 45
+    CreateModernButton ws, 30, btnTop, 165, 35, _
+        "Set Researcher URL", "modDashboardUI.SetResearcherUrl", RGB(74, 85, 104) ' Gray
+    CreateModernButton ws, 205, btnTop, 155, 35, _
+        "Set Citation URL", "modDashboardUI.SetCitationUrl", RGB(74, 85, 104) ' Gray
+    CreateModernButton ws, 370, btnTop, 190, 35, _
+        "Open Researcher", "modDashboardUI.OpenResearcher", RGB(74, 85, 104) ' Gray
+
     ws.Range("A1").Select
+End Sub
+
+Public Sub SetResearcherUrl()
+    Dim current As String
+    Dim choice As String
+
+    current = modAppCore.GetConfigValue("ResearcherUrl", "")
+    choice = InputBox("Enter the shared Researcher assistant URL." & vbCrLf & vbCrLf & _
+                      "One generic assistant (set up once from " & _
+                      "TEMPLATE_SKILL_RESEARCHER.md, with the citation standard pasted in) " & _
+                      "that runs focused data/citation side-investigations from a research " & _
+                      "brief. Shared across all documents; not a persona.", _
+                      "Set Researcher URL", current)
+
+    If Trim$(choice) <> "" Then
+        modAppCore.SetConfigValue "ResearcherUrl", Trim$(choice)
+        MsgBox "Researcher URL saved.", vbInformation
+    End If
+End Sub
+
+Public Sub SetCitationUrl()
+    Dim current As String
+    Dim choice As String
+
+    current = modAppCore.GetConfigValue("CitationUrl", "")
+    choice = InputBox("Enter the shared Citation assistant URL." & vbCrLf & vbCrLf & _
+                      "One generic assistant (set up once from " & _
+                      "TEMPLATE_SKILL_CITATION.md) for 'I just need a citation' moments. " & _
+                      "Same canonical standard the Researcher embeds.", _
+                      "Set Citation URL", current)
+
+    If Trim$(choice) <> "" Then
+        modAppCore.SetConfigValue "CitationUrl", Trim$(choice)
+        MsgBox "Citation URL saved.", vbInformation
+    End If
+End Sub
+
+Public Sub OpenResearcher()
+    Dim url As String
+    url = Trim$(modAppCore.GetConfigValue("ResearcherUrl", ""))
+    If Len(url) = 0 Then
+        MsgBox "No Researcher URL is set. Use 'Set Researcher URL' first.", vbExclamation
+        Exit Sub
+    End If
+    modSysUtils.OpenURL url
 End Sub
 
 Public Sub SetIncorporatorUrl()

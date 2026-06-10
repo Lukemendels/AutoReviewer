@@ -38,6 +38,7 @@ CHANGE_TYPES = (
     "reply_to_comment",
     "accept_revision",
     "reject_revision",
+    "add_footnote",
 )
 
 # Validation reason codes (stable across Python and VBA; vectors compare these)
@@ -50,6 +51,8 @@ COMMENT_REQUIRES_TEXT = "COMMENT_REQUIRES_TEXT"
 REPLY_REQUIRES_COMMENT_TARGET = "REPLY_REQUIRES_COMMENT_TARGET"
 REPLY_REQUIRES_TEXT = "REPLY_REQUIRES_TEXT"
 REVISION_REQUIRES_RANGE_TARGET = "REVISION_REQUIRES_RANGE_TARGET"
+FOOTNOTE_REQUIRES_TEXT = "FOOTNOTE_REQUIRES_TEXT"
+FOOTNOTE_REQUIRES_RANGE_TARGET = "FOOTNOTE_REQUIRES_RANGE_TARGET"
 PARSE = "PARSE"  # structural failure / missing required string keys
 
 
@@ -326,6 +329,13 @@ def validate_change(fields) -> str:
             return REPLY_REQUIRES_TEXT
     if ct in ("accept_revision", "reject_revision") and is_comment_target:
         return REVISION_REQUIRES_RANGE_TARGET
+    if ct == "add_footnote":
+        # add_footnote carries the citation body in new_text and attaches it to a
+        # text range (optionally placed after old_text), never to a comment.
+        if is_comment_target:
+            return FOOTNOTE_REQUIRES_RANGE_TARGET
+        if not trim_ws(fields["new_text"]):
+            return FOOTNOTE_REQUIRES_TEXT
     return OK
 
 

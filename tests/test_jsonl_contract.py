@@ -303,6 +303,36 @@ def test_validation_reply_needs_text():
     )
 
 
+def test_validation_add_footnote_ok():
+    assert validate_change(base(change_type="add_footnote", new_text="58 FR 51735.")) == ""
+
+
+def test_validation_add_footnote_with_old_text_placement():
+    assert validate_change(
+        base(change_type="add_footnote", old_text="at 2 percent", new_text="A-4 (2003).")
+    ) == ""
+
+
+def test_validation_add_footnote_requires_text():
+    from ref.jsonl_contract import FOOTNOTE_REQUIRES_TEXT
+    assert validate_change(base(change_type="add_footnote", new_text="  ")) == FOOTNOTE_REQUIRES_TEXT
+
+
+def test_validation_add_footnote_rejects_comment_target():
+    from ref.jsonl_contract import FOOTNOTE_REQUIRES_RANGE_TARGET
+    assert (
+        validate_change(
+            base(bookmark_id="AR_COMMENT_3", change_type="add_footnote", new_text="x")
+        )
+        == FOOTNOTE_REQUIRES_RANGE_TARGET
+    )
+
+
+def test_add_footnote_is_known_change_type():
+    from ref.jsonl_contract import CHANGE_TYPES
+    assert "add_footnote" in CHANGE_TYPES
+
+
 def test_validation_revision_on_comment_target():
     assert (
         validate_change(

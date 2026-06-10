@@ -146,6 +146,9 @@ PARSER_LINES = [
     '{"bookmark_id":"AR_REV_00002","change_type":"reject_revision","add_comment":"Keeping original term."}',
     '{"bookmark_id":"AR_CELL_1_2_3","change_type":"replace_text","new_text":"$97,652"}',
     '{"bookmark_id":"AR_FN_001","change_type":"add_comment_only","add_comment":"Verify citation."}',
+    # add_footnote: citation body rides in new_text; optional old_text placement
+    '{"bookmark_id":"AR_PARA_00070","change_type":"add_footnote","new_text":"U.S. Department of Labor, Bureau of Labor Statistics. OEWS, May 2023. SOC 33-9032. [URL]. Accessed on June 1, 2024."}',
+    '{"bookmark_id":"AR_PARA_00071","change_type":"add_footnote","old_text":"at 2 percent","new_text":"OMB Circular A-4 (2003). https://example.gov/a4. Accessed on January 30, 2020."}',
     '{"bookmark_id":"AR_PARA_00001","change_type":"replace_text","old_text":"","new_text":"full paragraph replacement"}',
     # whitespace variants
     '  { "bookmark_id" : "AR_PARA_00002" ,\t"change_type":"delete_element" }  ',
@@ -231,6 +234,9 @@ PARSER_LINES = [
     '{"bookmark_id":"AR_COMMENT_4","change_type":"reply_to_comment"}',
     '{"bookmark_id":"AR_COMMENT_5","change_type":"accept_revision"}',
     '{"bookmark_id":"AR_COMMENT_6","change_type":"reject_revision"}',
+    '{"bookmark_id":"AR_PARA_00072","change_type":"add_footnote"}',
+    '{"bookmark_id":"AR_PARA_00073","change_type":"add_footnote","new_text":"   "}',
+    '{"bookmark_id":"AR_COMMENT_7","change_type":"add_footnote","new_text":"58 FR 51735 (Oct. 4, 1993)."}',
 ]
 
 # --------------------------------------------------------------------------

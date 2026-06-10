@@ -12,7 +12,8 @@ Public Sub ApplyWordSuggestionsFromJson()
     Const CHANGE_REPLY_COMMENT  As String = "reply_to_comment"
     Const CHANGE_ACCEPT_REVISION As String = "accept_revision"
     Const CHANGE_REJECT_REVISION As String = "reject_revision"
-    
+    Const CHANGE_ADD_FOOTNOTE    As String = "add_footnote"
+
     ' Late-bound equivalents for Final / No Markup view (kept for consistency)
     Const wdRevisionsMarkupNone As Long = 0   ' hide all markup
     Const wdRevisionsViewFinal  As Long = 0   ' show final view
@@ -583,7 +584,60 @@ Public Sub ApplyWordSuggestionsFromJson()
                     logReason = "No revisions found in target range"
                     skippedCount = skippedCount + 1
                 End If
-            
+
+            Case CHANGE_ADD_FOOTNOTE
+                ' Insert a footnote (the citation body in new_text) at the end of
+                ' the target range, or immediately after old_text when given. The
+                ' callout/footnote is a tracked insertion authored AutoReviewer.
+                Dim fnBody As String
+                Dim fnRange As Object
+                Dim fnTxt As String
+                Dim fnPos As Long
+
+                fnBody = modSysUtils.StripArTokens(newText)
+                Set fnRange = targetRange.Duplicate
+
+                ' Trim trailing paragraph mark for paragraph anchors.
+                If Left$(bookmarkId, 8) = "AR_PARA_" Then
+                    fnTxt = CStr(fnRange.Text)
+                    If Len(fnTxt) > 0 And Right$(fnTxt, 1) = Chr$(13) Then
+                        fnRange.End = fnRange.End - 1
+                    End If
+                End If
+
+                If Len(oldText) > 0 Then
+                    ' Place the callout immediately after the matched span.
+                    hayNorm = modSysUtils.NormalizePunctuation(CStr(fnRange.Text))
+                    ndlNorm = modSysUtils.NormalizePunctuation(oldText)
+                    fnPos = InStr(1, hayNorm, ndlNorm, vbBinaryCompare)
+                    If fnPos = 0 Then
+                        logStatus = "Skipped"
+                        logReason = "add_footnote: old_text not found in " & bookmarkId
+                        skippedCount = skippedCount + 1
+                        GoTo LogAndNext
+                    End If
+                    fnRange.Start = fnRange.Start + (fnPos - 1) + Len(ndlNorm)
+                End If
+
+                ' Collapse to an insertion point at the end of the (located) range.
+                fnRange.Start = fnRange.End
+
+                On Error Resume Next
+                wdDoc.Footnotes.Add Range:=fnRange, Text:=fnBody
+                If Err.Number <> 0 Then
+                    On Error GoTo ErrHandler
+                    logStatus = "Skipped"
+                    logReason = "add_footnote: insertion failed at " & bookmarkId
+                    skippedCount = skippedCount + 1
+                    GoTo LogAndNext
+                End If
+                On Error GoTo ErrHandler
+
+                madeTextEdit = True
+                appliedCount = appliedCount + 1
+                logStatus = "Applied"
+                logReason = "add_footnote"
+
             Case Else
                 logStatus = "Skipped"
                 logReason = "Unknown change_type: " & changeType
@@ -1236,6 +1290,16 @@ Public Function ValidateParsedChange(ByVal bookmarkId As String, _
             Exit Function
         End If
     End If
+    If ct = "add_footnote" Then
+        If isCommentTarget Then
+            ValidateParsedChange = "FOOTNOTE_REQUIRES_RANGE_TARGET"
+            Exit Function
+        End If
+        If Len(TrimWs(newText)) = 0 Then
+            ValidateParsedChange = "FOOTNOTE_REQUIRES_TEXT"
+            Exit Function
+        End If
+    End If
 
     ValidateParsedChange = ""
 End Function
@@ -1259,6 +1323,10 @@ Private Function ValidationMessage(ByVal code As String, ByVal changeType As Str
             ValidationMessage = "reply_to_comment requires add_comment text"
         Case "REVISION_REQUIRES_RANGE_TARGET"
             ValidationMessage = "accept/reject_revision requires a bookmark range target, not a comment"
+        Case "FOOTNOTE_REQUIRES_TEXT"
+            ValidationMessage = "add_footnote requires the citation body in new_text"
+        Case "FOOTNOTE_REQUIRES_RANGE_TARGET"
+            ValidationMessage = "add_footnote requires a bookmark range target, not a comment"
         Case Else
             ValidationMessage = code
     End Select

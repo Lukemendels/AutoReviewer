@@ -63,8 +63,25 @@ see `TESTING.md` for the doctrine and the operator round-trip.
 
 Assistant prompts: `TEMPLATE_SKILL.md` (index), `TEMPLATE_SKILL_COTHINKER.md`
 (hot, per persona), `TEMPLATE_SKILL_INCORPORATOR.md` (hot, shared),
-`TEMPLATE_SKILL_SERIALIZER.md` (cold, shared). Behavioral fixtures for the
-assistants live in `evals/`.
+`TEMPLATE_SKILL_RESEARCHER.md` (side, shared), `TEMPLATE_SKILL_CITATION.md`
+(canonical house citation/calc standard, standalone + embedded in the
+Researcher), `TEMPLATE_SKILL_SERIALIZER.md` (cold, shared). Behavioral fixtures
+live in `evals/`.
+
+### The research detour (data and citations)
+
+A reviewer usually flags something because the fix needs *new* work — a current
+wage rate, a recomputed figure, a citation — not in the document. Both hot
+assistants tag each item **edit / judgment / needs-data**. A needs-data item is
+either deferred (a `reply_to_comment` "TODO: pending data") or handed off as a
+**research brief** you paste into the shared **Researcher** chat, with the source
+(e.g., a BLS table) attached. The Researcher pulls, computes per the house
+standard, and returns **DRAFT (final voice) + frozen FIGURES + FOOTNOTES**. The
+co-thinker weaves the prose in but **never alters a number or a citation** —
+sourced figures enter the document only through the Researcher (no-fabrication,
+made physical). Citations land as **footnotes** via the new `add_footnote` edit
+type. `TEMPLATE_SKILL_CITATION.md` is the single source of the house citation and
+calculation style, deployed both standalone and embedded in the Researcher.
 
 ### Co-thinker two-turn protocol and the ground-truth brief
 

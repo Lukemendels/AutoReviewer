@@ -59,7 +59,9 @@ encoded by `vector_escape` in `regenerate.py`):
 - `parser_vectors.txt` — `line <TAB> PASS|REJECT <TAB> reason <TAB>` the seven
   extracted fields. `reason` is empty for PASS, `PARSE` for structural
   failures, else a validation code (`MISSING_BOOKMARK`,
-  `REPLACE_REQUIRES_NEW_TEXT`, …) shared verbatim between the twin and VBA.
+  `REPLACE_REQUIRES_NEW_TEXT`, `FOOTNOTE_REQUIRES_TEXT`,
+  `FOOTNOTE_REQUIRES_RANGE_TARGET`, …) shared verbatim between the twin and VBA.
+  The seven change types include `add_footnote` (citation body in `new_text`).
 - `session_vectors.txt` — `name <TAB> token <TAB> payload <TAB> PASS|FAIL
   <TAB> code` with codes `NO_EXPORT_TOKEN | NO_PAYLOAD | META_MISSING |
   TOKEN_MISMATCH | COUNT_MISMATCH`. Payloads include fenced and unfenced

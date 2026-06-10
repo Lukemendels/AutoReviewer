@@ -11,6 +11,8 @@
 {"bookmark_id":"AR_REV_00002","change_type":"reject_revision","add_comment":"Keeping original term."}	PASS		AR_REV_00002	reject_revision			Keeping original term.		
 {"bookmark_id":"AR_CELL_1_2_3","change_type":"replace_text","new_text":"$97,652"}	PASS		AR_CELL_1_2_3	replace_text		$97,652			
 {"bookmark_id":"AR_FN_001","change_type":"add_comment_only","add_comment":"Verify citation."}	PASS		AR_FN_001	add_comment_only			Verify citation.		
+{"bookmark_id":"AR_PARA_00070","change_type":"add_footnote","new_text":"U.S. Department of Labor, Bureau of Labor Statistics. OEWS, May 2023. SOC 33-9032. [URL]. Accessed on June 1, 2024."}	PASS		AR_PARA_00070	add_footnote		U.S. Department of Labor, Bureau of Labor Statistics. OEWS, May 2023. SOC 33-9032. [URL]. Accessed on June 1, 2024.			
+{"bookmark_id":"AR_PARA_00071","change_type":"add_footnote","old_text":"at 2 percent","new_text":"OMB Circular A-4 (2003). https://example.gov/a4. Accessed on January 30, 2020."}	PASS		AR_PARA_00071	add_footnote	at 2 percent	OMB Circular A-4 (2003). https://example.gov/a4. Accessed on January 30, 2020.			
 {"bookmark_id":"AR_PARA_00001","change_type":"replace_text","old_text":"","new_text":"full paragraph replacement"}	PASS		AR_PARA_00001	replace_text		full paragraph replacement			
   { "bookmark_id" : "AR_PARA_00002" ,\t"change_type":"delete_element" }  	PASS		AR_PARA_00002	delete_element					
 {"bookmark_id":"AR_PARA_00002","change_type":"delete_element"}\r	PASS		AR_PARA_00002	delete_element					
@@ -83,3 +85,6 @@ Omitted: AR_PARA_9 lacked new_text.	REJECT	PARSE
 {"bookmark_id":"AR_COMMENT_4","change_type":"reply_to_comment"}	REJECT	REPLY_REQUIRES_TEXT	AR_COMMENT_4	reply_to_comment					
 {"bookmark_id":"AR_COMMENT_5","change_type":"accept_revision"}	REJECT	REVISION_REQUIRES_RANGE_TARGET	AR_COMMENT_5	accept_revision					
 {"bookmark_id":"AR_COMMENT_6","change_type":"reject_revision"}	REJECT	REVISION_REQUIRES_RANGE_TARGET	AR_COMMENT_6	reject_revision					
+{"bookmark_id":"AR_PARA_00072","change_type":"add_footnote"}	REJECT	FOOTNOTE_REQUIRES_TEXT	AR_PARA_00072	add_footnote					
+{"bookmark_id":"AR_PARA_00073","change_type":"add_footnote","new_text":"   "}	REJECT	FOOTNOTE_REQUIRES_TEXT	AR_PARA_00073	add_footnote		   			
+{"bookmark_id":"AR_COMMENT_7","change_type":"add_footnote","new_text":"58 FR 51735 (Oct. 4, 1993)."}	REJECT	FOOTNOTE_REQUIRES_RANGE_TARGET	AR_COMMENT_7	add_footnote		58 FR 51735 (Oct. 4, 1993).			

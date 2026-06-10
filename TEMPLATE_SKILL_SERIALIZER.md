@@ -72,6 +72,7 @@ or alter the meta line.
 4. `"reply_to_comment"`: Replies to an existing comment. The `bookmark_id` MUST be an `AR_COMMENT_...` ID. Requires `"add_comment"`.
 5. `"accept_revision"`: Accepts the tracked revision(s) within the target bookmark range.
 6. `"reject_revision"`: Rejects the tracked revision(s) within the target bookmark range.
+7. `"add_footnote"`: Inserts a footnote at the target range. The citation body goes in `"new_text"`. Optional `"old_text"` places the callout immediately after that substring; otherwise it goes at the end of the range. The target must be a text range, not an `AR_COMMENT_` id.
 
 ### JSON Schema per line
 ```json
