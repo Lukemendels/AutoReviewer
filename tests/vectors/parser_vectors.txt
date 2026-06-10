@@ -64,6 +64,9 @@ just text	REJECT	PARSE
 {:"A"}	REJECT	PARSE							
 {"bookmark_id":}	REJECT	PARSE							
 ```jsonl	REJECT	PARSE							
+```JSONL	REJECT	PARSE							
+```	REJECT	PARSE							
+Omitted: AR_PARA_9 lacked new_text.	REJECT	PARSE							
 {"change_type":"delete_element"}	REJECT	PARSE							
 {"bookmark_id":"AR_PARA_1"}	REJECT	PARSE							
 {"bookmark_id":true,"change_type":"delete_element"}	REJECT	PARSE							

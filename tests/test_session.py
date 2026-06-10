@@ -91,7 +91,40 @@ def test_filter_drops_blanks_and_fences():
     assert filter_payload_lines(raw) == [meta(1), EDIT]
 
 
+def test_filter_no_fence_takes_all_nonblank():
+    raw = [meta(2), "", EDIT, EDIT]
+    assert filter_payload_lines(raw) == [meta(2), EDIT, EDIT]
+
+
+def test_filter_language_tag_fence():
+    # uppercase / arbitrary language tag still recognized as a fence
+    raw = ["```JSONL", meta(1), EDIT, "```"]
+    assert filter_payload_lines(raw) == [meta(1), EDIT]
+
+
+def test_filter_ignores_prose_after_closing_fence():
+    raw = ["```jsonl", meta(1), EDIT, "```", "Omitted: AR_PARA_9 missing new_text."]
+    assert filter_payload_lines(raw) == [meta(1), EDIT]
+
+
+def test_filter_fence_only_is_empty():
+    assert filter_payload_lines(["```jsonl", "```"]) == []
+    ok, code = check_session(filter_payload_lines(["```jsonl", "```"]), TOKEN)
+    assert not ok and code == NO_PAYLOAD
+
+
+def test_filter_unclosed_fence_takes_rest():
+    raw = ["```jsonl", meta(1), EDIT]
+    assert filter_payload_lines(raw) == [meta(1), EDIT]
+
+
 def test_filtered_fenced_paste_passes_end_to_end():
     raw = ["```jsonl", meta(2), EDIT, EDIT, "```"]
+    ok, code = check_session(filter_payload_lines(raw), TOKEN)
+    assert ok
+
+
+def test_fenced_with_prose_after_passes_end_to_end():
+    raw = ["```jsonl", meta(2), EDIT, EDIT, "```", "Note: nothing omitted."]
     ok, code = check_session(filter_payload_lines(raw), TOKEN)
     assert ok

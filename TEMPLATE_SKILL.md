@@ -7,11 +7,18 @@ assistant templates, not one:
 
 | Temperature | Assistant | Template | Scope | Job |
 |---|---|---|---|---|
-| **Hot** (divergent) | Co-thinker | `TEMPLATE_SKILL_COTHINKER.md` | One **per persona** | *Synthetic review:* critique a draft against the persona's style; surface each recommendation **with its counter-case**, anchored to a bookmark id; output a human-readable **decision packet** (no JSON). |
-| **Hot** (divergent) | Incorporator | `TEMPLATE_SKILL_INCORPORATOR.md` | One, **shared** | *Incorporate feedback:* unpack what reviewers' comments/revisions ask, surface options + a recommendation with counter-case, as a decision packet. Style-agnostic, so not a persona. |
+| **Hot** (divergent) | Co-thinker | `TEMPLATE_SKILL_COTHINKER.md` | One **per persona** | *Synthetic review:* a **two-turn protocol** — Turn 1 clusters comments/revisions into themes (with postures + counter-cases) and stops for theme rulings; Turn 2 emits the numbered decision blocks. |
+| **Hot** (divergent) | Incorporator | `TEMPLATE_SKILL_INCORPORATOR.md` | One, **shared** | *Incorporate feedback:* a synthesis brief, then per-item options + recommendation with counter-case, as a decision packet. Style-agnostic, so not a persona. |
 | *(human)* | — | — | — | Ratify on paper: keep / fix / cut. |
-| **Cold** (convergent) | Serializer | `TEMPLATE_SKILL_SERIALIZER.md` | One, **shared** | Translate the **ratified** decisions into the strict JSONL edit contract. `serialize_exactly` — never re-decide. |
-| **Zero** | VBA applier | — (code) | — | Validate and write the JSONL back to Word as tracked changes. |
+| **Cold** (convergent) | Serializer | `TEMPLATE_SKILL_SERIALIZER.md` | One, **shared** | Translate the **ratified** decisions into one fenced ```` ```jsonl ```` block (meta line + edits). `serialize_exactly` — never re-decide. |
+| **Zero** | VBA applier | — (code) | — | Strip fences, gate the session token + count + comment coverage, then write the JSONL back to Word as tracked changes. |
+
+Behaviors shared by both hot assistants: **comment coverage** (every comment
+gets a block or an explicit `NO_ACTION`, ending with a `COVERAGE:` line); a
+**ground-truth brief** slot (facts the operator pastes — agreement is earned by
+evidence, not by a redline's author); **audience labeling** (external-facing
+comments begin `Program office:`); and **output hygiene** (plain-text, straight
+quotes/hyphens, no `AR_` ids in content).
 
 The Co-thinker and the Incorporator are two hot postures on the same pipeline:
 the Co-thinker *generates* critique (synthetic review), the Incorporator *reads*

@@ -17,6 +17,7 @@ Option Explicit
 Private Const SUITE_FINGERPRINT As String = "fingerprint"
 Private Const SUITE_PARSER As String = "parser"
 Private Const SUITE_SESSION As String = "session"
+Private Const SUITE_COVERAGE As String = "coverage"
 
 ' Module-level result accumulators (reset per run)
 Private mResultsRow As Long
@@ -62,6 +63,11 @@ Public Sub RunAllSelfTests()
     mSuitePass = 0: mSuiteFail = 0
     RunSessionSuite wsOut, vecDir & "session_vectors.txt"
     summary = summary & SuiteSummaryLine(SUITE_SESSION)
+    totalPass = totalPass + mSuitePass: totalFail = totalFail + mSuiteFail
+
+    mSuitePass = 0: mSuiteFail = 0
+    RunCoverageSuite wsOut, vecDir & "coverage_vectors.txt"
+    summary = summary & SuiteSummaryLine(SUITE_COVERAGE)
     totalPass = totalPass + mSuitePass: totalFail = totalFail + mSuiteFail
 
     summary = summary & vbCrLf & "TOTAL: " & totalPass & " passed, " & totalFail & " failed -- " & _
@@ -191,10 +197,10 @@ Private Sub RunSessionSuite(ByVal wsOut As Worksheet, ByVal path As String)
     Dim payload As String
     Dim token As String
     Dim parts() As String
+    Dim rawArr() As String
     Dim filtered() As String
     Dim m As Long
     Dim j As Long
-    Dim t As String
     Dim okGate As Boolean
     Dim failCode As String
     Dim expectedSig As String
@@ -218,18 +224,14 @@ Private Sub RunSessionSuite(ByVal wsOut As Worksheet, ByVal path As String)
         token = cols(1)
         payload = VectorUnescape(cols(2))
 
-        ' Collect payload lines exactly as the importer does: split on LF,
-        ' TrimWs, keep only payload lines (drops blanks and ``` fences).
+        ' Collect payload lines exactly as the importer does: split on LF into
+        ' raw 1-based lines, then run the shared fence-tolerant filter.
         parts = Split(payload, vbLf)
-        ReDim filtered(1 To UBound(parts) + 2)
-        m = 0
+        ReDim rawArr(1 To UBound(parts) - LBound(parts) + 1)
         For j = LBound(parts) To UBound(parts)
-            t = modReviewImport.TrimWs(parts(j))
-            If modReviewImport.IsPayloadLine(t) Then
-                m = m + 1
-                filtered(m) = t
-            End If
+            rawArr(j - LBound(parts) + 1) = parts(j)
         Next j
+        m = modReviewImport.FilterPayloadLines(rawArr, UBound(parts) - LBound(parts) + 1, filtered)
 
         failCode = ""
         okGate = modReviewImport.CheckSessionGate(filtered, m, token, failCode)
@@ -238,6 +240,72 @@ Private Sub RunSessionSuite(ByVal wsOut As Worksheet, ByVal path As String)
         actualSig = IIf(okGate, "PASS", "FAIL") & "|" & failCode
 
         WriteResult wsOut, SUITE_SESSION, caseNum, cols(0) & ": " & cols(2), expectedSig, actualSig, (actualSig = expectedSig)
+NextCase:
+    Next raw
+End Sub
+
+' Coverage suite: each line is
+'   comment_ids_csv <TAB> edits(ct:bid;...) <TAB> unaddressed_csv <TAB> status
+Private Sub RunCoverageSuite(ByVal wsOut As Worksheet, ByVal path As String)
+    Dim dataLines As Collection
+    Dim raw As Variant
+    Dim cols() As String
+    Dim caseNum As Long
+    Dim ids() As String
+    Dim idCount As Long
+    Dim changeTypes() As String
+    Dim bookmarks() As String
+    Dim editCount As Long
+    Dim editPairs() As String
+    Dim kv() As String
+    Dim j As Long
+    Dim actualUnaddr As String
+    Dim actualStatus As String
+    Dim expectedSig As String
+    Dim actualSig As String
+
+    Set dataLines = ReadVectorLines(path)
+    If dataLines Is Nothing Then
+        WriteResult wsOut, SUITE_COVERAGE, 0, "(file missing: " & path & ")", "", "", False
+        Exit Sub
+    End If
+
+    caseNum = 0
+    For Each raw In dataLines
+        caseNum = caseNum + 1
+        ' Use -1 limit semantics: keep empty trailing fields. Split keeps them.
+        cols = Split(CStr(raw), vbTab)
+        If UBound(cols) < 3 Then
+            WriteResult wsOut, SUITE_COVERAGE, caseNum, CStr(raw), "(4 columns)", "(malformed vector line)", False
+            GoTo NextCase
+        End If
+
+        idCount = modReviewImport.SplitCsv(cols(0), ids)
+
+        ' Parse the edits column "ct:bid;ct:bid" into parallel arrays.
+        editCount = 0
+        If Len(cols(1)) > 0 Then
+            editPairs = Split(cols(1), ";")
+            ReDim changeTypes(1 To UBound(editPairs) - LBound(editPairs) + 1)
+            ReDim bookmarks(1 To UBound(editPairs) - LBound(editPairs) + 1)
+            For j = LBound(editPairs) To UBound(editPairs)
+                kv = Split(editPairs(j), ":")
+                editCount = editCount + 1
+                changeTypes(editCount) = kv(0)
+                If UBound(kv) >= 1 Then bookmarks(editCount) = kv(1) Else bookmarks(editCount) = ""
+            Next j
+        Else
+            ReDim changeTypes(1 To 1)
+            ReDim bookmarks(1 To 1)
+        End If
+
+        actualUnaddr = modReviewImport.ComputeUnaddressed(ids, idCount, changeTypes, bookmarks, editCount)
+        actualStatus = IIf(Len(actualUnaddr) = 0, "ALL_ADDRESSED", "UNADDRESSED")
+
+        expectedSig = cols(2) & "|" & cols(3)
+        actualSig = actualUnaddr & "|" & actualStatus
+
+        WriteResult wsOut, SUITE_COVERAGE, caseNum, cols(0) & " / " & cols(1), expectedSig, actualSig, (actualSig = expectedSig)
 NextCase:
     Next raw
 End Sub

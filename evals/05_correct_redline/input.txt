@@ -1,0 +1,20 @@
+GROUND TRUTH BRIEF:
+- The statutory citation for this program is 49 U.S.C. 114.
+- The proposed compliance date is 18 months after the final rule.
+
+<<DOCUMENT_TEXT_START>>
+This program is authorized under 49 U.S.C. 1140. Regulated parties must comply
+within 18 months of the final rule.
+<<DOCUMENT_TEXT_END>>
+
+<<BOOKMARK_INDEX_START>>
+AR_PARA_00005 | type=paragraph | "This program is authorized under 49 U.S.C. 1140."
+AR_PARA_00006 | type=paragraph | "Regulated parties must comply within 18 months of the final rule."
+<<BOOKMARK_INDEX_END>>
+
+<<COMMENTS_START>>
+## AR_COMMENT_1
+Author: Reviewer
+Scope Sentence: This program is authorized under 49 U.S.C. 1140.
+Text: Wrong citation - the authority is 49 U.S.C. 114, not 1140. Please correct.
+<<COMMENTS_END>>

@@ -1,0 +1,20 @@
+GROUND TRUTH BRIEF:
+- The 2023 OMB Circular A-4 uses a single 2% discount rate; the 7% rate was dropped.
+- This RIA was finalized under the 2023 A-4 regime (analysis dated 2024-03).
+
+<<DOCUMENT_TEXT_START>>
+The analysis discounts costs and benefits at 2 percent, consistent with current
+guidance.
+<<DOCUMENT_TEXT_END>>
+
+<<BOOKMARK_INDEX_START>>
+AR_PARA_00007 | type=paragraph | "The analysis discounts costs and benefits at 2 percent, consistent with current guidance."
+<<BOOKMARK_INDEX_END>>
+
+<<COMMENTS_START>>
+## AR_COMMENT_1
+Author: Office Director
+Date: 2024-04-01
+Scope Sentence: The analysis discounts costs and benefits at 2 percent, consistent with current guidance.
+Text: This is wrong. Every RIA must show both 3 percent and 7 percent. Add the 7 percent sensitivity case.
+<<COMMENTS_END>>

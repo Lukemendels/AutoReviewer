@@ -62,7 +62,41 @@ The deterministic core (fingerprint, JSONL contract, session gate) has a
 see `TESTING.md` for the doctrine and the operator round-trip.
 
 Assistant prompts: `TEMPLATE_SKILL.md` (index), `TEMPLATE_SKILL_COTHINKER.md`
-(hot, per persona), `TEMPLATE_SKILL_SERIALIZER.md` (cold, shared).
+(hot, per persona), `TEMPLATE_SKILL_INCORPORATOR.md` (hot, shared),
+`TEMPLATE_SKILL_SERIALIZER.md` (cold, shared). Behavioral fixtures for the
+assistants live in `evals/`.
+
+### Co-thinker two-turn protocol and the ground-truth brief
+
+The co-thinker runs a **two-turn protocol**: Turn 1 clusters the comments and
+revisions into a few **themes** (each with a recommended posture and its
+counter-case) and then **stops** for your theme rulings; Turn 2 produces the
+numbered decision blocks consistent with those rulings. You spend judgment on a
+handful of theme calls, not on scanning a long flat list.
+
+You may paste a **`GROUND TRUTH BRIEF:`** with the export — facts the assistant
+treats as established. Agreement is earned by evidence, not by a redline's
+existence or its author: a comment that contradicts the brief is pushed back on
+via a tactful reply, never a text change that concedes the point. Standalone
+comments meant for an external party begin `Program office:` so deliverables
+split mechanically.
+
+### Comment coverage (warn-gate)
+
+A silently unanswered comment is the tool's worst judgment failure. The export
+records every `AR_COMMENT_` id; before applying, the importer computes which
+comments received no `reply_to_comment`/`add_comment_only` and, if any remain,
+shows a **Proceed / Abort** warning listing them. A no-action ruling is allowed
+but must be a visible choice — the decision and the unaddressed list are logged
+to the `Trace` row.
+
+### Serializer output: one fenced block
+
+The serializer emits exactly one ```` ```jsonl ```` fenced block (meta line +
+edit lines), with any omitted-decision notes after the fence. **Paste the whole
+block into `LLM_Changes!A8` — fences welcome.** The importer strips fences and
+ignores prose after them, so pasting with or without the fences gates
+identically.
 
 ## Getting started
 

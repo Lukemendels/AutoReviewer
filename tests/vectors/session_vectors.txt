@@ -17,3 +17,10 @@ meta_count_not_number	0123ABCD4567EF89	{"meta": "autoreviewer", "session": "0123
 meta_negative_count	0123ABCD4567EF89	{"meta": "autoreviewer", "session": "0123ABCD4567EF89", "count": -1}	FAIL	META_MISSING
 meta_count_plus_sign	0123ABCD4567EF89	{"meta": "autoreviewer", "session": "0123ABCD4567EF89", "count": +1}\n{"bookmark_id":"AR_PARA_00001","change_type":"delete_element"}	FAIL	META_MISSING
 meta_count_decimal	0123ABCD4567EF89	{"meta": "autoreviewer", "session": "0123ABCD4567EF89", "count": 1.0}\n{"bookmark_id":"AR_PARA_00001","change_type":"delete_element"}	FAIL	META_MISSING
+fenced_valid	0123ABCD4567EF89	```jsonl\n{"meta": "autoreviewer", "session": "0123ABCD4567EF89", "count": 2}\n{"bookmark_id":"AR_PARA_00001","change_type":"delete_element"}\n{"bookmark_id":"AR_PARA_00001","change_type":"delete_element"}\n```	PASS	
+fenced_language_tag_upper	0123ABCD4567EF89	```JSONL\n{"meta": "autoreviewer", "session": "0123ABCD4567EF89", "count": 1}\n{"bookmark_id":"AR_PARA_00001","change_type":"delete_element"}\n```	PASS	
+fenced_prose_after_close	0123ABCD4567EF89	```jsonl\n{"meta": "autoreviewer", "session": "0123ABCD4567EF89", "count": 1}\n{"bookmark_id":"AR_PARA_00001","change_type":"delete_element"}\n```\nOmitted: AR_PARA_9 lacked new_text.	PASS	
+fenced_blanks_inside	0123ABCD4567EF89	```jsonl\n{"meta": "autoreviewer", "session": "0123ABCD4567EF89", "count": 2}\n\n{"bookmark_id":"AR_PARA_00001","change_type":"delete_element"}\n  \n{"bookmark_id":"AR_PARA_00001","change_type":"delete_element"}\n```	PASS	
+fence_only_no_payload	0123ABCD4567EF89	```jsonl\n```	FAIL	NO_PAYLOAD
+unclosed_fence_takes_rest	0123ABCD4567EF89	```jsonl\n{"meta": "autoreviewer", "session": "0123ABCD4567EF89", "count": 1}\n{"bookmark_id":"AR_PARA_00001","change_type":"delete_element"}	PASS	
+no_fence_raw_paste	0123ABCD4567EF89	{"meta": "autoreviewer", "session": "0123ABCD4567EF89", "count": 1}\n{"bookmark_id":"AR_PARA_00001","change_type":"delete_element"}	PASS	

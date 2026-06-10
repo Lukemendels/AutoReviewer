@@ -120,22 +120,26 @@ Public Sub ApplyWordSuggestionsFromJson()
         GoTo Cleanup
     End If
     
-    ReDim tmpLines(1 To lastRow - 7)
-    n = 0
+    Dim rawLines() As String
+    Dim rawCount As Long
+    ReDim rawLines(1 To lastRow - 7)
+    rawCount = 0
     For r = 8 To lastRow
-        tmp = TrimWs(CStr(wsChanges.Cells(r, "A").value))
-        If IsPayloadLine(tmp) Then
-            n = n + 1
-            tmpLines(n) = tmp
-        End If
+        rawCount = rawCount + 1
+        rawLines(rawCount) = CStr(wsChanges.Cells(r, "A").value)
     Next r
 
+    ' Fence-tolerant payload extraction: if the serializer's fenced ```jsonl
+    ' block is present, take only the lines inside it (prose notes after the
+    ' closing fence are ignored); otherwise take all non-blank lines. The
+    ' operator may paste with or without fences -- both gate identically.
+    n = FilterPayloadLines(rawLines, rawCount, tmpLines)
+
     If n = 0 Then
-        MsgBox "No non-empty JSONL lines found in column A starting at A8.", vbExclamation
+        MsgBox "No JSONL payload found in column A starting at A8 " & _
+               "(a fence-only paste counts as empty).", vbExclamation
         GoTo Cleanup
     End If
-
-    ReDim Preserve tmpLines(1 To n)
 
     '---------------------------
     ' 2a) Session-binding gate (default-deny, before Word opens).
@@ -173,6 +177,97 @@ Public Sub ApplyWordSuggestionsFromJson()
         joinedJsonl = joinedJsonl & tmpLines(k) & vbLf
     Next k
     jsonlFingerprint = modSysUtils.ArContentFingerprint(joinedJsonl)
+
+    '---------------------------
+    ' 2c) Parse and validate every edit line ONCE, up front and with no Word
+    ' open. The two-pass apply below reuses these arrays; the coverage gate
+    ' needs them too, and parsing before Word opens means an Abort never spins
+    ' up Word.
+    '---------------------------
+    totalLines = UBound(lines) - LBound(lines) + 1
+    Application.StatusBar = "Parsing suggestions: " & totalLines & " lines"
+
+    Dim pParsed() As Boolean
+    Dim pValCode() As String
+    Dim pIsRev() As Boolean
+    Dim pBookmark() As String
+    Dim pChange() As String
+    Dim pOld() As String
+    Dim pNew() As String
+    Dim pComment() As String
+    Dim pApply() As Variant
+    Dim pConf() As String
+    ReDim pParsed(1 To totalLines)
+    ReDim pValCode(1 To totalLines)
+    ReDim pIsRev(1 To totalLines)
+    ReDim pBookmark(1 To totalLines)
+    ReDim pChange(1 To totalLines)
+    ReDim pOld(1 To totalLines)
+    ReDim pNew(1 To totalLines)
+    ReDim pComment(1 To totalLines)
+    ReDim pApply(1 To totalLines)
+    ReDim pConf(1 To totalLines)
+
+    For i = 1 To totalLines
+        pParsed(i) = ParseJsonLine(lines(i), bookmarkId, changeType, oldText, newText, _
+                                   addComment, applyChange, confidenceRaw)
+        If pParsed(i) Then
+            pBookmark(i) = bookmarkId
+            pChange(i) = changeType
+            pOld(i) = oldText
+            pNew(i) = newText
+            pComment(i) = addComment
+            pApply(i) = applyChange
+            pConf(i) = confidenceRaw
+            pValCode(i) = ValidateParsedChange(bookmarkId, changeType, oldText, newText, addComment)
+            If pValCode(i) = "" Then
+                Dim ctL As String
+                ctL = LCase$(TrimWs(changeType))
+                pIsRev(i) = (ctL = CHANGE_ACCEPT_REVISION Or ctL = CHANGE_REJECT_REVISION)
+            End If
+        End If
+    Next i
+
+    '---------------------------
+    ' 2d) Comment-coverage warn-gate (Profile s9.4 false-negative guard). The
+    ' export persisted the full ordered list of AR_COMMENT_ ids; a comment that
+    ' received neither a reply_to_comment nor an add_comment_only is unaddressed.
+    ' This is a WARN, not a hard block: a ratifier may rule no-action, but that
+    ' must be a visible choice. The decision is logged to the Trace row.
+    '---------------------------
+    Dim coverageDecision As String
+    Dim unaddressedList As String
+    Dim covIds() As String
+    Dim covCount As Long
+    coverageDecision = "n/a"
+    unaddressedList = ""
+    covCount = SplitCsv(GetConfigValue("CommentIds", ""), covIds)
+    If covCount > 0 Then
+        unaddressedList = ComputeUnaddressed(covIds, covCount, pChange, pBookmark, totalLines)
+        If Len(unaddressedList) = 0 Then
+            coverageDecision = "All addressed"
+        Else
+            Dim covResp As VbMsgBoxResult
+            covResp = MsgBox("These reviewer comments received no reply and no comment:" & vbCrLf & vbCrLf & _
+                             Replace(unaddressedList, ",", vbCrLf) & vbCrLf & vbCrLf & _
+                             "Proceed anyway (recording a no-action ruling), or " & _
+                             "Abort to revise the decisions first?", _
+                             vbExclamation + vbYesNo + vbDefaultButton2, "Unaddressed Comments")
+            If covResp = vbNo Then
+                coverageDecision = "Abort"
+                On Error Resume Next
+                modAudit.AppendReviewTrace "Apply-Aborted", GetConfigValue("ActivePersona", ""), _
+                    GetConfigValue("SourceDocPath", ""), wordPath, _
+                    GetConfigValue("LastRecommendedRoute", ""), _
+                    GetConfigValue("LastExportFingerprint", ""), jsonlFingerprint, _
+                    totalLines, 0, 0, unaddressedList, coverageDecision
+                On Error GoTo ErrHandler
+                GoTo Cleanup
+            Else
+                coverageDecision = "Proceed despite unaddressed"
+            End If
+        End If
+    End If
     
     '---------------------------
     ' 2a) Ensure Log sheet exists (bookmark_id-focused)
@@ -257,56 +352,12 @@ Public Sub ApplyWordSuggestionsFromJson()
     madeTextEdit = False
 
     '---------------------------
-    ' 4) Parse and validate every line once, then apply in TWO passes:
-    ' text/comment edits first, accept/reject_revision second. Accepting or
-    ' rejecting a revision can delete ranges that other bookmarks live inside,
-    ' so revision verdicts must never run before the text edits they could
-    ' invalidate. The Log sheet records the pass number per line.
+    ' 4) Apply in TWO passes over the pre-parsed set: text/comment edits first,
+    ' accept/reject_revision second. Accepting or rejecting a revision can
+    ' delete ranges that other bookmarks live inside, so revision verdicts must
+    ' never run before the text edits they could invalidate. The Log sheet
+    ' records the pass number per line.
     '---------------------------
-    totalLines = UBound(lines) - LBound(lines) + 1
-    Application.StatusBar = "Parsing suggestions: " & totalLines & " lines"
-
-    Dim pParsed() As Boolean
-    Dim pValCode() As String
-    Dim pIsRev() As Boolean
-    Dim pBookmark() As String
-    Dim pChange() As String
-    Dim pOld() As String
-    Dim pNew() As String
-    Dim pComment() As String
-    Dim pApply() As Variant
-    Dim pConf() As String
-    ReDim pParsed(1 To totalLines)
-    ReDim pValCode(1 To totalLines)
-    ReDim pIsRev(1 To totalLines)
-    ReDim pBookmark(1 To totalLines)
-    ReDim pChange(1 To totalLines)
-    ReDim pOld(1 To totalLines)
-    ReDim pNew(1 To totalLines)
-    ReDim pComment(1 To totalLines)
-    ReDim pApply(1 To totalLines)
-    ReDim pConf(1 To totalLines)
-
-    For i = 1 To totalLines
-        pParsed(i) = ParseJsonLine(lines(i), bookmarkId, changeType, oldText, newText, _
-                                   addComment, applyChange, confidenceRaw)
-        If pParsed(i) Then
-            pBookmark(i) = bookmarkId
-            pChange(i) = changeType
-            pOld(i) = oldText
-            pNew(i) = newText
-            pComment(i) = addComment
-            pApply(i) = applyChange
-            pConf(i) = confidenceRaw
-            pValCode(i) = ValidateParsedChange(bookmarkId, changeType, oldText, newText, addComment)
-            If pValCode(i) = "" Then
-                Dim ctL As String
-                ctL = LCase$(TrimWs(changeType))
-                pIsRev(i) = (ctL = CHANGE_ACCEPT_REVISION Or ctL = CHANGE_REJECT_REVISION)
-            End If
-        End If
-    Next i
-
     Dim passNum As Long
     For passNum = 1 To 2
 
@@ -644,7 +695,8 @@ SkipLine:
         GetConfigValue("LastRecommendedRoute", ""), _
         GetConfigValue("LastExportFingerprint", ""), _
         jsonlFingerprint, _
-        totalLines, appliedCount, skippedCount
+        totalLines, appliedCount, skippedCount, _
+        unaddressedList, coverageDecision
     On Error GoTo ErrHandler
 
     ' 7) Show Final Summary
@@ -750,13 +802,104 @@ Public Function TrimWs(ByVal s As String) As String
     If b >= a Then TrimWs = Mid$(s, a, b - a + 1)
 End Function
 
-' Payload filter shared by the import collector and the self-test harness:
-' blank lines and markdown code-fence lines are not payload (a chat copy
-' often includes fences; counting them would break the meta count check).
-Public Function IsPayloadLine(ByVal trimmed As String) As Boolean
-    If Len(trimmed) = 0 Then Exit Function
-    If trimmed = "```" Or trimmed = "```json" Or trimmed = "```jsonl" Then Exit Function
-    IsPayloadLine = True
+' A code-fence line: any trimmed line beginning with three backticks (so a
+' language tag like ```jsonl or ```JSONL is recognized).
+Public Function IsFenceLine(ByVal trimmed As String) As Boolean
+    IsFenceLine = (Left$(trimmed, 3) = "```")
+End Function
+
+' Collect the payload lines from a paste (twin: filter_payload_lines in
+' ref/session.py). The serializer emits its meta+edit lines inside a single
+' ```jsonl fenced block, with refuse-don't-guess notes (prose) AFTER the
+' closing fence. So: if any fence line is present, take only the lines strictly
+' between the FIRST fence and the next fence, dropping blanks; everything
+' outside the fenced block (including stray prose after it) is ignored. If no
+' fence is present, the operator pasted raw JSONL: take all non-blank lines.
+' Fills outLines(1..count) and returns count.
+Public Function FilterPayloadLines(ByRef rawLines() As String, ByVal rawCount As Long, _
+                                   ByRef outLines() As String) As Long
+    Dim i As Long
+    Dim t As String
+    Dim startF As Long
+    Dim endF As Long
+    Dim lastIdx As Long
+    Dim m As Long
+    Dim trimmed() As String
+
+    If rawCount <= 0 Then
+        FilterPayloadLines = 0
+        Exit Function
+    End If
+
+    ReDim trimmed(1 To rawCount)
+    For i = 1 To rawCount
+        trimmed(i) = TrimWs(rawLines(i))
+    Next i
+
+    startF = 0
+    For i = 1 To rawCount
+        If IsFenceLine(trimmed(i)) Then
+            startF = i
+            Exit For
+        End If
+    Next i
+
+    ReDim outLines(1 To rawCount)
+    m = 0
+
+    If startF > 0 Then
+        endF = 0
+        For i = startF + 1 To rawCount
+            If IsFenceLine(trimmed(i)) Then
+                endF = i
+                Exit For
+            End If
+        Next i
+        If endF > 0 Then lastIdx = endF - 1 Else lastIdx = rawCount
+        For i = startF + 1 To lastIdx
+            t = trimmed(i)
+            If Len(t) > 0 And Not IsFenceLine(t) Then
+                m = m + 1
+                outLines(m) = t
+            End If
+        Next i
+    Else
+        For i = 1 To rawCount
+            t = trimmed(i)
+            If Len(t) > 0 Then
+                m = m + 1
+                outLines(m) = t
+            End If
+        Next i
+    End If
+
+    FilterPayloadLines = m
+End Function
+
+' Split a comma-separated string into outItems(1..count); returns count.
+' Empty / whitespace items are dropped. Used for the persisted CommentIds list.
+Public Function SplitCsv(ByVal s As String, ByRef outItems() As String) As Long
+    Dim parts() As String
+    Dim i As Long
+    Dim t As String
+    Dim m As Long
+
+    If Len(TrimWs(s)) = 0 Then
+        SplitCsv = 0
+        Exit Function
+    End If
+
+    parts = Split(s, ",")
+    ReDim outItems(1 To UBound(parts) - LBound(parts) + 1)
+    m = 0
+    For i = LBound(parts) To UBound(parts)
+        t = TrimWs(parts(i))
+        If Len(t) > 0 Then
+            m = m + 1
+            outItems(m) = t
+        End If
+    Next i
+    SplitCsv = m
 End Function
 
 Private Function SkipWs(ByVal s As String, ByVal i As Long) As Long
@@ -1119,6 +1262,42 @@ Private Function ValidationMessage(ByVal code As String, ByVal changeType As Str
         Case Else
             ValidationMessage = code
     End Select
+End Function
+
+'=== Comment coverage (twin: ref/coverage.py) ========================
+' A comment is "addressed" iff some reply_to_comment or add_comment_only edit
+' targets its AR_COMMENT_ id. Returns the ordered, comma-joined list of the
+' commentIds that were NOT addressed ("" if all addressed). The apply step
+' warn-gates on a non-empty result; the export persists commentIds.
+Public Function ComputeUnaddressed(ByRef commentIds() As String, ByVal idCount As Long, _
+                                   ByRef changeTypes() As String, ByRef bookmarks() As String, _
+                                   ByVal editCount As Long) As String
+    Dim addressed As Object
+    Dim i As Long
+    Dim ct As String
+    Dim b As String
+    Dim res As String
+
+    Set addressed = CreateObject("Scripting.Dictionary")
+    For i = 1 To editCount
+        ct = LCase$(TrimWs(changeTypes(i)))
+        If ct = "reply_to_comment" Or ct = "add_comment_only" Then
+            b = TrimWs(bookmarks(i))
+            If Left$(b, 11) = "AR_COMMENT_" Then addressed(b) = True
+        End If
+    Next i
+
+    res = ""
+    For i = 1 To idCount
+        b = TrimWs(commentIds(i))
+        If Len(b) > 0 Then
+            If Not addressed.Exists(b) Then
+                If Len(res) > 0 Then res = res & ","
+                res = res & b
+            End If
+        End If
+    Next i
+    ComputeUnaddressed = res
 End Function
 
 '=== Session-binding gate (twin: ref/session.py) =====================

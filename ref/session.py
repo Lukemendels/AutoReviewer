@@ -28,27 +28,30 @@ META_MISSING = "META_MISSING"
 TOKEN_MISMATCH = "TOKEN_MISMATCH"
 COUNT_MISMATCH = "COUNT_MISMATCH"
 
-_FENCES = ("```", "```json", "```jsonl")
-
-
-def is_payload_line(trimmed: str) -> bool:
-    """Filter applied when collecting pasted lines: blank lines and markdown
-    code-fence lines are not payload (a chat UI copy often includes fences,
-    and counting them would break the meta count check)."""
-    if not trimmed:
-        return False
-    if trimmed in _FENCES:
-        return False
-    return True
+def is_fence(trimmed: str) -> bool:
+    """A code-fence line: any trimmed line beginning with three backticks (so a
+    language tag like ```jsonl or ```JSONL is recognized)."""
+    return trimmed.startswith("```")
 
 
 def filter_payload_lines(raw_lines):
-    out = []
-    for ln in raw_lines:
-        t = trim_ws(ln)
-        if is_payload_line(t):
-            out.append(t)
-    return out
+    """Collect the payload lines from a paste.
+
+    The serializer emits its meta+edit lines inside a single ```jsonl fenced
+    block, with refuse-don't-guess notes (prose) AFTER the closing fence. So:
+    if any fence line is present, take only the lines strictly between the
+    FIRST fence and the next fence, dropping blanks; everything outside the
+    fenced block (including stray prose after it) is ignored. If no fence is
+    present, the operator pasted raw JSONL: take all non-blank lines. Both
+    paths gate identically."""
+    trimmed = [trim_ws(ln) for ln in raw_lines]
+    fence_idx = [i for i, t in enumerate(trimmed) if is_fence(t)]
+    if fence_idx:
+        start = fence_idx[0]
+        end = next((i for i in fence_idx if i > start), None)
+        block = trimmed[start + 1 : end] if end is not None else trimmed[start + 1 :]
+        return [t for t in block if t and not is_fence(t)]
+    return [t for t in trimmed if t]
 
 
 def parse_meta_line(line: str):

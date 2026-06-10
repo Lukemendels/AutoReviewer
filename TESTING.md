@@ -62,7 +62,11 @@ encoded by `vector_escape` in `regenerate.py`):
   `REPLACE_REQUIRES_NEW_TEXT`, …) shared verbatim between the twin and VBA.
 - `session_vectors.txt` — `name <TAB> token <TAB> payload <TAB> PASS|FAIL
   <TAB> code` with codes `NO_EXPORT_TOKEN | NO_PAYLOAD | META_MISSING |
-  TOKEN_MISMATCH | COUNT_MISMATCH`.
+  TOKEN_MISMATCH | COUNT_MISMATCH`. Payloads include fenced and unfenced
+  variants; the harness runs the shared `FilterPayloadLines` before the gate.
+- `coverage_vectors.txt` — `comment_ids_csv <TAB> edits(ct:bid;...) <TAB>
+  unaddressed_csv <TAB> status` (`ALL_ADDRESSED | UNADDRESSED`). A comment is
+  addressed iff a `reply_to_comment`/`add_comment_only` edit targets its id.
 
 ## Mirrored semantics (never change one side alone)
 
@@ -75,6 +79,11 @@ encoded by `vector_escape` in `regenerate.py`):
   high+low surrogate pairs combine into one code point). A malformed `\u` (not
   4 hex digits) or any other unknown escape drops the backslash.
 - **Meta `count`** must be a plain integer: optional minus, then 1–9 digits.
-- **Payload filter** drops blank lines and ``` fences before the gate.
+- **Payload filter** (`FilterPayloadLines`): if a ``` fence is present, take
+  only the lines inside the first fenced block (prose after the close is
+  ignored); otherwise take all non-blank lines.
+- **Coverage** counts only `reply_to_comment`/`add_comment_only` as addressing a
+  comment; `apply_change` is not consulted; the unaddressed list preserves input
+  order.
 - Lone UTF-16 surrogates are not vectorable (Python can't encode them); the
   twin and vectors avoid them by construction.

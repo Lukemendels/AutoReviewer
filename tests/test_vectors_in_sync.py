@@ -10,6 +10,7 @@ from tests.vectors.regenerate import (
     build_fingerprint_vectors,
     build_parser_vectors,
     build_session_vectors,
+    build_coverage_vectors,
     vector_escape,
     vector_unescape,
 )
@@ -32,6 +33,10 @@ def test_parser_vectors_in_sync():
 
 def test_session_vectors_in_sync():
     assert _read("session_vectors.txt") == build_session_vectors()
+
+
+def test_coverage_vectors_in_sync():
+    assert _read("coverage_vectors.txt") == build_coverage_vectors()
 
 
 def test_escape_round_trip():

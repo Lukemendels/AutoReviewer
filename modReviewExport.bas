@@ -130,12 +130,19 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     Dim bufferRevisions As String
     
     bufferComments = "<<COMMENTS_START>>" & vbCrLf
-    
+
+    ' Persist the full ordered list of comment ids so the apply step can
+    ' warn-gate on any comment that received no reply or comment (Goal 1).
+    Dim commentIdList As String
+    commentIdList = ""
+
     If wdDoc.Comments.Count = 0 Then
         bufferComments = bufferComments & "(No comments in document)" & vbCrLf
     Else
         For Each c In wdDoc.Comments
             bufferComments = bufferComments & "## AR_COMMENT_" & c.Index & vbCrLf
+            If Len(commentIdList) > 0 Then commentIdList = commentIdList & ","
+            commentIdList = commentIdList & "AR_COMMENT_" & c.Index
             
             ' Author / Date
             On Error Resume Next
@@ -174,7 +181,10 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     End If
     
     bufferComments = bufferComments & "<<COMMENTS_END>>" & vbCrLf & vbCrLf
-    
+
+    ' Record the comment-id list for the apply-side coverage warn-gate.
+    SetConfigValue "CommentIds", commentIdList
+
     If isRespondMode Then
         bufferRevisions = "<<REVISIONS_START>>" & vbCrLf
         If wdDoc.Revisions.Count = 0 Then
@@ -349,11 +359,20 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
         "  OPEN QUESTIONS: what must be answered to revise the document well?" & vbCrLf & _
         "Then the per-item blocks below." & vbCrLf
 
+    ' Coverage requirement: every comment must be visibly adjudicated (Goal 1).
+    Dim coverageSpec As String
+    coverageSpec = vbCrLf & vbCrLf & _
+        "COVERAGE REQUIREMENT: every AR_COMMENT_ id in the COMMENTS section MUST " & _
+        "receive either a numbered block or an explicit NO_ACTION ruling with a " & _
+        "one-line rationale. A comment left unmentioned is a failure. End your " & _
+        "output with the line: COVERAGE: addressed <X> of <Y> comments; NO_ACTION: " & _
+        "<ids or none>."
+
     If isRespondMode Then
         promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. " & synthesisSpec & _
-            "For each comment and each revision, unpack WHAT the reviewer is asking for, then surface the realistic OPTIONS -- accept as-is, modify, reject with rationale, or reply to the comment -- and recommend one with its counter-case. Anchor each to the reviewer's AR_COMMENT_ / AR_REV_ / paragraph id. EVERY reviewer comment MUST get a reply_to_comment block." & packetSpec
+            "For each comment and each revision, unpack WHAT the reviewer is asking for, then surface the realistic OPTIONS -- accept as-is, modify, reject with rationale, or reply to the comment -- and recommend one with its counter-case. Anchor each to the reviewer's AR_COMMENT_ / AR_REV_ / paragraph id. EVERY reviewer comment MUST get a reply_to_comment block." & packetSpec & coverageSpec
     Else
-        promptText = "I am attaching an exported Word document containing text and bookmark IDs. Review the text against your established style rules and recommend edits." & packetSpec
+        promptText = "I am attaching an exported Word document containing text and bookmark IDs. Follow your two-turn protocol: begin with Turn 1 (THEMES) and stop for my rulings before producing blocks." & packetSpec & coverageSpec
     End If
     modSysUtils.CopyToClipboard promptText
     
