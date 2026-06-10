@@ -30,7 +30,14 @@
 {"bookmark_id":"AR_PARA_00007","change_type":"replace_text","new_text":"line1\\nline2\\twith tab"}	PASS		AR_PARA_00007	replace_text		line1\nline2\twith tab			
 {"bookmark_id":"AR_PARA_00044","change_type":"replace_text","new_text":"quote: \\" slash: \\/ cr: \\r"}	PASS		AR_PARA_00044	replace_text		quote: " slash: / cr: \r			
 {"bookmark_id":"AR_PARA_00045","change_type":"replace_text","new_text":"unknown \\q escape"}	PASS		AR_PARA_00045	replace_text		unknown q escape			
-{"bookmark_id":"AR_PARA_00046","change_type":"replace_text","new_text":"not decoded: \\u2014"}	PASS		AR_PARA_00046	replace_text		not decoded: u2014			
+{"bookmark_id":"AR_PARA_00046","change_type":"replace_text","new_text":"em dash \\u2014 here"}	PASS		AR_PARA_00046	replace_text		em dash \u2014 here			
+{"bookmark_id":"AR_PARA_00047b","change_type":"replace_text","new_text":"\\u201Cquoted\\u201D and \\u00e9"}	PASS		AR_PARA_00047b	replace_text		\u201Cquoted\u201D and \u00E9			
+{"bookmark_id":"AR_PARA_00047c","change_type":"replace_text","new_text":"ascii \\u0041\\u0042\\u0043 BC"}	PASS		AR_PARA_00047c	replace_text		ascii ABC BC			
+{"bookmark_id":"AR_PARA_00047d","change_type":"replace_text","new_text":"emoji \\uD83D\\uDE00 tail"}	PASS		AR_PARA_00047d	replace_text		emoji \uD83D\uDE00 tail			
+{"bookmark_id":"AR_PARA_00047e","change_type":"replace_text","new_text":"two faces \\uD83D\\uDE00\\uD83D\\uDE42"}	PASS		AR_PARA_00047e	replace_text		two faces \uD83D\uDE00\uD83D\uDE42			
+{"bookmark_id":"AR_PARA_00047f","change_type":"replace_text","new_text":"malformed \\u12 short"}	PASS		AR_PARA_00047f	replace_text		malformed u12 short			
+{"bookmark_id":"AR_PARA_00047g","change_type":"replace_text","new_text":"malformed \\uZZZZ here"}	PASS		AR_PARA_00047g	replace_text		malformed uZZZZ here			
+{"bookmark_id":"AR_COMMENT_9","change_type":"reply_to_comment","add_comment":"unicode reply \\u2014 \\uD83D\\uDC4D"}	PASS		AR_COMMENT_9	reply_to_comment			unicode reply \u2014 \uD83D\uDC4D		
 {"bookmark_id":"AR_PARA_00047","bookmark_id":"AR_PARA_99999","change_type":"delete_element"}	PASS		AR_PARA_00047	delete_element					
 {"bookmark_id":"AR_PARA_00048","change_type":"delete_element","change_type":"replace_text"}	PASS		AR_PARA_00048	delete_element					
 {"bookmark_id":"AR_PARA_00008","change_type":"delete_element","extra":{"nested":"with \\"quotes\\" and }"},"confidence":"Low"}	PASS		AR_PARA_00008	delete_element					Low

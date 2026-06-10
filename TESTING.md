@@ -71,8 +71,9 @@ encoded by `vector_escape` in `regenerate.py`):
 - **Trim** strips space/tab/CR/LF both ends (`TrimWs` / `trim_ws`).
 - **Duplicate JSON keys:** first occurrence wins.
 - **`apply_change`** counts only as a bare `true`/`false` literal.
-- **JSON unescape** handles `\\ \" \/ \b \f \n \r \t`; any other escape drops
-  the backslash (`\uXXXX` is *not* decoded — a known, mirrored limitation).
+- **JSON unescape** handles `\\ \" \/ \b \f \n \r \t` and `\uXXXX` (BMP units;
+  high+low surrogate pairs combine into one code point). A malformed `\u` (not
+  4 hex digits) or any other unknown escape drops the backslash.
 - **Meta `count`** must be a plain integer: optional minus, then 1–9 digits.
 - **Payload filter** drops blank lines and ``` fences before the gate.
 - Lone UTF-16 surrogates are not vectorable (Python can't encode them); the

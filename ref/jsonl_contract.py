@@ -21,10 +21,10 @@ Deliberate semantics, mirrored exactly in VBA (do not "improve" one side):
   find-first behavior).
 - apply_change is honored only as a bare true/false literal; a quoted "true"
   is a string and is ignored (apply_change stays unset).
-- JSON unescape supports the escapes backslash, quote, slash, b, f, n, r, t.
-  Any OTHER escape drops the backslash and keeps the character literally --
-  including \\uXXXX, which is NOT decoded (current VBA behavior; on the
-  Found-not-fixed list).
+- JSON unescape supports the escapes backslash, quote, slash, b, f, n, r, t
+  and \\uXXXX (BMP units, with high+low surrogate pairs combined). Any OTHER
+  escape, or a malformed \\u (not followed by 4 hex digits), drops the
+  backslash and keeps the escaped character.
 - bookmark_id and change_type must be present AS STRINGS for a parse to
   succeed (the old extractor failed the line otherwise).
 """
@@ -57,8 +57,25 @@ def trim_ws(s: str) -> str:
     return s.strip(WS)
 
 
+def _is_hex4(s: str, i: int) -> bool:
+    if i + 4 > len(s):
+        return False
+    for c in s[i : i + 4]:
+        if c not in "0123456789abcdefABCDEF":
+            return False
+    return True
+
+
 def json_unescape(s: str) -> str:
-    """Mirror of JsonUnescapeString in modReviewImport.bas (incl. its gaps)."""
+    """Mirror of JsonUnescapeString in modReviewImport.bas.
+
+    Supports backslash/quote/slash/b/f/n/r/t and \\uXXXX. A \\uXXXX escape
+    decodes to the UTF-16 code unit 0xXXXX; a high surrogate immediately
+    followed by a \\uXXXX low surrogate combines into one code point (exactly
+    what VBA's adjacent ChrW units form in its UTF-16 string). A \\u not
+    followed by 4 hex digits is an unknown escape: the backslash is dropped and
+    the 'u' kept. Any other unknown escape likewise drops the backslash.
+    """
     out = []
     i = 0
     n = len(s)
@@ -68,24 +85,51 @@ def json_unescape(s: str) -> str:
             esc = s[i + 1]
             if esc == "\\":
                 out.append("\\")
+                i += 2
             elif esc == '"':
                 out.append('"')
+                i += 2
             elif esc == "/":
                 out.append("/")
+                i += 2
             elif esc == "b":
                 out.append("\b")
+                i += 2
             elif esc == "f":
                 out.append("\f")
+                i += 2
             elif esc == "n":
                 out.append("\n")
+                i += 2
             elif esc == "r":
                 out.append("\r")
+                i += 2
             elif esc == "t":
                 out.append("\t")
+                i += 2
+            elif esc == "u" and _is_hex4(s, i + 2):
+                code = int(s[i + 2 : i + 6], 16)
+                if (
+                    0xD800 <= code <= 0xDBFF
+                    and i + 6 < n
+                    and s[i + 6] == "\\"
+                    and i + 7 < n
+                    and s[i + 7] == "u"
+                    and _is_hex4(s, i + 8)
+                ):
+                    lo = int(s[i + 8 : i + 12], 16)
+                    if 0xDC00 <= lo <= 0xDFFF:
+                        cp = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00)
+                        out.append(chr(cp))
+                        i += 12
+                        continue
+                out.append(chr(code))  # BMP unit (lone surrogates not vectored)
+                i += 6
             else:
-                # Unknown escape: keep the escaped char, drop the backslash.
+                # Unknown escape (incl. a malformed \\u): drop the backslash,
+                # keep the escaped character.
                 out.append(esc)
-            i += 2
+                i += 2
         else:
             out.append(ch)
             i += 1

@@ -687,7 +687,13 @@ Cleanup:
         wdApp.UserInitials = origInitials
         userNameChanged = False
     End If
-    If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=True
+    ' Cleanup is reached ONLY by an early GoTo (before any edits) or by
+    ' ErrHandler (a fault mid-apply). The successful run saves and closes in its
+    ' own teardown block and never lands here. So we close WITHOUT saving: a
+    ' half-applied document must not be persisted -- that would contradict the
+    ' session gate's no-partial-apply posture. The unsaved working copy is
+    ' discarded; the operator re-runs.
+    If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=False
     If Not wdApp Is Nothing Then
         wdApp.NormalTemplate.Saved = True
         wdApp.Quit SaveChanges:=False
@@ -700,7 +706,9 @@ Cleanup:
     Exit Sub
 
 ErrHandler:
-    MsgBox "Error applying suggestions: " & Err.Description, vbCritical
+    MsgBox "Error applying suggestions: " & Err.Description & vbCrLf & vbCrLf & _
+           "No changes were saved; the document is unchanged. Re-run after " & _
+           "fixing the cause.", vbCritical, "Apply Aborted"
     Resume Cleanup
 End Sub
 
@@ -1199,46 +1207,83 @@ Private Function SessionFailMessage(ByVal code As String) As String
     End Select
 End Function
 
+' Twin: json_unescape in ref/jsonl_contract.py. Each case advances i itself
+' (the simple escapes by 2, a \uXXXX by 6), so \u can consume its 4 hex digits.
+' A \uXXXX decodes to the UTF-16 code unit 0xXXXX via ChrW; adjacent surrogate
+' halves therefore form the character naturally in VBA's UTF-16 string, so no
+' explicit pair-combining is needed here. A malformed \u (not 4 hex digits) is
+' an unknown escape: drop the backslash, keep the 'u'.
 Private Function JsonUnescapeString(ByVal s As String) As String
     Dim i As Long
+    Dim n As Long
     Dim ch As String
     Dim esc As String
     Dim result As String
-    
+
+    n = Len(s)
     i = 1
-    Do While i <= Len(s)
+    Do While i <= n
         ch = Mid$(s, i, 1)
-        If ch = "\" And i < Len(s) Then
+        If ch = "\" And i < n Then
             esc = Mid$(s, i + 1, 1)
             Select Case esc
                 Case "\"    ' backslash
                     result = result & "\"
+                    i = i + 2
                 Case """"   ' double quote
                     result = result & """"
+                    i = i + 2
                 Case "/"    ' forward slash
                     result = result & "/"
+                    i = i + 2
                 Case "b"    ' backspace
                     result = result & Chr$(8)
+                    i = i + 2
                 Case "f"    ' form feed
                     result = result & Chr$(12)
+                    i = i + 2
                 Case "n"    ' newline
                     result = result & vbLf
+                    i = i + 2
                 Case "r"    ' carriage return
                     result = result & vbCr
+                    i = i + 2
                 Case "t"    ' tab
                     result = result & vbTab
+                    i = i + 2
+                Case "u"
+                    If IsHex4(s, i + 2) Then
+                        result = result & ChrW(CLng("&H" & Mid$(s, i + 2, 4) & "&"))
+                        i = i + 6
+                    Else
+                        ' Malformed \u: drop backslash, keep the 'u'
+                        result = result & esc
+                        i = i + 2
+                    End If
                 Case Else
                     ' Unknown escape: keep literal escaped char
                     result = result & esc
+                    i = i + 2
             End Select
-            i = i + 2
         Else
             result = result & ch
             i = i + 1
         End If
     Loop
-    
+
     JsonUnescapeString = result
+End Function
+
+' True if s has 4 hex digits starting at position p.
+Private Function IsHex4(ByVal s As String, ByVal p As Long) As Boolean
+    Dim k As Long
+    Dim c As String
+    If p + 3 > Len(s) Then Exit Function
+    For k = 0 To 3
+        c = Mid$(s, p + k, 1)
+        If InStr(1, "0123456789abcdefABCDEF", c, vbBinaryCompare) = 0 Then Exit Function
+    Next k
+    IsHex4 = True
 End Function
 
 ' Confidence normalization (unchanged)

@@ -170,7 +170,15 @@ PARSER_LINES = [
     '{"bookmark_id":"AR_PARA_00007","change_type":"replace_text","new_text":"line1\\nline2\\twith tab"}',
     '{"bookmark_id":"AR_PARA_00044","change_type":"replace_text","new_text":"quote: \\" slash: \\/ cr: \\r"}',
     '{"bookmark_id":"AR_PARA_00045","change_type":"replace_text","new_text":"unknown \\q escape"}',
-    '{"bookmark_id":"AR_PARA_00046","change_type":"replace_text","new_text":"not decoded: \\u2014"}',
+    # --- \\uXXXX decoding (item 1) ---
+    '{"bookmark_id":"AR_PARA_00046","change_type":"replace_text","new_text":"em dash \\u2014 here"}',
+    '{"bookmark_id":"AR_PARA_00047b","change_type":"replace_text","new_text":"\\u201Cquoted\\u201D and \\u00e9"}',
+    '{"bookmark_id":"AR_PARA_00047c","change_type":"replace_text","new_text":"ascii \\u0041\\u0042\\u0043 BC"}',
+    '{"bookmark_id":"AR_PARA_00047d","change_type":"replace_text","new_text":"emoji \\uD83D\\uDE00 tail"}',
+    '{"bookmark_id":"AR_PARA_00047e","change_type":"replace_text","new_text":"two faces \\uD83D\\uDE00\\uD83D\\uDE42"}',
+    '{"bookmark_id":"AR_PARA_00047f","change_type":"replace_text","new_text":"malformed \\u12 short"}',
+    '{"bookmark_id":"AR_PARA_00047g","change_type":"replace_text","new_text":"malformed \\uZZZZ here"}',
+    '{"bookmark_id":"AR_COMMENT_9","change_type":"reply_to_comment","add_comment":"unicode reply \\u2014 \\uD83D\\uDC4D"}',
     # --- duplicate keys: first wins ---
     '{"bookmark_id":"AR_PARA_00047","bookmark_id":"AR_PARA_99999","change_type":"delete_element"}',
     '{"bookmark_id":"AR_PARA_00048","change_type":"delete_element","change_type":"replace_text"}',

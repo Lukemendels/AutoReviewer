@@ -115,9 +115,31 @@ def test_standard_escapes():
 
 
 def test_unknown_escape_drops_backslash():
-    # Mirrors VBA JsonUnescapeString: \u is NOT decoded (Found-not-fixed).
-    assert json_unescape("\\u2014") == "u2014"
     assert json_unescape(r"\q") == "q"
+
+
+def test_u_escape_bmp():
+    assert json_unescape(r"—") == "—"  # em dash
+    assert json_unescape(r"ABC") == "ABC"
+    assert json_unescape(r"é") == "é"
+
+
+def test_u_escape_surrogate_pair_combines():
+    assert json_unescape(r"😀") == "\U0001F600"  # one code point
+    assert json_unescape(r"x😀y") == "x\U0001F600y"
+
+
+def test_u_escape_malformed_drops_backslash():
+    # not 4 hex digits after u -> unknown escape: drop backslash, keep 'u'
+    assert json_unescape(r"\u12") == "u12"
+    assert json_unescape(r"\uZZZZ") == "uZZZZ"
+    assert json_unescape("end\\u") == "endu"
+
+
+def test_u_escape_high_surrogate_without_low_stays_as_unit():
+    # high surrogate followed by a NON-low-surrogate \u: each decodes alone.
+    # (chr() of a lone surrogate is fine in Python as a code point.)
+    assert json_unescape(r"\uD83DA") == "\ud83d" + "A"
 
 
 def test_escapes_in_fields():
