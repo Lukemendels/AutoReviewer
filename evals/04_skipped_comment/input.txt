@@ -1,0 +1,22 @@
+<<DOCUMENT_TEXT_START>>
+The rule applies to all certified cargo screening facilities. Costs are annualized
+over ten years. The agency requests comment on the phase-in schedule.
+<<DOCUMENT_TEXT_END>>
+
+<<BOOKMARK_INDEX_START>>
+AR_PARA_00002 | type=paragraph | "The rule applies to all certified cargo screening facilities."
+AR_PARA_00003 | type=paragraph | "Costs are annualized over ten years."
+AR_PARA_00004 | type=paragraph | "The agency requests comment on the phase-in schedule."
+<<BOOKMARK_INDEX_END>>
+
+<<COMMENTS_START>>
+## AR_COMMENT_1
+Author: Reviewer
+Text: "all certified" is too broad - scope this to facilities above the size threshold.
+## AR_COMMENT_2
+Author: Reviewer
+Text: State the discount rate used for the annualization.
+## AR_COMMENT_3
+Author: Reviewer
+Text: Is the phase-in schedule legally required, or discretionary? Clarify.
+<<COMMENTS_END>>

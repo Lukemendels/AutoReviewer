@@ -1,0 +1,16 @@
+SESSION TOKEN: 0123ABCD4567EF89
+
+RATIFIED DECISIONS:
+[1] BOOKMARK: AR_PARA_00012
+    ACTION: replace_text
+    OLD_TEXT: will conclude in Q3
+    NEW_TEXT: is expected to conclude in Q3
+    CONFIDENCE: High
+[2] BOOKMARK: AR_PARA_00021
+    ACTION: replace_text
+    OLD_TEXT: TSA may consider phasing in the requirement
+    CONFIDENCE: Medium
+[3] BOOKMARK: AR_COMMENT_2
+    ACTION: reply_to_comment
+    NEW_TEXT: Agreed; verifying these figures with finance.
+    CONFIDENCE: High

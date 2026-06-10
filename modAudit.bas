@@ -36,13 +36,20 @@ Public Sub EnsureTraceSheet(ByRef wsTrace As Worksheet)
             .Range("J1").value = "LinesTotal"
             .Range("K1").value = "Applied"
             .Range("L1").value = "Skipped"
-            .Range("A1:L1").Font.Bold = True
-            .Columns("A:L").EntireColumn.AutoFit
+            .Range("M1").value = "UnaddressedComments"
+            .Range("N1").value = "CoverageDecision"
+            .Range("A1:N1").Font.Bold = True
+            .Columns("A:N").EntireColumn.AutoFit
         End With
+    Else
+        ' Backfill the coverage columns on a pre-existing Trace sheet.
+        If CStr(wsTrace.Range("M1").value) <> "UnaddressedComments" Then wsTrace.Range("M1").value = "UnaddressedComments"
+        If CStr(wsTrace.Range("N1").value) <> "CoverageDecision" Then wsTrace.Range("N1").value = "CoverageDecision"
     End If
 End Sub
 
-' Append one logic_trace row for a completed review/apply run.
+' Append one logic_trace row for a review/apply run. The coverage columns are
+' optional so the export-time row and older callers stay valid.
 Public Sub AppendReviewTrace(ByVal mode As String, _
                              ByVal persona As String, _
                              ByVal sourceDoc As String, _
@@ -52,7 +59,9 @@ Public Sub AppendReviewTrace(ByVal mode As String, _
                              ByVal jsonlFingerprint As String, _
                              ByVal linesTotal As Long, _
                              ByVal appliedCount As Long, _
-                             ByVal skippedCount As Long)
+                             ByVal skippedCount As Long, _
+                             Optional ByVal unaddressedComments As String = "", _
+                             Optional ByVal coverageDecision As String = "")
     Dim wsTrace As Worksheet
     Dim r As Long
 
@@ -74,6 +83,8 @@ Public Sub AppendReviewTrace(ByVal mode As String, _
     wsTrace.Cells(r, 10).value = linesTotal
     wsTrace.Cells(r, 11).value = appliedCount
     wsTrace.Cells(r, 12).value = skippedCount
-    wsTrace.Columns("A:L").EntireColumn.AutoFit
+    wsTrace.Cells(r, 13).value = unaddressedComments
+    wsTrace.Cells(r, 14).value = coverageDecision
+    wsTrace.Columns("A:N").EntireColumn.AutoFit
     On Error GoTo 0
 End Sub

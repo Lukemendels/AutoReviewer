@@ -1,0 +1,15 @@
+<<DOCUMENT_TEXT_START>>
+The program will reduce wait times at affected checkpoints.
+<<DOCUMENT_TEXT_END>>
+
+<<BOOKMARK_INDEX_START>>
+AR_PARA_00003 | type=paragraph | "The program will reduce wait times at affected checkpoints."
+<<BOOKMARK_INDEX_END>>
+
+<<COMMENTS_START>>
+## AR_COMMENT_1
+Author: Reviewer
+Date: 2024-05-02
+Scope Sentence: The program will reduce wait times at affected checkpoints.
+Text: The executive summary is missing a statement of the rule's total annualized cost. Add one.
+<<COMMENTS_END>>

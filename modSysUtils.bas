@@ -92,3 +92,53 @@ Private Function Hex31(ByVal v As Double) As String
     If Len(s) < 8 Then s = String$(8 - Len(s), "0") & s
     Hex31 = Right$(s, 8)
 End Function
+
+' Normalize "smart"/Unicode punctuation to ASCII equivalents. Every mapping is
+' strictly 1 char -> 1 char, so character offsets are preserved -- this lets the
+' SAME function serve two jobs: (a) producing an ASCII export payload that cannot
+' render as box-question-mark "tofu" downstream, and (b) the comparison key for
+' the apply-side minimal-diff, so an em-dash in the document and a hyphen from
+' the model count as equal.
+Public Function NormalizePunctuation(ByVal s As String) As String
+    Dim t As String
+    t = s
+    ' Dash family -> hyphen-minus
+    t = Replace(t, ChrW(&H2014), "-")   ' em dash
+    t = Replace(t, ChrW(&H2013), "-")   ' en dash
+    t = Replace(t, ChrW(&H2015), "-")   ' horizontal bar
+    t = Replace(t, ChrW(&H2212), "-")   ' minus sign
+    t = Replace(t, ChrW(&H2011), "-")   ' non-breaking hyphen
+    ' Double quotes -> straight
+    t = Replace(t, ChrW(&H201C), """")
+    t = Replace(t, ChrW(&H201D), """")
+    ' Single quotes / apostrophes -> straight
+    t = Replace(t, ChrW(&H2018), "'")
+    t = Replace(t, ChrW(&H2019), "'")
+    ' Non-breaking space -> space
+    t = Replace(t, ChrW(&HA0), " ")
+    NormalizePunctuation = t
+End Function
+
+' Remove internal anchor ids (AR_PARA_00001, AR_COMMENT_3, AR_REV_00007, ...)
+' from any text that will be written into the document. Anchors belong only in
+' the bookmark_id field; they must never leak into a comment or inserted text.
+Public Function StripArTokens(ByVal s As String) As String
+    Dim re As Object
+    Dim t As String
+
+    On Error GoTo Fallback
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.IgnoreCase = False
+    re.Pattern = "AR_[A-Za-z]+(_[A-Za-z0-9]+)+"
+    t = re.Replace(s, "")
+    ' Collapse any double spaces left where a token was removed.
+    Do While InStr(t, "  ") > 0
+        t = Replace(t, "  ", " ")
+    Loop
+    StripArTokens = t
+    Exit Function
+
+Fallback:
+    StripArTokens = s
+End Function

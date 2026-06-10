@@ -79,9 +79,13 @@ Public Sub BuildDashboard()
     btnTop = btnTop + btnHeight + 15
         
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "2. Add Doc to Corpus", "modTrainingPipeline.AddDocToCorpus", RGB(128, 90, 213)
+        "2a. Add Doc to Corpus (redlines)", "modTrainingPipeline.AddDocToCorpus", RGB(128, 90, 213)
+    btnTop = btnTop + btnHeight + 12
+
+    CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
+        "2b. Add Finalized Exemplar", "modTrainingPipeline.AddFinalizedExemplar", RGB(128, 90, 213)
     btnTop = btnTop + btnHeight + 15
-        
+
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
         "3. Reduce Pass 1: Cluster", "modTrainingPipeline.RunReducePass1", RGB(128, 90, 213)
     btnTop = btnTop + btnHeight + 10
@@ -136,20 +140,17 @@ Public Sub BuildDashboard()
     shp.TextFrame2.TextRange.Font.Size = 14
     shp.TextFrame2.TextRange.Font.Fill.ForeColor.RGB = RGB(221, 107, 32) ' Orange
     
+    ' Incorporation uses the shared Incorporator assistant -- no persona needed.
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "1. Select Persona for Review", "modDashboardUI.SetActivePersona", RGB(74, 85, 104)
+        "1. Export Document for Feedback", "modReviewExport.ExportWordDocForRespondMode", RGB(221, 107, 32)
     btnTop = btnTop + btnHeight + 15
 
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "2. Export Document for Feedback", "modReviewExport.ExportWordDocForRespondMode", RGB(221, 107, 32)
+        "2. Hand off to Serializer", "modReviewExport.HandOffToSerializer", RGB(214, 158, 46) ' Amber: ratify between 1 and 2
     btnTop = btnTop + btnHeight + 15
 
     CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "3. Hand off to Serializer", "modReviewExport.HandOffToSerializer", RGB(214, 158, 46) ' Amber: ratify between 2 and 3
-    btnTop = btnTop + btnHeight + 15
-
-    CreateModernButton ws, btnLeft, btnTop, btnWidth, btnHeight, _
-        "4. Apply LLM Edits to Word", "modReviewImport.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
+        "3. Apply LLM Edits to Word", "modReviewImport.ApplyWordSuggestionsFromJson", RGB(56, 161, 105) ' Green
 
     btnTop = btnTop + btnHeight + 40
 
@@ -160,7 +161,81 @@ Public Sub BuildDashboard()
     CreateModernButton ws, 180, btnTop, 180, 35, _
         "Set Serializer URL", "modDashboardUI.SetSerializerUrl", RGB(74, 85, 104) ' Gray
 
+    CreateModernButton ws, 370, btnTop, 190, 35, _
+        "Set Incorporator URL", "modDashboardUI.SetIncorporatorUrl", RGB(74, 85, 104) ' Gray
+
+    btnTop = btnTop + 45
+    CreateModernButton ws, 30, btnTop, 165, 35, _
+        "Set Researcher URL", "modDashboardUI.SetResearcherUrl", RGB(74, 85, 104) ' Gray
+    CreateModernButton ws, 205, btnTop, 155, 35, _
+        "Set Citation URL", "modDashboardUI.SetCitationUrl", RGB(74, 85, 104) ' Gray
+    CreateModernButton ws, 370, btnTop, 190, 35, _
+        "Open Researcher", "modDashboardUI.OpenResearcher", RGB(74, 85, 104) ' Gray
+
     ws.Range("A1").Select
+End Sub
+
+Public Sub SetResearcherUrl()
+    Dim current As String
+    Dim choice As String
+
+    current = modAppCore.GetConfigValue("ResearcherUrl", "")
+    choice = InputBox("Enter the shared Researcher assistant URL." & vbCrLf & vbCrLf & _
+                      "One generic assistant (set up once from " & _
+                      "TEMPLATE_SKILL_RESEARCHER.md, with the citation standard pasted in) " & _
+                      "that runs focused data/citation side-investigations from a research " & _
+                      "brief. Shared across all documents; not a persona.", _
+                      "Set Researcher URL", current)
+
+    If Trim$(choice) <> "" Then
+        modAppCore.SetConfigValue "ResearcherUrl", Trim$(choice)
+        MsgBox "Researcher URL saved.", vbInformation
+    End If
+End Sub
+
+Public Sub SetCitationUrl()
+    Dim current As String
+    Dim choice As String
+
+    current = modAppCore.GetConfigValue("CitationUrl", "")
+    choice = InputBox("Enter the shared Citation assistant URL." & vbCrLf & vbCrLf & _
+                      "One generic assistant (set up once from " & _
+                      "TEMPLATE_SKILL_CITATION.md) for 'I just need a citation' moments. " & _
+                      "Same canonical standard the Researcher embeds.", _
+                      "Set Citation URL", current)
+
+    If Trim$(choice) <> "" Then
+        modAppCore.SetConfigValue "CitationUrl", Trim$(choice)
+        MsgBox "Citation URL saved.", vbInformation
+    End If
+End Sub
+
+Public Sub OpenResearcher()
+    Dim url As String
+    url = Trim$(modAppCore.GetConfigValue("ResearcherUrl", ""))
+    If Len(url) = 0 Then
+        MsgBox "No Researcher URL is set. Use 'Set Researcher URL' first.", vbExclamation
+        Exit Sub
+    End If
+    modSysUtils.OpenURL url
+End Sub
+
+Public Sub SetIncorporatorUrl()
+    Dim current As String
+    Dim choice As String
+
+    current = modAppCore.GetConfigValue("IncorporatorUrl", "")
+    choice = InputBox("Enter the shared Incorporator assistant URL." & vbCrLf & vbCrLf & _
+                      "This is one generic assistant (set up once from " & _
+                      "TEMPLATE_SKILL_INCORPORATOR.md) that helps you understand and act " & _
+                      "on reviewer feedback. It is shared across all documents and is not " & _
+                      "tied to any persona.", _
+                      "Set Incorporator URL", current)
+
+    If Trim$(choice) <> "" Then
+        modAppCore.SetConfigValue "IncorporatorUrl", Trim$(choice)
+        MsgBox "Incorporator URL saved.", vbInformation
+    End If
 End Sub
 
 Public Sub SetSerializerUrl()

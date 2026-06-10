@@ -55,12 +55,72 @@ source of record is never mutated.
 | `modAudit.bas` | The `Trace` sheet — one `logic_trace` row per run (operator, route, fingerprints) |
 | `modDashboardUI.bas` | The dashboard: Train Persona / Run Review / Respond to Review |
 | `modTrainingPipeline.bas` | Author filter, corpus builder, three Reduce passes, Save SKILL.md |
+| `modSelfTest.bas` | Offline self-test harness: replays `tests/vectors/` against the deterministic VBA (no Word needed) |
+
+The deterministic core (fingerprint, JSONL contract, session gate) has a
+**Python reference twin** in `ref/` with golden vectors in `tests/vectors/` —
+see `TESTING.md` for the doctrine and the operator round-trip.
 
 Assistant prompts: `TEMPLATE_SKILL.md` (index), `TEMPLATE_SKILL_COTHINKER.md`
-(hot, per persona), `TEMPLATE_SKILL_SERIALIZER.md` (cold, shared).
+(hot, per persona), `TEMPLATE_SKILL_INCORPORATOR.md` (hot, shared),
+`TEMPLATE_SKILL_RESEARCHER.md` (side, shared), `TEMPLATE_SKILL_CITATION.md`
+(canonical house citation/calc standard, standalone + embedded in the
+Researcher), `TEMPLATE_SKILL_SERIALIZER.md` (cold, shared). Behavioral fixtures
+live in `evals/`.
+
+### The research detour (data and citations)
+
+A reviewer usually flags something because the fix needs *new* work — a current
+wage rate, a recomputed figure, a citation — not in the document. Both hot
+assistants tag each item **edit / judgment / needs-data**. A needs-data item is
+either deferred (a `reply_to_comment` "TODO: pending data") or handed off as a
+**research brief** you paste into the shared **Researcher** chat, with the source
+(e.g., a BLS table) attached. The Researcher pulls, computes per the house
+standard, and returns **DRAFT (final voice) + frozen FIGURES + FOOTNOTES**. The
+co-thinker weaves the prose in but **never alters a number or a citation** —
+sourced figures enter the document only through the Researcher (no-fabrication,
+made physical). Citations land as **footnotes** via the new `add_footnote` edit
+type. `TEMPLATE_SKILL_CITATION.md` is the single source of the house citation and
+calculation style, deployed both standalone and embedded in the Researcher.
+
+### Co-thinker two-turn protocol and the ground-truth brief
+
+The co-thinker runs a **two-turn protocol**: Turn 1 clusters the comments and
+revisions into a few **themes** (each with a recommended posture and its
+counter-case) and then **stops** for your theme rulings; Turn 2 produces the
+numbered decision blocks consistent with those rulings. You spend judgment on a
+handful of theme calls, not on scanning a long flat list.
+
+You may paste a **`GROUND TRUTH BRIEF:`** with the export — facts the assistant
+treats as established. Agreement is earned by evidence, not by a redline's
+existence or its author: a comment that contradicts the brief is pushed back on
+via a tactful reply, never a text change that concedes the point. Standalone
+comments meant for an external party begin `Program office:` so deliverables
+split mechanically.
+
+### Comment coverage (warn-gate)
+
+A silently unanswered comment is the tool's worst judgment failure. The export
+records every `AR_COMMENT_` id; before applying, the importer computes which
+comments received no `reply_to_comment`/`add_comment_only` and, if any remain,
+shows a **Proceed / Abort** warning listing them. A no-action ruling is allowed
+but must be a visible choice — the decision and the unaddressed list are logged
+to the `Trace` row.
+
+### Serializer output: one fenced block
+
+The serializer emits exactly one ```` ```jsonl ```` fenced block (meta line +
+edit lines), with any omitted-decision notes after the fence. **Paste the whole
+block into `LLM_Changes!A8` — fences welcome.** The importer strips fences and
+ignores prose after them, so pasting with or without the fences gates
+identically.
 
 ## Getting started
 
+0. **Self-test first.** Import the `.bas` modules, copy `tests\vectors\` next
+   to the workbook, and run `RunAllSelfTests` (see `TESTING.md`). The SelfTest
+   sheet and `selftest_report.txt` must show `OVERALL: GREEN` before the first
+   real document run.
 1. Open the `.xlsm` and run `modDashboardUI.BuildDashboard` once. It creates the
    `Config`, `LLM_Changes`, `Personas` (and on first run, `Log` / `Trace`)
    sheets and the dashboard.
@@ -77,10 +137,34 @@ Full walkthrough: `USER_GUIDE.md`. Roadmap and module history:
 
 - Requires Word + Excel with macros enabled. All COM is late-bound; no library
   references are needed, so it runs on locked-down Office.
-- AI edits and comments are authored **"AutoReviewer"** in the tracked-change
-  layer, so they are visibly attributable and one-click-rejectable; the
-  operator's real Word author name is snapshotted and restored. The `AR_`
-  anchors are stripped as the final apply step, so the delivered document is
-  clean and a second pass re-stamps from scratch.
+- AI **comments/replies** are always authored **"AutoReviewer"** (reliable via
+  the object model). AI **insertions/deletions** take their author from
+  `Application.UserName`, which the tool sets to "AutoReviewer" — but when Word
+  is signed into a Microsoft 365 / DHS account, revision author follows the
+  **account** and ignores `UserName`. To force insertion author to "AutoReviewer"
+  on account-signed-in Word, check, once: **Word → Options → General → "Always
+  use these values regardless of sign in to Office"** (and the tool does the
+  rest). The apply step reports, in its summary, the author Word actually
+  stamped, so you can see which case you're in. Either way edits are tracked and
+  rejectable, and the authored comments are an independent provenance signal.
+- Edits are **surgical**: only the changed span is tracked (minimal-diff), so
+  changing a word is a one-word revision, not a whole-paragraph rewrite. The
+  exported payload is normalized to ASCII punctuation (no "tofu" dashes), and
+  internal `AR_` anchor ids are stripped from anything written into the document.
+- The `AR_` anchors are stripped as the final apply step, so the delivered
+  document is clean and a second pass re-stamps from scratch.
 - The `Trace` and `Log` sheets are the defensible artifact — on this substrate
-  the audit lineage is the product, not overhead (Profile §1.3).
+  the audit lineage is the product, not overhead (Profile §1.3). Export writes
+  its own Trace row (`Mode = "Export"`), so abandoned reviews leave lineage too.
+- **Session binding.** Bookmark ids are generic ordinals, so a stale JSONL
+  payload could apply cleanly to the *wrong* document. The serializer's first
+  output line is therefore a meta line carrying the export fingerprint and the
+  edit count; the apply step verifies both **before opening Word** and refuses
+  the whole payload on any mismatch (default-deny, no partial apply). After a
+  successful apply, `LLM_Changes!A8:A…` is cleared so stale payloads cannot
+  linger. Edits apply in two passes — text/comment changes first, then
+  `accept_revision`/`reject_revision` — because revision verdicts can delete
+  ranges other edits target (the Log sheet records the pass per line).
+- No assistant URLs live in source. Set the persona co-thinker URL in the
+  Personas sheet, the shared Serializer/Incorporator URLs via the dashboard,
+  and optionally a `CustomGptUrl` Config key as the fallback chat URL.

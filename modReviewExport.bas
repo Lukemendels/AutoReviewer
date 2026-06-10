@@ -23,8 +23,7 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     Dim commentBody As String
     Dim stm As Object            ' ADODB.Stream for UTF-8
     Dim exportFormat As String
-    Dim oldBgSave As Boolean
-    
+
     On Error GoTo ErrHandler
     
     '---------------------------
@@ -94,8 +93,13 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     ' 2) Start Word and open original doc (READ/WRITE)
     '---------------------------
     Set wdApp = CreateObject("Word.Application")
-    wdApp.Visible = True
+    ' Run Word hidden with screen updates off: this is a headless extraction that
+    ' quits Word at the end regardless, and the per-paragraph/per-revision COM
+    ' loops are far faster without repainting (the ~5-min export on heavily
+    ' tracked docs was dominated by visible repaint).
+    wdApp.Visible = False
     On Error Resume Next
+    wdApp.ScreenUpdating = False
     wdApp.DisplayAlerts = 0
     On Error GoTo ErrHandler
     
@@ -107,31 +111,16 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     End If
     
     '---------------------------
-    ' 2a) STAMP DOC WITH AR BOOKMARKS
+    ' 2a) STAMP DOC WITH AR BOOKMARKS (in memory only)
     '---------------------------
-    ' Stamp original (this is the one we will edit later and SAVE to disk)
+    ' Stamp the working copy so we can build the BOOKMARK_INDEX. We do NOT save
+    ' these bookmarks: the apply step re-stamps the same (unchanged) working copy
+    ' and gets identical ids, so the working copy left on disk stays a clean copy
+    ' of the source. That way an abandoned export does not leave AR_ bookmarks
+    ' lying around in the *_AR file.
     StampDocWithArBookmarks wdDoc
-    
-    ' Stamp Revisions in the original document if we are in Respond Mode
-    If isRespondMode Then
-        Dim revIdx As Long
-        For revIdx = 1 To wdDoc.Revisions.Count
-            On Error Resume Next
-            wdDoc.Bookmarks.Add Name:="AR_REV_" & Format(revIdx, "00000"), Range:=wdDoc.Revisions(revIdx).Range
-            On Error GoTo ErrHandler
-        Next revIdx
-    End If
-    
-    '---------------------------
-    ' 2b) SAVE the original so AR_* bookmarks persist in the real document
-    '---------------------------
-    On Error Resume Next
-    oldBgSave = wdApp.Options.BackgroundSave
-    wdApp.Options.BackgroundSave = False
-    wdDoc.Save
-    wdApp.Options.BackgroundSave = oldBgSave
-    On Error GoTo ErrHandler
-    
+    If isRespondMode Then StampRevisionBookmarks wdDoc
+
     '---------------------------
     ' 3) Extract metadata (comments and revisions) BEFORE accepting revisions
     '---------------------------
@@ -141,12 +130,19 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     Dim bufferRevisions As String
     
     bufferComments = "<<COMMENTS_START>>" & vbCrLf
-    
+
+    ' Persist the full ordered list of comment ids so the apply step can
+    ' warn-gate on any comment that received no reply or comment (Goal 1).
+    Dim commentIdList As String
+    commentIdList = ""
+
     If wdDoc.Comments.Count = 0 Then
         bufferComments = bufferComments & "(No comments in document)" & vbCrLf
     Else
         For Each c In wdDoc.Comments
             bufferComments = bufferComments & "## AR_COMMENT_" & c.Index & vbCrLf
+            If Len(commentIdList) > 0 Then commentIdList = commentIdList & ","
+            commentIdList = commentIdList & "AR_COMMENT_" & c.Index
             
             ' Author / Date
             On Error Resume Next
@@ -185,7 +181,10 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     End If
     
     bufferComments = bufferComments & "<<COMMENTS_END>>" & vbCrLf & vbCrLf
-    
+
+    ' Record the comment-id list for the apply-side coverage warn-gate.
+    SetConfigValue "CommentIds", commentIdList
+
     If isRespondMode Then
         bufferRevisions = "<<REVISIONS_START>>" & vbCrLf
         If wdDoc.Revisions.Count = 0 Then
@@ -259,7 +258,7 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     SetConfigValue "LastExportMode", IIf(isRespondMode, "Respond", "Review")
 
     '---------------------------
-    ' 6) Decide where to save .txt (UTF-8) – User's Documents
+    ' 6) Decide where to save .txt (UTF-8) - User's Documents
     '---------------------------
     docsFolder = GetUserDocumentsFolder()
     
@@ -345,40 +344,98 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
         "Do NOT output JSON. Surface judgment for a human to ratify; a separate " & _
         "serializer will convert the ratified decisions to the edit format. Every " & _
         "block MUST cite a bookmark id that appears in the attached BOOKMARK_INDEX " & _
-        "-- never invent an anchor. Before you finish, self-critique: re-read each " & _
-        "block and flag any that are unsupported by the source text."
+        "-- never invent an anchor. The bookmark id belongs ONLY on the BOOKMARK " & _
+        "line: never write an AR_ id inside NEW_TEXT or a comment/reply body (they " & _
+        "are internal anchors, not document content). Before you finish, " & _
+        "self-critique: re-read each block and flag any that are unsupported by the " & _
+        "source text."
+
+    ' Respond mode leads with a middle-seat synthesis so the human grasps the
+    ' feedback as a whole before adjudicating item by item.
+    Dim synthesisSpec As String
+    synthesisSpec = "First, before any per-item blocks, give a SYNTHESIS BRIEF:" & vbCrLf & _
+        "  DIRECTION: in 2-4 sentences, where do these edits and comments push the document?" & vbCrLf & _
+        "  THEMES: cluster the comments and revisions into a few named themes." & vbCrLf & _
+        "  OPEN QUESTIONS: what must be answered to revise the document well?" & vbCrLf & _
+        "Then the per-item blocks below." & vbCrLf
+
+    ' Coverage requirement: every comment must be visibly adjudicated (Goal 1).
+    Dim coverageSpec As String
+    coverageSpec = vbCrLf & vbCrLf & _
+        "COVERAGE REQUIREMENT: every AR_COMMENT_ id in the COMMENTS section MUST " & _
+        "receive either a numbered block or an explicit NO_ACTION ruling with a " & _
+        "one-line rationale. A comment left unmentioned is a failure. End your " & _
+        "output with the line: COVERAGE: addressed <X> of <Y> comments; NO_ACTION: " & _
+        "<ids or none>."
 
     If isRespondMode Then
-        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. Conversationally unpack what the reviewer is asking for in both their comments and their tracked changes, then recommend how to address the feedback." & packetSpec
+        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. " & synthesisSpec & _
+            "For each comment and each revision, unpack WHAT the reviewer is asking for, then surface the realistic OPTIONS -- accept as-is, modify, reject with rationale, or reply to the comment -- and recommend one with its counter-case. Anchor each to the reviewer's AR_COMMENT_ / AR_REV_ / paragraph id. EVERY reviewer comment MUST get a reply_to_comment block." & packetSpec & coverageSpec
     Else
-        promptText = "I am attaching an exported Word document containing text and bookmark IDs. Review the text against your established style rules and recommend edits." & packetSpec
+        promptText = "I am attaching an exported Word document containing text and bookmark IDs. Follow your two-turn protocol: begin with Turn 1 (THEMES) and stop for my rulings before producing blocks." & packetSpec & coverageSpec
     End If
     modSysUtils.CopyToClipboard promptText
     
+    ' Route selection. Synthetic review goes to the active persona's HOT
+    ' co-thinker (style-specific). Incorporating supervisor feedback (Respond
+    ' mode) goes to the single shared Incorporator -- understanding someone
+    ' else's edits is style-agnostic, so it is infrastructure, not a persona
+    ' (asymmetric model; mirrors the shared Serializer). No hardcoded default:
+    ' internal system URLs do not live in source; configure via the dashboard
+    ' or a CustomGptUrl config key.
     Dim gptUrl As String
-    gptUrl = "https://chat.dhs.gov/workspaces/4cf75bdf-de55-4f01-8c3f-0444ace52010"
+    gptUrl = ""
     On Error Resume Next
-    Dim activePersona As String
-    activePersona = modAppCore.GetConfigValue("ActivePersona")
-    Dim configUrl As String
-    If Len(activePersona) > 0 Then configUrl = modAppCore.GetAssistantUrl(activePersona)
-    If Len(configUrl) > 0 Then gptUrl = configUrl
+    If isRespondMode Then
+        gptUrl = Trim$(modAppCore.GetConfigValue("IncorporatorUrl", ""))
+    Else
+        Dim activePersona As String
+        activePersona = modAppCore.GetConfigValue("ActivePersona")
+        If Len(activePersona) > 0 Then gptUrl = Trim$(modAppCore.GetAssistantUrl(activePersona))
+    End If
+    If Len(gptUrl) = 0 Then gptUrl = Trim$(modAppCore.GetConfigValue("CustomGptUrl", ""))
     On Error GoTo 0
     ' Record the recommended route so the apply step's logic_trace can log
     ' recommended-vs-actual (Profile s9.2).
     SetConfigValue "LastRecommendedRoute", gptUrl
-    modSysUtils.OpenURL gptUrl
-    
+    If Len(gptUrl) > 0 Then
+        modSysUtils.OpenURL gptUrl
+    Else
+        MsgBox "No assistant URL is configured, so no browser was opened." & vbCrLf & vbCrLf & _
+               IIf(isRespondMode, _
+                   "Set the shared Incorporator URL (dashboard: Set Incorporator URL).", _
+                   "Set the active persona's AssistantUrl in the Personas sheet (or a CustomGptUrl key in Config).") & vbCrLf & vbCrLf & _
+               "The export itself completed; open your assistant manually and continue.", _
+               vbExclamation, "No Assistant URL"
+    End If
+
+    ' Export-time logic_trace row: abandoned reviews must still leave lineage,
+    ' so the Trace sheet reflects the full run lifecycle, not only completed
+    ' applies (apply columns stay blank until the apply run writes its row).
+    On Error Resume Next
+    modAudit.AppendReviewTrace _
+        "Export", _
+        GetConfigValue("ActivePersona", ""), _
+        sourcePath, _
+        wordPath, _
+        gptUrl, _
+        exportFingerprint, _
+        "", 0, 0, 0
+    On Error GoTo 0
+
     ' 10) Final Excel MsgBox (Word is already closed)
+    Dim assistantLabel As String
+    assistantLabel = IIf(isRespondMode, "Incorporator", "HOT co-thinker")
     MsgBox "Export complete (UTF-8):" & vbCrLf & savePath & vbCrLf & vbCrLf & _
-           "The HOT co-thinker prompt is on your clipboard and the co-thinker " & _
-           "assistant has been opened." & vbCrLf & vbCrLf & _
+           "The " & assistantLabel & " prompt is on your clipboard and the " & _
+           assistantLabel & " assistant has been opened." & vbCrLf & vbCrLf & _
            "1. Paste the prompt (Ctrl+V) into the assistant." & vbCrLf & _
            "2. Upload/Drop the exported .txt file." & vbCrLf & _
-           "3. Read the decision packet it returns and ratify on paper " & _
-           "(keep / fix / cut)." & vbCrLf & _
-           "4. Paste the ratified decisions back into Excel, then run " & _
-           """Hand off to Serializer"".", vbInformation, "Export Complete"
+           "3. Read the decision packet it returns and ratify (keep / fix / cut)." & vbCrLf & _
+           "4. Click ""Hand off to Serializer"" and paste your ratified decisions " & _
+           "into the serializer chat (not Excel)." & vbCrLf & _
+           "5. Paste the JSONL the serializer returns into LLM_Changes!A8, then " & _
+           """Apply LLM Edits to Word"".", vbInformation, "Export Complete"
 
     Exit Sub
 
@@ -413,16 +470,35 @@ End Sub
 Public Sub HandOffToSerializer()
     Dim serializerUrl As String
     Dim promptText As String
+    Dim sessionToken As String
 
     serializerUrl = Trim$(GetConfigValue("SerializerUrl", ""))
 
-    promptText = "Below are ratified document-review decisions, each citing a " & _
+    ' Session binding: the serializer must echo the export fingerprint back in
+    ' its meta line; the apply step verifies it before opening Word, so stale
+    ' JSONL from another document cannot be applied. No export = no hand-off.
+    sessionToken = Trim$(GetConfigValue("LastExportFingerprint", ""))
+    If Len(sessionToken) = 0 Then
+        MsgBox "No export fingerprint is recorded, so there is no session token " & _
+               "to bind the serializer's output to." & vbCrLf & vbCrLf & _
+               "Run the export step first, then hand off to the serializer.", _
+               vbExclamation, "Hand Off to Serializer"
+        Exit Sub
+    End If
+
+    promptText = "SESSION TOKEN: " & sessionToken & vbCrLf & vbCrLf & _
+        "Below are ratified document-review decisions, each citing a " & _
         "bookmark id (AR_PARA_..., AR_CELL_..., AR_FN_..., or AR_COMMENT_...). " & _
         "Convert ONLY these decisions into the strict JSONL edit contract you " & _
         "hold, one JSON object per line. Translate exactly: do not re-decide, " & _
         "soften, reorder, add, or drop any decision, and do not change any " & _
         "bookmark id. Carry OLD_TEXT through verbatim as old_text when present " & _
-        "so the edit stays surgical. Output only the JSONL block, nothing else." & _
+        "so the edit stays surgical." & vbCrLf & vbCrLf & _
+        "The FIRST line of your output MUST be exactly this meta line, with N " & _
+        "replaced by the number of edit lines that follow it:" & vbCrLf & _
+        "{""meta"": ""autoreviewer"", ""session"": """ & sessionToken & """, ""count"": N}" & vbCrLf & vbCrLf & _
+        "Output only the meta line and the JSONL lines -- no code fences, no " & _
+        "commentary, nothing else." & _
         vbCrLf & vbCrLf & "RATIFIED DECISIONS:" & vbCrLf & "<paste the ratified packet here>"
 
     modSysUtils.CopyToClipboard promptText
@@ -627,7 +703,7 @@ Private Function BuildDocumentTextSection(ByVal wdDocFinal As Object, _
     '---------------------------
     If exportFormat = "plain" Then
         On Error Resume Next
-        docText = docForExport.Content.Text
+        docText = modSysUtils.NormalizePunctuation(docForExport.Content.Text)
         On Error GoTo FallbackPlain
         
         BuildDocumentTextSection = "<<DOCUMENT_TEXT_START>>" & vbCrLf & _
@@ -734,7 +810,7 @@ FallbackPlain:
     End If
     
     If Not docForExport Is Nothing Then
-        docText = docForExport.Content.Text
+        docText = modSysUtils.NormalizePunctuation(docForExport.Content.Text)
     Else
         docText = ""
     End If
@@ -834,7 +910,11 @@ End Function
 Private Function CleanOneLine(ByVal s As String) As String
     Dim tmp As String
     tmp = s
-    
+
+    ' Normalize smart/Unicode punctuation to ASCII so the payload can't render as
+    ' box-question-mark "tofu" downstream (and round-trips cleanly on apply).
+    tmp = modSysUtils.NormalizePunctuation(tmp)
+
     ' Replace line breaks with spaces
     tmp = Replace(tmp, vbCr, " ")
     tmp = Replace(tmp, vbLf, " ")
