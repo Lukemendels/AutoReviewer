@@ -264,7 +264,7 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     SetConfigValue "LastExportMode", IIf(isRespondMode, "Respond", "Review")
 
     '---------------------------
-    ' 6) Decide where to save .txt (UTF-8) – User's Documents
+    ' 6) Decide where to save .txt (UTF-8) - User's Documents
     '---------------------------
     docsFolder = GetUserDocumentsFolder()
     
@@ -377,25 +377,49 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     ' co-thinker (style-specific). Incorporating supervisor feedback (Respond
     ' mode) goes to the single shared Incorporator -- understanding someone
     ' else's edits is style-agnostic, so it is infrastructure, not a persona
-    ' (asymmetric model; mirrors the shared Serializer).
+    ' (asymmetric model; mirrors the shared Serializer). No hardcoded default:
+    ' internal system URLs do not live in source; configure via the dashboard
+    ' or a CustomGptUrl config key.
     Dim gptUrl As String
-    gptUrl = "https://chat.dhs.gov/workspaces/4cf75bdf-de55-4f01-8c3f-0444ace52010"
+    gptUrl = ""
     On Error Resume Next
-    Dim configUrl As String
     If isRespondMode Then
-        configUrl = modAppCore.GetConfigValue("IncorporatorUrl", "")
+        gptUrl = Trim$(modAppCore.GetConfigValue("IncorporatorUrl", ""))
     Else
         Dim activePersona As String
         activePersona = modAppCore.GetConfigValue("ActivePersona")
-        If Len(activePersona) > 0 Then configUrl = modAppCore.GetAssistantUrl(activePersona)
+        If Len(activePersona) > 0 Then gptUrl = Trim$(modAppCore.GetAssistantUrl(activePersona))
     End If
-    If Len(configUrl) > 0 Then gptUrl = configUrl
+    If Len(gptUrl) = 0 Then gptUrl = Trim$(modAppCore.GetConfigValue("CustomGptUrl", ""))
     On Error GoTo 0
     ' Record the recommended route so the apply step's logic_trace can log
     ' recommended-vs-actual (Profile s9.2).
     SetConfigValue "LastRecommendedRoute", gptUrl
-    modSysUtils.OpenURL gptUrl
-    
+    If Len(gptUrl) > 0 Then
+        modSysUtils.OpenURL gptUrl
+    Else
+        MsgBox "No assistant URL is configured, so no browser was opened." & vbCrLf & vbCrLf & _
+               IIf(isRespondMode, _
+                   "Set the shared Incorporator URL (dashboard: Set Incorporator URL).", _
+                   "Set the active persona's AssistantUrl in the Personas sheet (or a CustomGptUrl key in Config).") & vbCrLf & vbCrLf & _
+               "The export itself completed; open your assistant manually and continue.", _
+               vbExclamation, "No Assistant URL"
+    End If
+
+    ' Export-time logic_trace row: abandoned reviews must still leave lineage,
+    ' so the Trace sheet reflects the full run lifecycle, not only completed
+    ' applies (apply columns stay blank until the apply run writes its row).
+    On Error Resume Next
+    modAudit.AppendReviewTrace _
+        "Export", _
+        GetConfigValue("ActivePersona", ""), _
+        sourcePath, _
+        wordPath, _
+        gptUrl, _
+        exportFingerprint, _
+        "", 0, 0, 0
+    On Error GoTo 0
+
     ' 10) Final Excel MsgBox (Word is already closed)
     Dim assistantLabel As String
     assistantLabel = IIf(isRespondMode, "Incorporator", "HOT co-thinker")
@@ -443,16 +467,35 @@ End Sub
 Public Sub HandOffToSerializer()
     Dim serializerUrl As String
     Dim promptText As String
+    Dim sessionToken As String
 
     serializerUrl = Trim$(GetConfigValue("SerializerUrl", ""))
 
-    promptText = "Below are ratified document-review decisions, each citing a " & _
+    ' Session binding: the serializer must echo the export fingerprint back in
+    ' its meta line; the apply step verifies it before opening Word, so stale
+    ' JSONL from another document cannot be applied. No export = no hand-off.
+    sessionToken = Trim$(GetConfigValue("LastExportFingerprint", ""))
+    If Len(sessionToken) = 0 Then
+        MsgBox "No export fingerprint is recorded, so there is no session token " & _
+               "to bind the serializer's output to." & vbCrLf & vbCrLf & _
+               "Run the export step first, then hand off to the serializer.", _
+               vbExclamation, "Hand Off to Serializer"
+        Exit Sub
+    End If
+
+    promptText = "SESSION TOKEN: " & sessionToken & vbCrLf & vbCrLf & _
+        "Below are ratified document-review decisions, each citing a " & _
         "bookmark id (AR_PARA_..., AR_CELL_..., AR_FN_..., or AR_COMMENT_...). " & _
         "Convert ONLY these decisions into the strict JSONL edit contract you " & _
         "hold, one JSON object per line. Translate exactly: do not re-decide, " & _
         "soften, reorder, add, or drop any decision, and do not change any " & _
         "bookmark id. Carry OLD_TEXT through verbatim as old_text when present " & _
-        "so the edit stays surgical. Output only the JSONL block, nothing else." & _
+        "so the edit stays surgical." & vbCrLf & vbCrLf & _
+        "The FIRST line of your output MUST be exactly this meta line, with N " & _
+        "replaced by the number of edit lines that follow it:" & vbCrLf & _
+        "{""meta"": ""autoreviewer"", ""session"": """ & sessionToken & """, ""count"": N}" & vbCrLf & vbCrLf & _
+        "Output only the meta line and the JSONL lines -- no code fences, no " & _
+        "commentary, nothing else." & _
         vbCrLf & vbCrLf & "RATIFIED DECISIONS:" & vbCrLf & "<paste the ratified packet here>"
 
     modSysUtils.CopyToClipboard promptText

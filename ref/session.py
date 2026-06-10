@@ -66,10 +66,13 @@ def parse_meta_line(line: str):
     cnt = pairs.get("count")
     if cnt is None or cnt[0] != "n":
         return None
-    try:
-        n = int(cnt[1])
-    except ValueError:
+    # Plain integer only: optional leading minus, then 1-9 ASCII digits.
+    # (Matches the VBA exactly; rejects "+1", "3.5", "1e2", and absurd widths.)
+    raw = cnt[1]
+    body = raw[1:] if raw.startswith("-") else raw
+    if not body or len(body) > 9 or any(c not in "0123456789" for c in body):
         return None
+    n = int(raw)
     if n < 0:
         return None
     return sess[1], n

@@ -105,7 +105,7 @@ Public Sub ApplyWordSuggestionsFromJson()
     useArAuthorNames = GetConfigBool("UseArAuthorNames", False)
     
     '---------------------------
-    ' 2) Get JSONL from LLM_Changes (A8:A…)
+    ' 2) Get JSONL from LLM_Changes (A8:A...)
     '---------------------------
     On Error Resume Next
     Set wsChanges = wb.Worksheets("LLM_Changes")
@@ -125,24 +125,49 @@ Public Sub ApplyWordSuggestionsFromJson()
     ReDim tmpLines(1 To lastRow - 7)
     n = 0
     For r = 8 To lastRow
-        tmp = Trim$(CStr(wsChanges.Cells(r, "A").value))
-        If Len(tmp) > 0 Then
+        tmp = TrimWs(CStr(wsChanges.Cells(r, "A").value))
+        If IsPayloadLine(tmp) Then
             n = n + 1
             tmpLines(n) = tmp
         End If
     Next r
-    
+
     If n = 0 Then
         MsgBox "No non-empty JSONL lines found in column A starting at A8.", vbExclamation
         GoTo Cleanup
     End If
-    
+
     ReDim Preserve tmpLines(1 To n)
-    lines = tmpLines
+
+    '---------------------------
+    ' 2a) Session-binding gate (default-deny, before Word opens).
+    ' Bookmark ids are generic ordinals, so a stale payload from a previous
+    ' document can apply cleanly to the WRONG document. The serializer's first
+    ' line must be a meta line carrying the export fingerprint and the edit
+    ' count; any mismatch aborts with no partial apply.
+    '---------------------------
+    Dim sessionFailCode As String
+    If Not CheckSessionGate(tmpLines, n, Trim$(GetConfigValue("LastExportFingerprint", "")), sessionFailCode) Then
+        MsgBox "Session gate blocked the apply (" & sessionFailCode & "):" & vbCrLf & vbCrLf & _
+               SessionFailMessage(sessionFailCode) & vbCrLf & vbCrLf & _
+               "Nothing was applied.", vbCritical, "Session Binding"
+        GoTo Cleanup
+    End If
+
+    ' Drop the meta line; lines() carries only the edit lines.
+    If n = 1 Then
+        MsgBox "Session gate passed, but the payload contains zero edit lines.", _
+               vbInformation, "Nothing To Apply"
+        GoTo Cleanup
+    End If
+    ReDim lines(1 To n - 1)
+    For r = 2 To n
+        lines(r - 1) = tmpLines(r)
+    Next r
 
     ' Transport attestation (Profile s9.1): fingerprint the exact JSONL block
-    ' the operator pasted, so the logic_trace records the bytes that produced
-    ' the edits.
+    ' the operator pasted (meta line included), so the logic_trace records the
+    ' bytes that produced the edits.
     Dim jsonlFingerprint As String
     Dim joinedJsonl As String
     Dim k As Long
@@ -170,13 +195,15 @@ Public Sub ApplyWordSuggestionsFromJson()
             .Range("F1").value = "Reason"
             .Range("G1").value = "JsonLine"
             .Range("H1").value = "Confidence"
-            .Columns("A:H").EntireColumn.AutoFit
+            .Range("I1").value = "Pass"
+            .Columns("A:I").EntireColumn.AutoFit
         End With
     Else
         ' Ensure headers are aligned with bookmark_id schema
         If CStr(wsLog.Range("C1").value) <> "BookmarkId" Then wsLog.Range("C1").value = "BookmarkId"
         If CStr(wsLog.Range("H1").value) <> "Confidence" Then wsLog.Range("H1").value = "Confidence"
-        wsLog.Columns("A:H").EntireColumn.AutoFit
+        If CStr(wsLog.Range("I1").value) <> "Pass" Then wsLog.Range("I1").value = "Pass"
+        wsLog.Columns("A:I").EntireColumn.AutoFit
     End If
     
     logRow = wsLog.Cells(wsLog.Rows.Count, "A").End(xlUp).row + 1
@@ -224,90 +251,119 @@ Public Sub ApplyWordSuggestionsFromJson()
     madeTextEdit = False
 
     '---------------------------
-    ' 4) Process each JSON line (bookmark-only)
+    ' 4) Parse and validate every line once, then apply in TWO passes:
+    ' text/comment edits first, accept/reject_revision second. Accepting or
+    ' rejecting a revision can delete ranges that other bookmarks live inside,
+    ' so revision verdicts must never run before the text edits they could
+    ' invalidate. The Log sheet records the pass number per line.
     '---------------------------
     totalLines = UBound(lines) - LBound(lines) + 1
-    Application.StatusBar = "Applying bookmark-based suggestions: 0 of " & totalLines
-    
-    For i = LBound(lines) To UBound(lines)
+    Application.StatusBar = "Parsing suggestions: " & totalLines & " lines"
+
+    Dim pParsed() As Boolean
+    Dim pValCode() As String
+    Dim pIsRev() As Boolean
+    Dim pBookmark() As String
+    Dim pChange() As String
+    Dim pOld() As String
+    Dim pNew() As String
+    Dim pComment() As String
+    Dim pApply() As Variant
+    Dim pConf() As String
+    ReDim pParsed(1 To totalLines)
+    ReDim pValCode(1 To totalLines)
+    ReDim pIsRev(1 To totalLines)
+    ReDim pBookmark(1 To totalLines)
+    ReDim pChange(1 To totalLines)
+    ReDim pOld(1 To totalLines)
+    ReDim pNew(1 To totalLines)
+    ReDim pComment(1 To totalLines)
+    ReDim pApply(1 To totalLines)
+    ReDim pConf(1 To totalLines)
+
+    For i = 1 To totalLines
+        pParsed(i) = ParseJsonLine(lines(i), bookmarkId, changeType, oldText, newText, _
+                                   addComment, applyChange, confidenceRaw)
+        If pParsed(i) Then
+            pBookmark(i) = bookmarkId
+            pChange(i) = changeType
+            pOld(i) = oldText
+            pNew(i) = newText
+            pComment(i) = addComment
+            pApply(i) = applyChange
+            pConf(i) = confidenceRaw
+            pValCode(i) = ValidateParsedChange(bookmarkId, changeType, oldText, newText, addComment)
+            If pValCode(i) = "" Then
+                Dim ctL As String
+                ctL = LCase$(TrimWs(changeType))
+                pIsRev(i) = (ctL = CHANGE_ACCEPT_REVISION Or ctL = CHANGE_REJECT_REVISION)
+            End If
+        End If
+    Next i
+
+    Dim passNum As Long
+    For passNum = 1 To 2
+
+    For i = 1 To totalLines
+        ' Pass routing: revision verdicts are deferred to pass 2; everything
+        ' else (including parse/validation failures) is handled in pass 1.
+        If passNum = 1 And pIsRev(i) Then GoTo SkipLine
+        If passNum = 2 And Not pIsRev(i) Then GoTo SkipLine
+
         Dim logStatus As String
         Dim logReason As String
-        
-        line = Trim$(lines(i))
+
+        line = lines(i)
         logStatus = ""
         logReason = ""
         Dim commentTarget As Object
         applyThis = True
         Set targetRange = Nothing
         Set commentTarget = Nothing
-        
-        Application.StatusBar = "Applying bookmark-based suggestions: " & (i - LBound(lines) + 1) & " of " & totalLines
+
+        Application.StatusBar = "Applying suggestions (pass " & passNum & " of 2): line " & i & " of " & totalLines
         DoEvents
-        
-        ' Blank line
-        If Len(line) = 0 Then
-            logStatus = "Skipped"
-            logReason = "Blank line"
-            skippedCount = skippedCount + 1
-            GoTo LogAndNext
-        End If
-        
-        ' Reset per-line variables
-        bookmarkId = ""
-        changeType = ""
-        oldText = ""
-        newText = ""
-        addComment = ""
-        applyChange = Empty
-        confidenceRaw = ""
-        confidenceNorm = defaultConfidenceLevel
-        
-        ' Parse JSON line into fields (bookmark-only schema)
-        If Not ParseJsonLine(line, bookmarkId, changeType, oldText, newText, _
-                             addComment, applyChange, confidenceRaw) Then
+
+        If Not pParsed(i) Then
             logStatus = "Skipped"
             logReason = "ParseJsonLine failed"
             skippedCount = skippedCount + 1
             GoTo LogAndNext
         End If
-        
+
         parsedOk = parsedOk + 1
-        
-        ' Normalize confidence using config default if needed
+
+        ' Load this line's parsed fields
+        bookmarkId = pBookmark(i)
+        changeType = pChange(i)
+        oldText = pOld(i)
+        newText = pNew(i)
+        addComment = pComment(i)
+        applyChange = pApply(i)
+        confidenceRaw = pConf(i)
         confidenceNorm = NormalizeConfidence(confidenceRaw, defaultConfidenceLevel)
-        
-        ' Respect apply_change flag (must be boolean true to apply)
+
+        ' Respect apply_change flag (boolean false skips the line)
         applyThis = True
         If Not IsEmpty(applyChange) Then
-            If VarType(applyChange) = vbBoolean Then
-                applyThis = applyChange
-            ElseIf VarType(applyChange) = vbString Then
-                applyThis = (LCase$(CStr(applyChange)) = "true")
-            End If
+            If VarType(applyChange) = vbBoolean Then applyThis = applyChange
         End If
-        
+
         If Not applyThis Then
             logStatus = "Skipped"
             logReason = "apply_change=false"
             skippedCount = skippedCount + 1
             GoTo LogAndNext
         End If
-        
-        ' Basic validation
-        If Len(Trim$(bookmarkId)) = 0 Then
+
+        ' Contract validation (shared with the self-test harness)
+        If pValCode(i) <> "" Then
             logStatus = "Skipped"
-            logReason = "Missing bookmark_id"
+            logReason = ValidationMessage(pValCode(i), changeType)
             skippedCount = skippedCount + 1
             GoTo LogAndNext
         End If
-        
-        If Len(Trim$(changeType)) = 0 Then
-            logStatus = "Skipped"
-            logReason = "Missing change_type"
-            skippedCount = skippedCount + 1
-            GoTo LogAndNext
-        End If
-        
+
         ' Locate bookmark or comment
         ' "AR_COMMENT_" is 11 chars; the index begins at position 12.
         If Left$(bookmarkId, 11) = "AR_COMMENT_" Then
@@ -339,15 +395,8 @@ Public Sub ApplyWordSuggestionsFromJson()
         '---------------------------
         ' Apply operation based on change_type
         '---------------------------
-        Select Case LCase$(changeType)
+        Select Case LCase$(TrimWs(changeType))
             Case CHANGE_REPLACE_TEXT
-                If Len(Trim$(newText)) = 0 Then
-                    logStatus = "Skipped"
-                    logReason = "replace_text requires non-empty new_text"
-                    skippedCount = skippedCount + 1
-                    GoTo LogAndNext
-                End If
-
                 ' Anchor ids must never land in the document text.
                 newText = modSysUtils.StripArTokens(newText)
 
@@ -429,52 +478,26 @@ Public Sub ApplyWordSuggestionsFromJson()
                 End If
 
             Case CHANGE_ADD_COMMENT
-                If Len(Trim$(addComment)) = 0 Then
-                    logStatus = "Skipped"
-                    logReason = "add_comment_only requires add_comment text"
-                    skippedCount = skippedCount + 1
-                    GoTo LogAndNext
-                End If
-
                 AddArComment wdDoc, targetRange, addComment, confidenceNorm, useArPrefix
                 appliedCount = appliedCount + 1
                 logStatus = "Applied"
                 logReason = "add_comment_only"
 
             Case CHANGE_REPLY_COMMENT
-                If Not commentTarget Is Nothing Then
-                    If Len(Trim$(addComment)) = 0 Then
-                        logStatus = "Skipped"
-                        logReason = "reply_to_comment requires add_comment text"
-                        skippedCount = skippedCount + 1
-                        GoTo LogAndNext
-                    End If
+                ' Validation guarantees an AR_COMMENT_ target with reply text;
+                ' the locate step above guarantees commentTarget resolved.
+                AddArCommentReply wdDoc, commentTarget, addComment, confidenceNorm, useArPrefix
 
-                    AddArCommentReply wdDoc, commentTarget, addComment, confidenceNorm, useArPrefix
+                ' Record that this reviewer comment was addressed (completeness).
+                On Error Resume Next
+                repliedComments(CStr(cIndex)) = True
+                On Error GoTo ErrHandler
 
-                    ' Record that this reviewer comment was addressed (completeness).
-                    On Error Resume Next
-                    repliedComments(CStr(cIndex)) = True
-                    On Error GoTo ErrHandler
+                appliedCount = appliedCount + 1
+                logStatus = "Applied"
+                logReason = "reply_to_comment"
 
-                    appliedCount = appliedCount + 1
-                    logStatus = "Applied"
-                    logReason = "reply_to_comment"
-                Else
-                    logStatus = "Skipped"
-                    logReason = "reply_to_comment requires a comment target (AR_COMMENT_#)"
-                    skippedCount = skippedCount + 1
-                    GoTo LogAndNext
-                End If
-                
             Case CHANGE_ACCEPT_REVISION
-                If targetRange Is Nothing Then
-                    logStatus = "Skipped"
-                    logReason = "accept_revision requires a bookmark target"
-                    skippedCount = skippedCount + 1
-                    GoTo LogAndNext
-                End If
-                
                 If targetRange.Revisions.Count > 0 Then
                     Dim rAccept As Object
                     For Each rAccept In targetRange.Revisions
@@ -490,13 +513,6 @@ Public Sub ApplyWordSuggestionsFromJson()
                 End If
                 
             Case CHANGE_REJECT_REVISION
-                If targetRange Is Nothing Then
-                    logStatus = "Skipped"
-                    logReason = "reject_revision requires a bookmark target"
-                    skippedCount = skippedCount + 1
-                    GoTo LogAndNext
-                End If
-                
                 If targetRange.Revisions.Count > 0 Then
                     Dim rReject As Object
                     For Each rReject In targetRange.Revisions
@@ -523,22 +539,27 @@ LogAndNext:
             logStatus = "Skipped"
             If Len(logReason) = 0 Then logReason = "No operation performed"
         End If
-        
-        ' Write log entry (includes bookmark_id and Confidence)
+
+        ' Write log entry (includes bookmark_id, Confidence, and pass number)
         If Not wsLog Is Nothing Then
             On Error Resume Next
             wsLog.Cells(logRow, 1).value = Now
-            wsLog.Cells(logRow, 2).value = i - LBound(lines) + 1   ' JSONL line number
+            wsLog.Cells(logRow, 2).value = i   ' edit line number (after meta)
             wsLog.Cells(logRow, 3).value = bookmarkId
             wsLog.Cells(logRow, 4).value = changeType
             wsLog.Cells(logRow, 5).value = logStatus
             wsLog.Cells(logRow, 6).value = logReason
             wsLog.Cells(logRow, 7).value = line
             wsLog.Cells(logRow, 8).value = confidenceNorm
+            wsLog.Cells(logRow, 9).value = passNum
             logRow = logRow + 1
             On Error GoTo ErrHandler
         End If
+
+SkipLine:
     Next i
+
+    Next passNum
 
     ' Terminal step: strip all AR_ anchors so the delivered document is clean and
     ' a future pass re-stamps from scratch (re-run hygiene). Runs after every
@@ -575,7 +596,14 @@ LogAndNext:
     wdDoc.Save
     wdApp.Options.BackgroundSave = oldBgSave
     On Error GoTo ErrHandler
-    
+
+    ' 5a) The run completed and the document is saved: clear the pasted payload
+    ' so a stale JSONL cannot linger in LLM_Changes and be re-applied to the
+    ' wrong document later (belt to the session gate's suspenders).
+    On Error Resume Next
+    wsChanges.Range("A8:A" & lastRow).ClearContents
+    On Error GoTo ErrHandler
+
     '---------------------------
     ' 6) Sequential Teardown
     ' Close Word safely BEFORE showing Excel MsgBoxes
@@ -676,152 +704,499 @@ ErrHandler:
     Resume Cleanup
 End Sub
 
-' Parse one JSONL line into the bookmark-only schema
-Private Function ParseJsonLine(ByVal line As String, _
-                               ByRef bookmarkId As String, _
-                               ByRef changeType As String, _
-                               ByRef oldText As String, _
-                               ByRef newText As String, _
-                               ByRef addComment As String, _
-                               ByRef applyChange As Variant, _
-                               ByRef confidence As String) As Boolean
-    Dim sVal As String
-    Dim bVal As Boolean
-    
+'=== JSONL tokenizer (twin: ref/jsonl_contract.py) ===================
+' A single left-to-right pass over the line that walks string literals
+' (escape-aware) and recognizes keys only at object top level. Replaces the
+' old InStr-based extractors and fixes two defects:
+'   1. Escape parity: a closing quote is recognized iff it is preceded by an
+'      EVEN run of backslashes (the reader consumes backslash+next as a unit;
+'      the old prevCh check misread "a\\" as unterminated).
+'   2. Key-in-value collision: a key name appearing inside another field's
+'      VALUE can no longer be mistaken for the key.
+' Semantics shared with the Python twin -- never change one side alone:
+' TrimWs strips space/tab/CR/LF both ends; duplicate keys: FIRST wins; value
+' types are tagged s=string (unescaped) / b=bool / n=number (raw) / z=null /
+' c=complex (raw nested object or array).
+
+' Trim that also strips CR/LF (VBA Trim$ strips spaces only). Public because
+' the self-test harness shares it.
+Public Function TrimWs(ByVal s As String) As String
+    Dim a As Long, b As Long
+    Dim ch As String
+    a = 1
+    b = Len(s)
+    Do While a <= b
+        ch = Mid$(s, a, 1)
+        If ch = " " Or ch = vbTab Or ch = vbCr Or ch = vbLf Then a = a + 1 Else Exit Do
+    Loop
+    Do While b >= a
+        ch = Mid$(s, b, 1)
+        If ch = " " Or ch = vbTab Or ch = vbCr Or ch = vbLf Then b = b - 1 Else Exit Do
+    Loop
+    If b >= a Then TrimWs = Mid$(s, a, b - a + 1)
+End Function
+
+' Payload filter shared by the import collector and the self-test harness:
+' blank lines and markdown code-fence lines are not payload (a chat copy
+' often includes fences; counting them would break the meta count check).
+Public Function IsPayloadLine(ByVal trimmed As String) As Boolean
+    If Len(trimmed) = 0 Then Exit Function
+    If trimmed = "```" Or trimmed = "```json" Or trimmed = "```jsonl" Then Exit Function
+    IsPayloadLine = True
+End Function
+
+Private Function SkipWs(ByVal s As String, ByVal i As Long) As Long
+    Dim ch As String
+    Do While i <= Len(s)
+        ch = Mid$(s, i, 1)
+        If ch = " " Or ch = vbTab Or ch = vbCr Or ch = vbLf Then i = i + 1 Else Exit Do
+    Loop
+    SkipWs = i
+End Function
+
+' s position i is the opening quote. Returns True with the RAW contents
+' (escapes intact) and iNext just past the closing quote; False if
+' unterminated. A backslash consumes the following character, so a quote
+' closes the string iff preceded by an even backslash run.
+Private Function ReadJsonStringRaw(ByVal s As String, ByVal i As Long, _
+                                   ByRef raw As String, ByRef iNext As Long) As Boolean
+    Dim n As Long
+    Dim ch As String
+    Dim sb As String
+    n = Len(s)
+    i = i + 1
+    sb = ""
+    Do While i <= n
+        ch = Mid$(s, i, 1)
+        If ch = "\" Then
+            If i + 1 > n Then Exit Function   ' dangling backslash: unterminated
+            sb = sb & ch & Mid$(s, i + 1, 1)
+            i = i + 2
+        ElseIf ch = """" Then
+            raw = sb
+            iNext = i + 1
+            ReadJsonStringRaw = True
+            Exit Function
+        Else
+            sb = sb & ch
+            i = i + 1
+        End If
+    Loop
+End Function
+
+' s position i is "{" or "[": walk (string-aware) to the matching close.
+Private Function ReadJsonNestedRaw(ByVal s As String, ByVal i As Long, _
+                                   ByRef raw As String, ByRef iNext As Long) As Boolean
+    Dim n As Long
+    Dim depth As Long
+    Dim startPos As Long
+    Dim ch As String
+    Dim dummy As String
+    n = Len(s)
+    startPos = i
+    depth = 0
+    Do While i <= n
+        ch = Mid$(s, i, 1)
+        If ch = """" Then
+            If Not ReadJsonStringRaw(s, i, dummy, i) Then Exit Function
+        ElseIf ch = "{" Or ch = "[" Then
+            depth = depth + 1
+            i = i + 1
+        ElseIf ch = "}" Or ch = "]" Then
+            depth = depth - 1
+            If depth = 0 Then
+                raw = Mid$(s, startPos, i - startPos + 1)
+                iNext = i + 1
+                ReadJsonNestedRaw = True
+                Exit Function
+            End If
+            i = i + 1
+        Else
+            i = i + 1
+        End If
+    Loop
+End Function
+
+' Tokenize one JSON object line into parallel arrays (1-based; FIRST key
+' occurrence wins). Returns False on any structural failure.
+Private Function ParseTopLevelPairs(ByVal line As String, _
+                                    ByRef keys() As String, _
+                                    ByRef typs() As String, _
+                                    ByRef vals() As String, _
+                                    ByRef pairCount As Long) As Boolean
+    Dim s As String
+    Dim n As Long
+    Dim i As Long
+    Dim j As Long
+    Dim keyRaw As String
+    Dim valRaw As String
+    Dim keyName As String
+    Dim ch As String
+    Dim vType As String
+    Dim vVal As String
+    Dim numStart As Long
+    Dim dup As Boolean
+
+    pairCount = 0
+    s = TrimWs(line)
+    n = Len(s)
+    If n < 2 Then Exit Function
+    If Left$(s, 1) <> "{" Or Right$(s, 1) <> "}" Then Exit Function
+
+    ReDim keys(1 To 16)
+    ReDim typs(1 To 16)
+    ReDim vals(1 To 16)
+
+    i = SkipWs(s, 2)
+    If i = n And Mid$(s, i, 1) = "}" Then
+        ParseTopLevelPairs = True   ' empty object
+        Exit Function
+    End If
+
+    Do
+        i = SkipWs(s, i)
+        If i > n Then Exit Function
+        If Mid$(s, i, 1) <> """" Then Exit Function
+        If Not ReadJsonStringRaw(s, i, keyRaw, i) Then Exit Function
+        keyName = JsonUnescapeString(keyRaw)
+        i = SkipWs(s, i)
+        If i > n Then Exit Function
+        If Mid$(s, i, 1) <> ":" Then Exit Function
+        i = SkipWs(s, i + 1)
+        If i > n Then Exit Function
+
+        ch = Mid$(s, i, 1)
+        If ch = """" Then
+            If Not ReadJsonStringRaw(s, i, valRaw, i) Then Exit Function
+            vType = "s"
+            vVal = JsonUnescapeString(valRaw)
+        ElseIf Mid$(s, i, 4) = "true" Then
+            vType = "b"
+            vVal = "true"
+            i = i + 4
+        ElseIf Mid$(s, i, 5) = "false" Then
+            vType = "b"
+            vVal = "false"
+            i = i + 5
+        ElseIf Mid$(s, i, 4) = "null" Then
+            vType = "z"
+            vVal = "null"
+            i = i + 4
+        ElseIf ch = "{" Or ch = "[" Then
+            If Not ReadJsonNestedRaw(s, i, valRaw, i) Then Exit Function
+            vType = "c"
+            vVal = valRaw
+        ElseIf InStr(1, "-+.eE0123456789", ch, vbBinaryCompare) > 0 Then
+            numStart = i
+            Do While i <= n
+                If InStr(1, "-+.eE0123456789", Mid$(s, i, 1), vbBinaryCompare) > 0 Then
+                    i = i + 1
+                Else
+                    Exit Do
+                End If
+            Loop
+            vType = "n"
+            vVal = Mid$(s, numStart, i - numStart)
+        Else
+            Exit Function
+        End If
+
+        ' First occurrence wins
+        dup = False
+        For j = 1 To pairCount
+            If keys(j) = keyName Then
+                dup = True
+                Exit For
+            End If
+        Next j
+        If Not dup Then
+            pairCount = pairCount + 1
+            If pairCount > UBound(keys) Then
+                ReDim Preserve keys(1 To UBound(keys) * 2)
+                ReDim Preserve typs(1 To UBound(typs) * 2)
+                ReDim Preserve vals(1 To UBound(vals) * 2)
+            End If
+            keys(pairCount) = keyName
+            typs(pairCount) = vType
+            vals(pairCount) = vVal
+        End If
+
+        i = SkipWs(s, i)
+        If i > n Then Exit Function
+        ch = Mid$(s, i, 1)
+        If ch = "," Then
+            i = i + 1
+        ElseIf ch = "}" Then
+            If i = n Then ParseTopLevelPairs = True   ' must be the LAST char
+            Exit Function
+        Else
+            Exit Function
+        End If
+    Loop
+End Function
+
+' Index of key in the parsed pairs IF its value has the wanted type; 0 when
+' absent or wrong-typed. The first occurrence decides (no fall-through).
+Private Function PairIndex(ByRef keys() As String, ByRef typs() As String, _
+                           ByVal pairCount As Long, ByVal key As String, _
+                           ByVal wantType As String) As Long
+    Dim j As Long
+    For j = 1 To pairCount
+        If keys(j) = key Then
+            If typs(j) = wantType Then PairIndex = j
+            Exit Function
+        End If
+    Next j
+End Function
+
+' Parse one JSONL line into the bookmark-only schema. Public so the self-test
+' harness can replay the golden parser vectors against it. bookmark_id and
+' change_type must be present AS STRINGS or the parse fails; on failure every
+' ByRef output is reset (mirroring the Python twin).
+Public Function ParseJsonLine(ByVal line As String, _
+                              ByRef bookmarkId As String, _
+                              ByRef changeType As String, _
+                              ByRef oldText As String, _
+                              ByRef newText As String, _
+                              ByRef addComment As String, _
+                              ByRef applyChange As Variant, _
+                              ByRef confidence As String) As Boolean
+    Dim keys() As String
+    Dim typs() As String
+    Dim vals() As String
+    Dim pairCount As Long
+    Dim idx As Long
+
     On Error GoTo ErrFail
-    
-    line = Trim$(line)
-    If Len(line) = 0 Then Exit Function
-    
-    If Left$(line, 1) <> "{" Or Right$(line, 1) <> "}" Then
-        GoTo ErrFail
-    End If
-    
-    ' bookmark_id (required)
+
     bookmarkId = ""
-    If Not ExtractJsonString(line, "bookmark_id", sVal) Then GoTo ErrFail
-    bookmarkId = sVal
-    
-    ' change_type (required)
     changeType = ""
-    If Not ExtractJsonString(line, "change_type", sVal) Then GoTo ErrFail
-    changeType = sVal
-    
-    ' old_text (optional)
     oldText = ""
-    If ExtractJsonString(line, "old_text", sVal) Then
-        oldText = sVal
-    End If
-    
-    ' new_text (optional, but required for replace_text)
     newText = ""
-    If ExtractJsonString(line, "new_text", sVal) Then
-        newText = sVal
-    End If
-    
-    ' add_comment (optional)
     addComment = ""
-    If ExtractJsonString(line, "add_comment", sVal) Then
-        addComment = sVal
-    End If
-    
-    ' apply_change (required in schema but we treat missing as True)
     applyChange = Empty
-    If ExtractJsonBoolean(line, "apply_change", bVal) Then
-        applyChange = bVal
-    End If
-    
-    ' confidence (optional string)
     confidence = ""
-    If ExtractJsonString(line, "confidence", sVal) Then
-        confidence = sVal
-    End If
-    
+
+    If Not ParseTopLevelPairs(line, keys, typs, vals, pairCount) Then GoTo ErrFail
+
+    idx = PairIndex(keys, typs, pairCount, "bookmark_id", "s")
+    If idx = 0 Then GoTo ErrFail
+    bookmarkId = vals(idx)
+
+    idx = PairIndex(keys, typs, pairCount, "change_type", "s")
+    If idx = 0 Then GoTo ErrFail
+    changeType = vals(idx)
+
+    idx = PairIndex(keys, typs, pairCount, "old_text", "s")
+    If idx > 0 Then oldText = vals(idx)
+
+    idx = PairIndex(keys, typs, pairCount, "new_text", "s")
+    If idx > 0 Then newText = vals(idx)
+
+    idx = PairIndex(keys, typs, pairCount, "add_comment", "s")
+    If idx > 0 Then addComment = vals(idx)
+
+    idx = PairIndex(keys, typs, pairCount, "apply_change", "b")
+    If idx > 0 Then applyChange = (vals(idx) = "true")
+
+    idx = PairIndex(keys, typs, pairCount, "confidence", "s")
+    If idx > 0 Then confidence = vals(idx)
+
     ParseJsonLine = True
     Exit Function
-    
+
 ErrFail:
+    bookmarkId = ""
+    changeType = ""
+    oldText = ""
+    newText = ""
+    addComment = ""
+    applyChange = Empty
+    confidence = ""
     ParseJsonLine = False
 End Function
 
-'=== Generic JSON helpers (unchanged) ===============================
+' Validate a parsed change against the serializer contract. Returns "" when
+' valid, else a stable reason code shared with the Python twin and the golden
+' vectors. The check ORDER is part of the contract -- mirror exactly.
+Public Function ValidateParsedChange(ByVal bookmarkId As String, _
+                                     ByVal changeType As String, _
+                                     ByVal oldText As String, _
+                                     ByVal newText As String, _
+                                     ByVal addComment As String) As String
+    Dim b As String
+    Dim ct As String
+    Dim isCommentTarget As Boolean
 
-Private Function ExtractJsonString(ByVal line As String, ByVal key As String, ByRef value As String) As Boolean
-    Dim pattern As String
-    Dim posKey As Long, posColon As Long
-    Dim i As Long
-    Dim sb As String
-    Dim ch As String, prevCh As String
-    
-    pattern = """" & key & """"
-    posKey = InStr(1, line, pattern, vbTextCompare)
-    If posKey = 0 Then Exit Function
-    
-    posColon = InStr(posKey + Len(pattern), line, ":", vbTextCompare)
-    If posColon = 0 Then Exit Function
-    
-    ' Move to first non-space after colon
-    i = posColon + 1
-    Do While i <= Len(line) And Mid$(line, i, 1) = " "
-        i = i + 1
-    Loop
-    
-    If i > Len(line) Or Mid$(line, i, 1) <> """" Then Exit Function
-    
-    ' Start after the opening quote
-    i = i + 1
-    sb = ""
-    prevCh = ""
-    
-    Do While i <= Len(line)
-        ch = Mid$(line, i, 1)
-        If ch = """" And prevCh <> "\" Then
-            Exit Do              ' reached the closing quote, do NOT include it
+    b = TrimWs(bookmarkId)
+    ct = LCase$(TrimWs(changeType))
+
+    If Len(b) = 0 Then
+        ValidateParsedChange = "MISSING_BOOKMARK"
+        Exit Function
+    End If
+    If Len(ct) = 0 Then
+        ValidateParsedChange = "MISSING_CHANGE_TYPE"
+        Exit Function
+    End If
+
+    Select Case ct
+        Case "replace_text", "delete_element", "add_comment_only", _
+             "reply_to_comment", "accept_revision", "reject_revision"
+            ' known type
+        Case Else
+            ValidateParsedChange = "UNKNOWN_CHANGE_TYPE"
+            Exit Function
+    End Select
+
+    isCommentTarget = (Left$(bookmarkId, 11) = "AR_COMMENT_")
+
+    If ct = "replace_text" Then
+        If Len(TrimWs(newText)) = 0 Then
+            ValidateParsedChange = "REPLACE_REQUIRES_NEW_TEXT"
+            Exit Function
         End If
-        sb = sb & ch
-        prevCh = ch
-        i = i + 1
-    Loop
-    
-    value = JsonUnescapeString(sb)
-    ExtractJsonString = True
+    End If
+    If ct = "add_comment_only" Then
+        If Len(TrimWs(addComment)) = 0 Then
+            ValidateParsedChange = "COMMENT_REQUIRES_TEXT"
+            Exit Function
+        End If
+    End If
+    If ct = "reply_to_comment" Then
+        If Not isCommentTarget Then
+            ValidateParsedChange = "REPLY_REQUIRES_COMMENT_TARGET"
+            Exit Function
+        End If
+        If Len(TrimWs(addComment)) = 0 Then
+            ValidateParsedChange = "REPLY_REQUIRES_TEXT"
+            Exit Function
+        End If
+    End If
+    If ct = "accept_revision" Or ct = "reject_revision" Then
+        If isCommentTarget Then
+            ValidateParsedChange = "REVISION_REQUIRES_RANGE_TARGET"
+            Exit Function
+        End If
+    End If
+
+    ValidateParsedChange = ""
 End Function
 
-Private Function ExtractJsonBoolean(ByVal line As String, ByVal key As String, ByRef value As Boolean) As Boolean
-    Dim pattern As String
-    Dim posKey As Long, posColon As Long
-    Dim i As Long, startPos As Long
-    Dim ch As String
-    Dim token As String
-    
-    pattern = """" & key & """"
-    posKey = InStr(1, line, pattern, vbTextCompare)
-    If posKey = 0 Then Exit Function
-    
-    posColon = InStr(posKey + Len(pattern), line, ":", vbTextCompare)
-    If posColon = 0 Then Exit Function
-    
-    i = posColon + 1
-    Do While i <= Len(line) And Mid$(line, i, 1) = " "
-        i = i + 1
-    Loop
-    
-    If i > Len(line) Then Exit Function
-    
-    startPos = i
-    For i = startPos To Len(line)
-        ch = Mid$(line, i, 1)
-        If ch = "," Or ch = "}" Or ch = " " Then Exit For
-    Next i
-    
-    token = LCase$(Trim$(Mid$(line, startPos, i - startPos)))
-    If token = "true" Then
-        value = True
-        ExtractJsonBoolean = True
-    ElseIf token = "false" Then
-        value = False
-        ExtractJsonBoolean = True
+' Map a validation code to the human-readable Log/skip message.
+Private Function ValidationMessage(ByVal code As String, ByVal changeType As String) As String
+    Select Case code
+        Case "MISSING_BOOKMARK"
+            ValidationMessage = "Missing bookmark_id"
+        Case "MISSING_CHANGE_TYPE"
+            ValidationMessage = "Missing change_type"
+        Case "UNKNOWN_CHANGE_TYPE"
+            ValidationMessage = "Unknown change_type: " & changeType
+        Case "REPLACE_REQUIRES_NEW_TEXT"
+            ValidationMessage = "replace_text requires non-empty new_text"
+        Case "COMMENT_REQUIRES_TEXT"
+            ValidationMessage = "add_comment_only requires add_comment text"
+        Case "REPLY_REQUIRES_COMMENT_TARGET"
+            ValidationMessage = "reply_to_comment requires a comment target (AR_COMMENT_#)"
+        Case "REPLY_REQUIRES_TEXT"
+            ValidationMessage = "reply_to_comment requires add_comment text"
+        Case "REVISION_REQUIRES_RANGE_TARGET"
+            ValidationMessage = "accept/reject_revision requires a bookmark range target, not a comment"
+        Case Else
+            ValidationMessage = code
+    End Select
+End Function
+
+'=== Session-binding gate (twin: ref/session.py) =====================
+' Bookmark ids are generic ordinals, so a stale payload can apply cleanly to
+' the WRONG document. The serializer's first output line must be:
+'   {"meta": "autoreviewer", "session": "<token>", "count": N}
+' with the export fingerprint carried verbatim. Default-deny on any mismatch.
+Public Function CheckSessionGate(ByRef allLines() As String, ByVal n As Long, _
+                                 ByVal expectedToken As String, _
+                                 ByRef failCode As String) As Boolean
+    Dim sessionTok As String
+    Dim cnt As Long
+
+    failCode = ""
+    If Len(expectedToken) = 0 Then
+        failCode = "NO_EXPORT_TOKEN"
+        Exit Function
     End If
+    If n <= 0 Then
+        failCode = "NO_PAYLOAD"
+        Exit Function
+    End If
+    If Not ParseMetaLine(allLines(1), sessionTok, cnt) Then
+        failCode = "META_MISSING"
+        Exit Function
+    End If
+    If sessionTok <> expectedToken Then
+        failCode = "TOKEN_MISMATCH"
+        Exit Function
+    End If
+    If cnt <> n - 1 Then
+        failCode = "COUNT_MISMATCH"
+        Exit Function
+    End If
+    CheckSessionGate = True
+End Function
+
+' Parse the serializer meta line. count must be a plain integer: an optional
+' leading minus, then 1-9 digits (both twins enforce the same rule).
+Private Function ParseMetaLine(ByVal line As String, _
+                               ByRef sessionTok As String, _
+                               ByRef cnt As Long) As Boolean
+    Dim keys() As String
+    Dim typs() As String
+    Dim vals() As String
+    Dim pairCount As Long
+    Dim idx As Long
+    Dim rawCnt As String
+    Dim body As String
+    Dim j As Long
+
+    If Not ParseTopLevelPairs(line, keys, typs, vals, pairCount) Then Exit Function
+
+    idx = PairIndex(keys, typs, pairCount, "meta", "s")
+    If idx = 0 Then Exit Function
+    If vals(idx) <> "autoreviewer" Then Exit Function
+
+    idx = PairIndex(keys, typs, pairCount, "session", "s")
+    If idx = 0 Then Exit Function
+    sessionTok = vals(idx)
+
+    idx = PairIndex(keys, typs, pairCount, "count", "n")
+    If idx = 0 Then Exit Function
+    rawCnt = vals(idx)
+
+    If Left$(rawCnt, 1) = "-" Then body = Mid$(rawCnt, 2) Else body = rawCnt
+    If Len(body) = 0 Or Len(body) > 9 Then Exit Function
+    For j = 1 To Len(body)
+        If InStr(1, "0123456789", Mid$(body, j, 1), vbBinaryCompare) = 0 Then Exit Function
+    Next j
+    cnt = CLng(rawCnt)
+    If cnt < 0 Then Exit Function
+
+    ParseMetaLine = True
+End Function
+
+' Map a session-gate code to operator guidance for the abort MsgBox.
+Private Function SessionFailMessage(ByVal code As String) As String
+    Select Case code
+        Case "NO_EXPORT_TOKEN"
+            SessionFailMessage = "No export fingerprint is recorded in Config. Run the export step first; the serializer needs its session token."
+        Case "NO_PAYLOAD"
+            SessionFailMessage = "No payload lines were found."
+        Case "META_MISSING"
+            SessionFailMessage = "The first line is not a valid AutoReviewer meta line. Expected: {""meta"": ""autoreviewer"", ""session"": ""<token>"", ""count"": N}. Re-run Hand off to Serializer and paste its FULL output."
+        Case "TOKEN_MISMATCH"
+            SessionFailMessage = "The payload's session token does not match the last export. This JSONL belongs to a DIFFERENT document or run; applying it could write edits into the wrong file."
+        Case "COUNT_MISMATCH"
+            SessionFailMessage = "The meta line's count does not match the number of edit lines pasted. Lines may be missing or duplicated; paste the serializer's full output again."
+        Case Else
+            SessionFailMessage = code
+    End Select
 End Function
 
 Private Function JsonUnescapeString(ByVal s As String) As String

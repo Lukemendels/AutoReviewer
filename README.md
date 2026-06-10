@@ -55,12 +55,21 @@ source of record is never mutated.
 | `modAudit.bas` | The `Trace` sheet — one `logic_trace` row per run (operator, route, fingerprints) |
 | `modDashboardUI.bas` | The dashboard: Train Persona / Run Review / Respond to Review |
 | `modTrainingPipeline.bas` | Author filter, corpus builder, three Reduce passes, Save SKILL.md |
+| `modSelfTest.bas` | Offline self-test harness: replays `tests/vectors/` against the deterministic VBA (no Word needed) |
+
+The deterministic core (fingerprint, JSONL contract, session gate) has a
+**Python reference twin** in `ref/` with golden vectors in `tests/vectors/` —
+see `TESTING.md` for the doctrine and the operator round-trip.
 
 Assistant prompts: `TEMPLATE_SKILL.md` (index), `TEMPLATE_SKILL_COTHINKER.md`
 (hot, per persona), `TEMPLATE_SKILL_SERIALIZER.md` (cold, shared).
 
 ## Getting started
 
+0. **Self-test first.** Import the `.bas` modules, copy `tests\vectors\` next
+   to the workbook, and run `RunAllSelfTests` (see `TESTING.md`). The SelfTest
+   sheet and `selftest_report.txt` must show `OVERALL: GREEN` before the first
+   real document run.
 1. Open the `.xlsm` and run `modDashboardUI.BuildDashboard` once. It creates the
    `Config`, `LLM_Changes`, `Personas` (and on first run, `Log` / `Trace`)
    sheets and the dashboard.
@@ -94,4 +103,17 @@ Full walkthrough: `USER_GUIDE.md`. Roadmap and module history:
 - The `AR_` anchors are stripped as the final apply step, so the delivered
   document is clean and a second pass re-stamps from scratch.
 - The `Trace` and `Log` sheets are the defensible artifact — on this substrate
-  the audit lineage is the product, not overhead (Profile §1.3).
+  the audit lineage is the product, not overhead (Profile §1.3). Export writes
+  its own Trace row (`Mode = "Export"`), so abandoned reviews leave lineage too.
+- **Session binding.** Bookmark ids are generic ordinals, so a stale JSONL
+  payload could apply cleanly to the *wrong* document. The serializer's first
+  output line is therefore a meta line carrying the export fingerprint and the
+  edit count; the apply step verifies both **before opening Word** and refuses
+  the whole payload on any mismatch (default-deny, no partial apply). After a
+  successful apply, `LLM_Changes!A8:A…` is cleared so stale payloads cannot
+  linger. Edits apply in two passes — text/comment changes first, then
+  `accept_revision`/`reject_revision` — because revision verdicts can delete
+  ranges other edits target (the Log sheet records the pass per line).
+- No assistant URLs live in source. Set the persona co-thinker URL in the
+  Personas sheet, the shared Serializer/Incorporator URLs via the dashboard,
+  and optionally a `CustomGptUrl` Config key as the fallback chat URL.

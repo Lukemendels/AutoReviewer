@@ -249,6 +249,8 @@ SESSION_CASES = [
     ("meta_wrong_app", TOKEN, [_meta(0, app="otherapp")]),
     ("meta_count_not_number", TOKEN, ['{"meta": "autoreviewer", "session": "%s", "count": "two"}' % TOKEN]),
     ("meta_negative_count", TOKEN, ['{"meta": "autoreviewer", "session": "%s", "count": -1}' % TOKEN]),
+    ("meta_count_plus_sign", TOKEN, ['{"meta": "autoreviewer", "session": "%s", "count": +1}' % TOKEN, EDIT]),
+    ("meta_count_decimal", TOKEN, ['{"meta": "autoreviewer", "session": "%s", "count": 1.0}' % TOKEN, EDIT]),
 ]
 
 

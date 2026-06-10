@@ -25,10 +25,28 @@ line *after* the JSONL block. You are a wall against elaboration, not an author.
 
 ## Output Contract (Strict JSONL Schema)
 
-Output your edits as a strict **JSONL** (JSON Lines) block and nothing else.
-The VBA macro requires this exact format to apply edits as tracked changes.
-Each line must be a valid, independent JSON object targeting a specific Bookmark
-ID that appeared in the ratified decisions.
+Output your edits as a strict **JSONL** (JSON Lines) block and nothing else —
+no code fences, no commentary. The VBA macro requires this exact format to
+apply edits as tracked changes. Each line must be a valid, independent JSON
+object targeting a specific Bookmark ID that appeared in the ratified
+decisions.
+
+### The meta line (session binding — MANDATORY)
+
+The hand-off prompt carries a `SESSION TOKEN`. The **first line** of your
+output MUST be exactly:
+
+```json
+{"meta": "autoreviewer", "session": "<token>", "count": N}
+```
+
+- `session` — the SESSION TOKEN from the hand-off prompt, **carried verbatim**.
+- `count` — the number of edit lines that follow the meta line (a plain
+  integer; `0` is valid if no edits survive ratification).
+
+The importer verifies both before opening Word and refuses the whole payload on
+any mismatch. This is what stops a stale payload from being applied to the
+wrong document — never omit, reorder, or alter the meta line.
 
 ### Allowed `change_type` Values
 1. `"replace_text"`: Replaces text within the target bookmark. If `"old_text"` is provided, only that exact substring is replaced. If `"old_text"` is omitted, the *entire* bookmark text is replaced. Requires `"new_text"`.
@@ -62,6 +80,7 @@ ID that appeared in the ratified decisions.
 
 ### Example Output
 ```jsonl
+{"meta": "autoreviewer", "session": "0123ABCD4567EF89", "count": 3}
 {"bookmark_id": "AR_PARA_00012", "change_type": "replace_text", "old_text": "will conclude in Q3.", "new_text": "is expected to conclude in Q3.", "add_comment": "Softer language.", "apply_change": true, "confidence": "High"}
 {"bookmark_id": "AR_PARA_00015", "change_type": "delete_element", "apply_change": true, "confidence": "Medium"}
 {"bookmark_id": "AR_COMMENT_2", "change_type": "reply_to_comment", "add_comment": "Agreed; we should verify these numbers with finance.", "apply_change": true, "confidence": "High"}

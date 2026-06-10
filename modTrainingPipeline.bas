@@ -338,10 +338,15 @@ Public Sub RunReducePass1()
     End If
     Shell "explorer.exe /select,""" & selectPath & """", vbNormalFocus
 
-    ' Launch a fresh DHSChat chat (no assistant) in the browser.
-    url = modAppCore.GetConfigValue("CustomGptUrl", "https://chat.dhs.gov/workspaces/4cf75bdf-de55-4f01-8c3f-0444ace52010")
+    ' Launch a fresh DHSChat chat (no assistant) in the browser. No hardcoded
+    ' default: internal system URLs do not live in source.
+    url = Trim$(modAppCore.GetConfigValue("CustomGptUrl", ""))
     If InStr(LCase(url), "http") > 0 Then
         Shell "explorer.exe """ & url & """", vbNormalFocus
+    Else
+        MsgBox "No CustomGptUrl is configured (Config sheet), so no browser was " & _
+               "opened. Open DHSChat manually and start a new chat.", _
+               vbExclamation, "No Chat URL"
     End If
 End Sub
 

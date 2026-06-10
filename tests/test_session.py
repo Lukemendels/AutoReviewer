@@ -77,6 +77,15 @@ def test_parse_meta_line_negative_count():
     ) is None
 
 
+def test_parse_meta_line_strict_integer_rule():
+    # optional minus + digits only, max 9 digits (mirrors the VBA exactly)
+    assert parse_meta_line('{"meta": "autoreviewer", "session": "x", "count": +1}') is None
+    assert parse_meta_line('{"meta": "autoreviewer", "session": "x", "count": 1.0}') is None
+    assert parse_meta_line('{"meta": "autoreviewer", "session": "x", "count": 1e2}') is None
+    assert parse_meta_line('{"meta": "autoreviewer", "session": "x", "count": 1234567890}') is None
+    assert parse_meta_line('{"meta": "autoreviewer", "session": "x", "count": 999999999}') == ("x", 999999999)
+
+
 def test_filter_drops_blanks_and_fences():
     raw = ["```jsonl", meta(1), "", "  ", EDIT, "```"]
     assert filter_payload_lines(raw) == [meta(1), EDIT]
