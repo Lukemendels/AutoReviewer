@@ -368,10 +368,10 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
         "<ids or none>."
 
     If isRespondMode Then
-        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. " & synthesisSpec & _
+        promptText = "I am attaching an exported Word document containing text, bookmark IDs, reviewer comments, and reviewer tracked changes (revisions). The text already reflects any accepted tracked changes. Follow your three-turn protocol: begin with Turn 1 (THEMES) and stop for my rulings before producing blocks. " & synthesisSpec & _
             "For each comment and each revision, unpack WHAT the reviewer is asking for, then surface the realistic OPTIONS -- accept as-is, modify, reject with rationale, or reply to the comment -- and recommend one with its counter-case. Anchor each to the reviewer's AR_COMMENT_ / AR_REV_ / paragraph id. EVERY reviewer comment MUST get a reply_to_comment block." & packetSpec & coverageSpec
     Else
-        promptText = "I am attaching an exported Word document containing text and bookmark IDs. Follow your two-turn protocol: begin with Turn 1 (THEMES) and stop for my rulings before producing blocks." & packetSpec & coverageSpec
+        promptText = "I am attaching an exported Word document containing text and bookmark IDs. Follow your three-turn protocol: begin with Turn 1 (THEMES) and stop for my rulings before producing blocks." & packetSpec & coverageSpec
     End If
     modSysUtils.CopyToClipboard promptText
     
@@ -430,11 +430,13 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
            assistantLabel & " assistant has been opened." & vbCrLf & vbCrLf & _
            "1. Paste the prompt (Ctrl+V) into the assistant." & vbCrLf & _
            "2. Upload/Drop the exported .txt file." & vbCrLf & _
-           "3. Read the decision packet it returns and ratify (keep / fix / cut)." & vbCrLf & _
-           "4. Click ""Hand off to Serializer"" and paste your ratified decisions " & _
-           "into the serializer chat (not Excel)." & vbCrLf & _
-           "5. Paste the JSONL the serializer returns into LLM_Changes!A8, then " & _
-           """Apply LLM Edits to Word"".", vbInformation, "Export Complete"
+           "3. Work through Turn 1 (THEMES) and Turn 2 (BLOCKS), ruling KEEP / " & _
+           "FIX / CUT on each block." & vbCrLf & _
+           "4. Paste the assistant's Turn 3 FINAL RATIFIED PACKET into the " & _
+           "Ratified sheet at A8." & vbCrLf & _
+           "5. Click ""Hand off to Serializer"", paste the prompt into the " & _
+           "serializer chat, then paste the JSONL it returns into LLM_Changes!A8, " & _
+           "then ""Apply LLM Edits to Word"".", vbInformation, "Export Complete"
 
     Exit Sub
 
@@ -466,11 +468,30 @@ End Sub
 ' opens the shared Serializer assistant in a SEPARATE context window. The
 ' serializer's only job is serialize_exactly: translate the ratified decisions
 ' into the JSONL edit contract, never re-decide them.
+'
+' Completeness gate (item 8): the ratified packet pasted into the Ratified
+' sheet (A8:A...) is the source of truth for WHICH anchors must come back from
+' the serializer. Each surviving "[n] BOOKMARK: AR_..." line names one decision
+' the serializer must translate; their count and ids are persisted to Config
+' as ExpectedEditCount/ExpectedAnchors so ApplyWordSuggestionsFromJson can
+' reconcile the pasted JSONL against them before any Word write.
 Public Sub HandOffToSerializer()
     Dim serializerUrl As String
     Dim promptText As String
     Dim sessionToken As String
+    Dim wb As Workbook
+    Dim wsRatified As Worksheet
+    Dim lastRow As Long
+    Dim r As Long
+    Dim rawLines() As String
+    Dim rawCount As Long
+    Dim ratifiedText As String
+    Dim anchors() As String
+    Dim anchorCount As Long
+    Dim expectedAnchorsCsv As String
+    Dim i As Long
 
+    Set wb = ThisWorkbook
     serializerUrl = Trim$(GetConfigValue("SerializerUrl", ""))
 
     ' Session binding: the serializer must echo the export fingerprint back in
@@ -485,6 +506,71 @@ Public Sub HandOffToSerializer()
         Exit Sub
     End If
 
+    ' Read the ratified packet (Turn 3 FINAL RATIFIED PACKET) from the Ratified
+    ' sheet, A8:A..., one row per line.
+    On Error Resume Next
+    Set wsRatified = wb.Worksheets("Ratified")
+    On Error GoTo 0
+    If wsRatified Is Nothing Then
+        modAppCore.SetupConfigAndLLMSheets
+        On Error Resume Next
+        Set wsRatified = wb.Worksheets("Ratified")
+        On Error GoTo 0
+    End If
+    If wsRatified Is Nothing Then
+        MsgBox "The Ratified sheet could not be found or created.", vbCritical, "Hand Off to Serializer"
+        Exit Sub
+    End If
+
+    lastRow = wsRatified.Cells(wsRatified.Rows.Count, "A").End(xlUp).row
+    If lastRow < 8 Then
+        MsgBox "No ratified decisions found on the Ratified sheet (column A, starting at A8)." & vbCrLf & vbCrLf & _
+               "Paste the HOT co-thinker's Turn 3 FINAL RATIFIED PACKET there first.", _
+               vbExclamation, "Hand Off to Serializer"
+        Exit Sub
+    End If
+
+    ReDim rawLines(1 To lastRow - 7)
+    rawCount = 0
+    For r = 8 To lastRow
+        rawCount = rawCount + 1
+        rawLines(rawCount) = CStr(wsRatified.Cells(r, "A").value)
+    Next r
+
+    ratifiedText = ""
+    For i = 1 To rawCount
+        If i > 1 Then ratifiedText = ratifiedText & vbCrLf
+        ratifiedText = ratifiedText & rawLines(i)
+    Next i
+
+    If Len(Trim$(ratifiedText)) = 0 Then
+        MsgBox "The Ratified sheet is empty." & vbCrLf & vbCrLf & _
+               "Paste the HOT co-thinker's Turn 3 FINAL RATIFIED PACKET there first.", _
+               vbExclamation, "Hand Off to Serializer"
+        Exit Sub
+    End If
+
+    ' Each surviving decision keeps its "[n] BOOKMARK: AR_..." line (CUT
+    ' decisions are omitted entirely, per the Turn 3 protocol). The count and
+    ' ids of these lines are exactly what the serializer must return.
+    anchorCount = ParseRatifiedAnchors(rawLines, rawCount, anchors)
+    If anchorCount = 0 Then
+        MsgBox "No ""[n] BOOKMARK: AR_..."" lines were found on the Ratified sheet." & vbCrLf & vbCrLf & _
+               "Every kept or fixed decision must keep its bookmark line so the apply " & _
+               "step can verify the serializer's output. Nothing was handed off.", _
+               vbExclamation, "Hand Off to Serializer"
+        Exit Sub
+    End If
+
+    expectedAnchorsCsv = ""
+    For i = 1 To anchorCount
+        If i > 1 Then expectedAnchorsCsv = expectedAnchorsCsv & ","
+        expectedAnchorsCsv = expectedAnchorsCsv & anchors(i)
+    Next i
+
+    SetConfigValue "ExpectedEditCount", CStr(anchorCount)
+    SetConfigValue "ExpectedAnchors", expectedAnchorsCsv
+
     promptText = "SESSION TOKEN: " & sessionToken & vbCrLf & vbCrLf & _
         "Below are ratified document-review decisions, each citing a " & _
         "bookmark id (AR_PARA_..., AR_CELL_..., AR_FN_..., or AR_COMMENT_...). " & _
@@ -493,25 +579,34 @@ Public Sub HandOffToSerializer()
         "soften, reorder, add, or drop any decision, and do not change any " & _
         "bookmark id. Carry OLD_TEXT through verbatim as old_text when present " & _
         "so the edit stays surgical." & vbCrLf & vbCrLf & _
+        "The ratified packet below contains exactly " & anchorCount & " decision(s). " & _
+        "Your output MUST contain exactly " & anchorCount & " edit line(s) after the " & _
+        "meta line -- one per decision, citing these bookmark ids: " & _
+        expectedAnchorsCsv & ". If you cannot produce exactly that many edit lines, " & _
+        "output ONLY an error line identifying the decision(s) you could not convert " & _
+        "and why -- never emit a partial set." & vbCrLf & vbCrLf & _
         "The FIRST line of your output MUST be exactly this meta line, with N " & _
         "replaced by the number of edit lines that follow it:" & vbCrLf & _
         "{""meta"": ""autoreviewer"", ""session"": """ & sessionToken & """, ""count"": N}" & vbCrLf & vbCrLf & _
         "Output only the meta line and the JSONL lines -- no code fences, no " & _
         "commentary, nothing else." & _
-        vbCrLf & vbCrLf & "RATIFIED DECISIONS:" & vbCrLf & "<paste the ratified packet here>"
+        vbCrLf & vbCrLf & "RATIFIED DECISIONS:" & vbCrLf & ratifiedText
 
     modSysUtils.CopyToClipboard promptText
 
     If Len(serializerUrl) > 0 Then
         modSysUtils.OpenURL serializerUrl
-        MsgBox "The COLD serializer prompt is on your clipboard and the " & _
-               "Serializer assistant has been opened." & vbCrLf & vbCrLf & _
-               "1. Paste the prompt, then paste your RATIFIED decisions where " & _
-               "indicated." & vbCrLf & _
+        MsgBox "The COLD serializer prompt (with your " & anchorCount & " ratified " & _
+               "decision(s) embedded) is on your clipboard and the Serializer " & _
+               "assistant has been opened." & vbCrLf & vbCrLf & _
+               "1. Paste the prompt." & vbCrLf & _
                "2. Copy the JSONL it returns into the LLM_Changes sheet at A8." & vbCrLf & _
-               "3. Run ""Apply LLM Edits to Word"".", vbInformation, "Hand Off to Serializer"
+               "3. Run ""Apply LLM Edits to Word""." & vbCrLf & vbCrLf & _
+               "The apply step will verify the JSONL covers exactly these " & _
+               anchorCount & " anchor(s): " & expectedAnchorsCsv, vbInformation, "Hand Off to Serializer"
     Else
-        MsgBox "The COLD serializer prompt is on your clipboard." & vbCrLf & vbCrLf & _
+        MsgBox "The COLD serializer prompt (with your " & anchorCount & " ratified " & _
+               "decision(s) embedded) is on your clipboard." & vbCrLf & vbCrLf & _
                "No Serializer URL is set yet. Set one via the dashboard " & _
                "(""Set Serializer URL"") so this step can open it automatically. " & _
                "For now, open your Serializer assistant manually and paste the prompt.", _
@@ -520,6 +615,41 @@ Public Sub HandOffToSerializer()
 End Sub
 
 '=== Helpers ========================================================
+
+' Scan the ratified packet for surviving "[n] BOOKMARK: <id>" lines (the Turn 3
+' protocol keeps these verbatim for KEEP/FIX decisions and omits CUT decisions
+' entirely). Returns the count and fills anchors(1..count) with the bookmark
+' ids in the order they appear.
+Private Function ParseRatifiedAnchors(ByRef lines() As String, ByVal n As Long, _
+                                      ByRef anchors() As String) As Long
+    Dim i As Long
+    Dim m As Long
+    Dim t As String
+    Dim bracketPos As Long
+    Dim rest As String
+    Dim anchorId As String
+
+    ReDim anchors(1 To IIf(n > 0, n, 1))
+    m = 0
+    For i = 1 To n
+        t = modReviewImport.TrimWs(lines(i))
+        If Left$(t, 1) = "[" Then
+            bracketPos = InStr(t, "]")
+            If bracketPos > 1 Then
+                rest = modReviewImport.TrimWs(Mid$(t, bracketPos + 1))
+                If UCase$(Left$(rest, 9)) = "BOOKMARK:" Then
+                    anchorId = modReviewImport.TrimWs(Mid$(rest, 10))
+                    If Len(anchorId) > 0 Then
+                        m = m + 1
+                        anchors(m) = anchorId
+                    End If
+                End If
+            End If
+        End If
+    Next i
+    ParseRatifiedAnchors = m
+End Function
+
 Private Function BuildBookmarkIndexSection(ByVal wdDocFinal As Object, _
                                            ByVal wdDoc As Object) As String
     Dim docForExport As Object

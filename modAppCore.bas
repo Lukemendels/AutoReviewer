@@ -215,9 +215,10 @@ Public Sub SetupConfigAndLLMSheets()
     ApplyModernStyling ThisWorkbook.Worksheets("Config")
     ApplyModernStyling ThisWorkbook.Worksheets("Personas")
     ApplyModernStyling ThisWorkbook.Worksheets("LLM_Changes")
+    ApplyModernStyling ThisWorkbook.Worksheets("Ratified")
     On Error GoTo 0
-    
-    MsgBox "Config, Personas, and LLM_Changes sheets are ready and styled.", vbInformation
+
+    MsgBox "Config, Personas, LLM_Changes, and Ratified sheets are ready and styled.", vbInformation
 End Sub
 
 Public Sub SetupLLMWorkflowSheets()
@@ -233,7 +234,7 @@ Public Sub SetupLLMWorkflowSheets()
     If wsChanges Is Nothing Then
         Set wsChanges = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
         wsChanges.name = "LLM_Changes"
-        
+
         ' Basic headers / instructions
         With wsChanges
             .Range("A1").value = "LLM_Changes JSONL"
@@ -241,6 +242,27 @@ Public Sub SetupLLMWorkflowSheets()
             .Range("A5").value = "Schema (example):"
             .Range("A6").value = "{""bookmark_id"":""AR_PARA_00001"",""change_type"":""replace_text"",""new_text"":""..."",""add_comment"":""..."",""apply_change"":true,""confidence"":""Medium""}"
 
+        End With
+    End If
+
+    ' Ensure baseline Ratified sheet exists (item 8: completeness gate). The
+    ' operator pastes the HOT co-thinker's Turn 3 FINAL RATIFIED PACKET here,
+    ' one line per row starting at A8; HandOffToSerializer reads it back to
+    ' derive ExpectedEditCount/ExpectedAnchors and to embed the packet text in
+    ' the serializer prompt.
+    Dim wsRatified As Worksheet
+    On Error Resume Next
+    Set wsRatified = wb.Worksheets("Ratified")
+    On Error GoTo 0
+
+    If wsRatified Is Nothing Then
+        Set wsRatified = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        wsRatified.name = "Ratified"
+
+        With wsRatified
+            .Range("A1").value = "Ratified Decision Packet"
+            .Range("A3").value = "Paste the HOT co-thinker's Turn 3 FINAL RATIFIED PACKET here, one line per row, starting at A8."
+            .Range("A5").value = "Each kept/fixed block must keep its original ""[n] BOOKMARK: AR_..."" line so Hand Off to Serializer can read the ratified anchors."
         End With
     End If
 End Sub
@@ -412,6 +434,9 @@ Public Sub ApplyModernStyling(ByVal ws As Worksheet)
     If ws.name = "LLM_Changes" Then
         ws.Range("A3:A6").Font.Color = RGB(160, 170, 180)
         ws.Range("A3:A6").Font.Italic = True
+    ElseIf ws.name = "Ratified" Then
+        ws.Range("A3:A5").Font.Color = RGB(160, 170, 180)
+        ws.Range("A3:A5").Font.Italic = True
     End If
 
     On Error GoTo 0

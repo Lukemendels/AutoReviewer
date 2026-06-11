@@ -26,13 +26,16 @@ reversibility boundary:
   Word doc
      │  ExportWordDocForLLM        (VBA: copy → stamp AR_ anchors → extract text/comments/revisions)
      ▼
-  HOT co-thinker assistant         (DHSChat: review; surface recommendation + counter-case; decision packet)
-     │  ── human ratifies on paper: keep / fix / cut ──
+  HOT co-thinker assistant         (DHSChat: 3-turn protocol -- THEMES, BLOCKS, FINAL RATIFIED PACKET)
+     │  ── human rules per-block: keep / fix / cut ──
+     │  paste FINAL RATIFIED PACKET into Ratified!A8
+     ▼
+  HandOffToSerializer              (VBA: parse ratified anchors -> ExpectedAnchors/ExpectedEditCount in Config)
      ▼
   COLD serializer assistant        (DHSChat: serialize_exactly → strict JSONL; never re-decide)
      │  paste JSONL into LLM_Changes!A8
      ▼
-  ApplyWordSuggestionsFromJson     (VBA: validate → write as tracked changes → logic_trace)
+  ApplyWordSuggestionsFromJson     (VBA: reconcile anchors -> validate -> write as tracked changes -> logic_trace)
      │
      ▼
   Human accepts/rejects in Word, then finalizes (the irreversible step — outside this tool)
@@ -83,13 +86,17 @@ made physical). Citations land as **footnotes** via the new `add_footnote` edit
 type. `TEMPLATE_SKILL_CITATION.md` is the single source of the house citation and
 calculation style, deployed both standalone and embedded in the Researcher.
 
-### Co-thinker two-turn protocol and the ground-truth brief
+### Co-thinker three-turn protocol and the ground-truth brief
 
-The co-thinker runs a **two-turn protocol**: Turn 1 clusters the comments and
+The co-thinker runs a **three-turn protocol**: Turn 1 clusters the comments and
 revisions into a few **themes** (each with a recommended posture and its
 counter-case) and then **stops** for your theme rulings; Turn 2 produces the
-numbered decision blocks consistent with those rulings. You spend judgment on a
-handful of theme calls, not on scanning a long flat list.
+numbered decision blocks consistent with those rulings and then **stops** for a
+per-block KEEP / FIX / CUT ruling; Turn 3 folds those rulings into a **FINAL
+RATIFIED PACKET** (KEEP blocks verbatim, FIX applied, CUT omitted without
+renumbering, COUNTER-CASE/CONFIDENCE dropped) — paste this into the `Ratified`
+sheet before "Hand off to Serializer". You spend judgment on a handful of theme
+and per-block calls, not on scanning a long flat list.
 
 You may paste a **`GROUND TRUTH BRIEF:`** with the export — facts the assistant
 treats as established. Agreement is earned by evidence, not by a redline's

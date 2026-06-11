@@ -73,21 +73,26 @@ Click **1. Select Persona for Review** and type the name of the persona you want
 1. Click **2. Prepare for Review (Co-thinker)**.
 2. Select the new draft document you want reviewed.
 3. *What happens under the hood?* The macro makes a `*_AR` **working copy** (your original is never touched), invisibly stamps every paragraph, table cell, and footnote with a unique `AR_` bookmark, extracts the text, fingerprints the payload for the audit trail, copies the co-thinker prompt to your clipboard, and opens your Persona's co-thinker Assistant.
-4. In the browser, **paste** the prompt and **upload** the exported `.txt`. The co-thinker reviews against the persona's style and returns a **decision packet** — each recommendation with its rationale, its *counter-case*, and the bookmark it targets. (It does **not** return JSONL.)
+4. In the browser, **paste** the prompt and **upload** the exported `.txt`. The co-thinker runs its **three-turn protocol**:
+   - **Turn 1 — THEMES:** clusters the comments and revisions into a few themes, each with a recommended posture and its counter-case, then stops for your theme rulings.
+   - **Turn 2 — BLOCKS:** produces numbered decision blocks consistent with your theme rulings, ending with a coverage line, then stops for a per-block ruling.
+   - **Turn 3 — FINAL RATIFIED PACKET:** after you reply with KEEP / FIX / CUT for each block (or "keep all"), it folds those rulings into a final packet — KEEP blocks verbatim, FIX applied, CUT omitted without renumbering, COUNTER-CASE/CONFIDENCE dropped.
 
 ### 3. Ratify (the human seat)
-Read the decision packet and decide each item: **keep**, **fix**, or **cut**. Edit the packet down to only the decisions you approve. This is the point past which suggestions become edits — your judgment is the gate.
+Read each Turn 2 block and reply with a ruling: **KEEP**, **FIX: <instructions>**, or **CUT** (or "keep all"). The assistant's Turn 3 reply is the FINAL RATIFIED PACKET. This is the point past which suggestions become edits — your judgment is the gate.
 
 ### 4. Hand off to the Serializer (Cold)
-1. Click **3. Hand off to Serializer**.
-2. The macro copies the serialize prompt and opens the shared Serializer Assistant.
-3. **Paste** the prompt, then **paste your ratified decisions** where indicated. The Serializer converts them — and only them — into a JSONL code block, without re-deciding anything.
-4. **Copy** that JSONL output.
+1. Copy the assistant's Turn 3 FINAL RATIFIED PACKET and paste it into the `Ratified` sheet starting at cell **A8** (one line per row).
+2. Click **3. Hand off to Serializer**.
+3. The macro reads the ratified packet, records the expected edit count and bookmark ids, copies the serialize prompt (with the packet embedded) to your clipboard, and opens the shared Serializer Assistant.
+4. **Paste** the prompt. The Serializer converts the ratified decisions — and only them — into a JSONL code block, without re-deciding anything.
+5. **Copy** that JSONL output.
 
 ### 5. Apply Edits to Word
 1. Go to the `LLM_Changes` sheet and **paste** the JSONL starting at cell **A8** (one object per row).
 2. On the Dashboard, click **4. Apply LLM Edits to Word**.
-3. The macro reads the JSONL, finds the corresponding bookmarks in the working-copy document, and applies the suggestions as native **Tracked Changes** or **Comments**. It logs each edit to the `Log` sheet and records one run row (operator, route, transport fingerprints) to the `Trace` sheet.
+3. Before opening Word, the macro checks that the pasted JSONL names exactly the bookmarks recorded when you handed off to the Serializer. If an anchor is missing, extra, or the count doesn't match, it aborts with **zero changes applied**, names the discrepancy, and logs a `FAILED-RECONCILIATION` row to the `Trace` sheet — fix the JSONL (or the ratified packet) and try again.
+4. Once reconciliation passes, the macro reads the JSONL, finds the corresponding bookmarks in the working-copy document, and applies the suggestions as native **Tracked Changes** or **Comments**. It logs each edit to the `Log` sheet and records one run row (operator, route, transport fingerprints) to the `Trace` sheet.
 
 ### 6. Human Review & Finalize
 Switch to Microsoft Word (the `*_AR` working copy). AI **comments** are authored **"AutoReviewer."** AI **insertions/deletions** also try to author as "AutoReviewer," but if Word is signed into a DHS/Microsoft 365 account, Word stamps the *account* name on revisions instead — to force "AutoReviewer" on insertions too, check once: **Word → Options → General → "Always use these values regardless of sign in to Office."** The apply summary tells you which author actually got stamped. Either way, edits are surgical (only the changed words are tracked) and fully rejectable — use the standard **Accept** / **Reject** buttons, then finalize the document yourself. The irreversible step always stays with you. (The hidden `AR_` anchors are removed automatically.)

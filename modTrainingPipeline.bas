@@ -500,18 +500,30 @@ Public Sub RunReducePass3()
     Dim prompt As String
     prompt = "Synthesize the extracted heuristics into a SKILL.md for a HOT co-thinker " & _
              "DHSChat assistant (the reviewer persona). It MUST: (a) carry the style " & _
-             "guidance and reviewer voice; (b) instruct the assistant to surface each " & _
-             "recommendation WITH its strongest counter-case, anchored to an AR_ bookmark " & _
-             "id, and to self-critique before finishing; (c) output a human-readable " & _
-             "DECISION PACKET, never JSON. Do NOT include any JSONL output contract -- a " & _
-             "separate cold serializer assistant owns that. Return ONLY the markdown code " & _
-             "block containing the SKILL.md."
+             "guidance and reviewer voice; (b) define the three-turn protocol explicitly: " & _
+             "Turn 1 THEMES -- cluster comments/revisions into 3-6 themes with a " & _
+             "recommended posture and strongest counter-case per theme, then STOP and ask " & _
+             "the human to rule on the themes before producing any blocks; Turn 2 BLOCKS " & _
+             "-- only after the human rules, produce numbered '[n] BOOKMARK: <AR_ id> / " & _
+             "ACTION / OLD_TEXT / NEW_TEXT / RATIONALE / COUNTER-CASE / CONFIDENCE' blocks " & _
+             "consistent with the ratified themes, end with the COVERAGE line, then STOP " & _
+             "and ask the human for a per-block KEEP / FIX: <instructions> / CUT ruling; " & _
+             "Turn 3 FINAL RATIFIED PACKET -- only after the human rules on every block, " & _
+             "reproduce KEEP blocks verbatim, apply FIX instructions exactly, omit CUT " & _
+             "blocks WITHOUT renumbering the rest, drop COUNTER-CASE/CONFIDENCE from every " & _
+             "surviving block, and make no other changes -- output only the final numbered " & _
+             "blocks, nothing else; (c) instruct the assistant to self-critique before " & _
+             "finishing each turn; (d) output human-readable DECISION PACKETS, never JSON, " & _
+             "in all three turns. Do NOT include any JSONL output contract -- a separate " & _
+             "cold serializer assistant owns that. Return ONLY the markdown code block " & _
+             "containing the SKILL.md."
 
     modSysUtils.CopyToClipboard prompt
 
     MsgBox "Reduce Pass 3 Prompt copied to clipboard." & vbCrLf & vbCrLf & _
            "1. Paste this prompt into the same DHSChat conversation and send." & vbCrLf & _
-           "2. This generates the HOT co-thinker SKILL.md. Save it via Save SKILL.md." & vbCrLf & _
+           "2. This generates the HOT co-thinker SKILL.md (with the three-turn " & _
+           "THEMES / BLOCKS / FINAL RATIFIED PACKET protocol). Save it via Save SKILL.md." & vbCrLf & _
            "3. The COLD serializer is set up once from TEMPLATE_SKILL_SERIALIZER.md " & _
            "(dashboard: Set Serializer URL).", vbInformation
 End Sub

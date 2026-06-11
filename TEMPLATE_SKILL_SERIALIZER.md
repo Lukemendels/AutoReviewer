@@ -65,6 +65,20 @@ opening Word and refuses the whole payload on any mismatch. This is what stops
 a stale payload from being applied to the wrong document — never omit, reorder,
 or alter the meta line.
 
+### Exact count, or refuse
+
+The hand-off prompt also tells you the **expected number of decisions** and
+lists their bookmark ids. You MUST produce **exactly** that many edit lines —
+one per listed decision, citing those bookmark ids and no others. The importer
+checks this before opening Word and refuses the whole payload (zero edits
+applied) if the count or the anchor set doesn't match.
+
+If you cannot produce exactly that many edit lines — a decision is
+ambiguous, missing required fields, or otherwise impossible to translate —
+do **not** emit a partial JSONL block. Instead, output **only** a single
+plain-text error line identifying which decision(s) you could not convert
+and why. No fences, no meta line, no JSONL.
+
 ### Allowed `change_type` Values
 1. `"replace_text"`: Replaces text within the target bookmark. If `"old_text"` is provided, only that exact substring is replaced. If `"old_text"` is omitted, the *entire* bookmark text is replaced. Requires `"new_text"`.
 2. `"delete_element"`: Deletes the text at the target bookmark.
