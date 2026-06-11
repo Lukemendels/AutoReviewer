@@ -40,7 +40,8 @@ Public Sub ApplyWordSuggestionsFromJson()
     Dim origUserName As String
     Dim origInitials As String
     Dim userNameChanged As Boolean
-    
+    Dim screenUpdatingChanged As Boolean
+
     Dim bookmarkId As String
     Dim changeType As String
     Dim oldText As String
@@ -327,7 +328,15 @@ Public Sub ApplyWordSuggestionsFromJson()
         MsgBox "Word could not open the document at:" & vbCrLf & wordPath, vbCritical
         GoTo Cleanup
     End If
-    
+
+    ' The stamping pass and the per-line apply loop both drive Word repeatedly;
+    ' suspend repaint for the duration and restore on every exit path (normal
+    ' teardown, Cleanup, and ErrHandler) so Word is never left frozen.
+    On Error Resume Next
+    wdApp.ScreenUpdating = False
+    screenUpdatingChanged = True
+    On Error GoTo ErrHandler
+
     ' Configure Final / No Markup view so we see final text
     On Error Resume Next
     With wdApp.ActiveWindow.View.RevisionsFilter
@@ -727,6 +736,10 @@ SkipLine:
         wdApp.UserInitials = origInitials
         userNameChanged = False
     End If
+    If screenUpdatingChanged And Not wdApp Is Nothing Then
+        wdApp.ScreenUpdating = True
+        screenUpdatingChanged = False
+    End If
     If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=True
     If Not wdApp Is Nothing Then
         wdApp.NormalTemplate.Saved = True
@@ -798,6 +811,10 @@ Cleanup:
         wdApp.UserName = origUserName
         wdApp.UserInitials = origInitials
         userNameChanged = False
+    End If
+    If screenUpdatingChanged And Not wdApp Is Nothing Then
+        wdApp.ScreenUpdating = True
+        screenUpdatingChanged = False
     End If
     ' Cleanup is reached ONLY by an early GoTo (before any edits) or by
     ' ErrHandler (a fault mid-apply). The successful run saves and closes in its

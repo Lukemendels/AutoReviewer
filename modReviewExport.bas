@@ -33,8 +33,8 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     With fd
         .Title = "Select Word document to export for LLM"
         .AllowMultiSelect = False
-        If Len(ThisWorkbook.Path) > 0 Then
-            .InitialFileName = ThisWorkbook.Path & "\"
+        If Len(modAppCore.GetWorkFolder()) > 0 Then
+            .InitialFileName = modAppCore.GetWorkFolder() & "\"
         End If
         
         If .Show <> -1 Then
@@ -264,9 +264,8 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     
     ' Fallbacks if Documents is not available
     If Len(docsFolder) = 0 Then
-        If Len(ThisWorkbook.Path) > 0 Then
-            docsFolder = ThisWorkbook.Path
-        Else
+        docsFolder = modAppCore.GetWorkFolder()
+        If Len(docsFolder) = 0 Then
             docsFolder = Environ$("USERPROFILE") & "\Documents"
         End If
     End If

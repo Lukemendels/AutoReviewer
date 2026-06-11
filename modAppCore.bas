@@ -69,7 +69,7 @@ Public Function GetConfigValue(ByVal keyName As String, _
         keyCell = Trim$(CStr(wsConfig.Cells(r, "A").value))
         If Len(keyCell) > 0 Then
             If StrComp(keyCell, keyName, vbTextCompare) = 0 Then
-                val = CStr(wsConfig.Cells(r, "B").value)
+                val = Trim$(CStr(wsConfig.Cells(r, "B").value))
                 If Len(val) = 0 Then
                     GetConfigValue = defaultVal
                 Else
@@ -79,7 +79,7 @@ Public Function GetConfigValue(ByVal keyName As String, _
             End If
         End If
     Next r
-    
+
     GetConfigValue = defaultVal
 End Function
 
@@ -413,6 +413,125 @@ Public Sub ApplyModernStyling(ByVal ws As Worksheet)
         ws.Range("A3:A6").Font.Color = RGB(160, 170, 180)
         ws.Range("A3:A6").Font.Italic = True
     End If
-    
+
     On Error GoTo 0
 End Sub
+
+' Resolve the folder this workbook's data files (corpus, exemplars, SKILL.md,
+' exports, working copies) should live in.
+'
+' With AutoSave on, ThisWorkbook.Path can return a SharePoint/OneDrive URL
+' (https://...sharepoint.com/personal/<user>/Documents/<subpath>) instead of a
+' local path. FileSystemObject hangs or raises error 52 on such URLs, and
+' FileExists/FolderExists silently return False -- so every file write that
+' built a path from ThisWorkbook.Path could fail. This function resolves a
+' real, writable local folder and is the single source of truth for "where do
+' this workbook's files live".
+Public Function GetWorkFolder() As String
+    Dim fso As Object
+    Dim cfg As String
+    Dim p As String
+    Dim idx As Long
+    Dim remainder As String
+    Dim oneDrive As String
+    Dim candidate As String
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    ' 1) An explicit, verified override always wins.
+    cfg = Trim$(GetConfigValue("WorkFolder", ""))
+    If Len(cfg) > 0 Then
+        If fso.FolderExists(cfg) Then
+            GetWorkFolder = cfg
+            Exit Function
+        End If
+    End If
+
+    p = ThisWorkbook.Path
+
+    ' 2) A normal local (or UNC) path: use it as-is.
+    If LCase$(Left$(p, 4)) <> "http" Then
+        GetWorkFolder = p
+        Exit Function
+    End If
+
+    ' 3) URL translation: .../personal/<user>/Documents/<subpath> ->
+    '    %OneDriveCommercial%\Documents\<subpath> (or %OneDrive% as a fallback).
+    idx = InStr(1, p, "/Documents", vbTextCompare)
+    If idx > 0 Then
+        remainder = Mid$(p, idx + Len("/Documents"))
+        remainder = Replace(remainder, "%20", " ")
+        remainder = Replace(remainder, "/", "\")
+
+        oneDrive = Environ$("OneDriveCommercial")
+        If Len(oneDrive) = 0 Then oneDrive = Environ$("OneDrive")
+
+        If Len(oneDrive) > 0 Then
+            candidate = oneDrive & "\Documents" & remainder
+            ' 4) Verify and persist (visible/auditable on the Config sheet).
+            If fso.FolderExists(candidate) Then
+                SetConfigValue "WorkFolder", candidate
+                GetWorkFolder = candidate
+                Exit Function
+            End If
+        End If
+    End If
+
+    ' 5) Fall back to a folder under the user's profile, creating it if needed.
+    candidate = Environ$("USERPROFILE") & "\AutoReviewer"
+    If Not fso.FolderExists(candidate) Then
+        fso.CreateFolder candidate
+        MsgBox "Could not resolve a local OneDrive folder for this workbook's " & _
+               "SharePoint/OneDrive location." & vbCrLf & vbCrLf & _
+               "AutoReviewer files (corpus, exemplars, exports, etc.) will be " & _
+               "saved to:" & vbCrLf & candidate & vbCrLf & vbCrLf & _
+               "You can change this later via ""Set Work Folder"" on the dashboard.", _
+               vbInformation, "AutoReviewer Work Folder"
+    End If
+    SetConfigValue "WorkFolder", candidate
+    GetWorkFolder = candidate
+End Function
+
+' Sets and reads back 3 Config keys (including "ActivePersona") to verify
+' GetConfigValue/SetConfigValue round-trip correctly: an exact, case-insensitive,
+' Trim$ key match against column A, with the value read from the adjacent column
+' B -- never a positional cell, and never a value that "happens" to belong to a
+' different key.
+Public Sub TestConfigRoundtrip()
+    Dim results As String
+    Dim allPass As Boolean
+    allPass = True
+
+    allPass = CheckConfigRoundtripKey("ActivePersona", "AR_TestPersona_" & Format$(Now, "hhnnss"), results) And allPass
+    allPass = CheckConfigRoundtripKey("AR_TestKeyAlpha", "alpha-value-1", results) And allPass
+    allPass = CheckConfigRoundtripKey("AR_TestKeyBeta", "beta value, with spaces", results) And allPass
+
+    If allPass Then
+        MsgBox "TestConfigRoundtrip: PASS" & vbCrLf & vbCrLf & results, vbInformation, "Config Roundtrip"
+    Else
+        MsgBox "TestConfigRoundtrip: FAIL" & vbCrLf & vbCrLf & results, vbCritical, "Config Roundtrip"
+    End If
+End Sub
+
+' Helper for TestConfigRoundtrip: sets keyName=value, reads it back, and checks
+' that an UNRELATED key (a different case/whitespace variant of the same name)
+' still resolves to the SAME value -- proving the match is on the trimmed,
+' case-insensitive key, not a positional/coincidental cell.
+Private Function CheckConfigRoundtripKey(ByVal keyName As String, ByVal value As String, _
+                                          ByRef results As String) As Boolean
+    Dim readBack As String
+    Dim readBackVariant As String
+    Dim ok As Boolean
+
+    SetConfigValue keyName, value
+    readBack = GetConfigValue(keyName, "<MISSING>")
+    readBackVariant = GetConfigValue("  " & UCase$(keyName) & "  ", "<MISSING>")
+
+    ok = (readBack = value) And (readBackVariant = value)
+
+    results = results & keyName & ": set=""" & value & """ got=""" & readBack & _
+              """ (case/whitespace variant got=""" & readBackVariant & """) -> " & _
+              IIf(ok, "OK", "FAIL") & vbCrLf
+
+    CheckConfigRoundtripKey = ok
+End Function

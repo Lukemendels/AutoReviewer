@@ -75,52 +75,69 @@ End Function
 
 
 Public Sub AddDocToCorpus()
+    Const wdRevisionInsert As Long = 1
+    Const wdRevisionDelete As Long = 2
+    Const CONTEXT_CAP As Long = 500
+    Const SCOPE_CAP As Long = 300
+
     Dim wdApp As Object
     Dim wdDoc As Object
     Dim docPath As String
     Dim targetAuthor As String
     Dim fd As FileDialog
-    
+    Dim screenUpdatingChanged As Boolean
+    Dim completed As Boolean
+
     Dim activePersona As String
-    activePersona = modAppCore.GetConfigValue("ActivePersona")
-    
+    Dim personaToken As String
+
+    On Error GoTo ErrHandler
+
+    activePersona = Trim$(modAppCore.GetConfigValue("ActivePersona"))
+
     If activePersona = "" Then
         MsgBox "Please select an Active Persona first.", vbExclamation
         Exit Sub
     End If
-    
+
+    personaToken = modSysUtils.SafeFileToken(activePersona)
+    If personaToken = "" Then Exit Sub
+
     Set fd = Application.FileDialog(msoFileDialogFilePicker)
     fd.Title = "Select Word Document for Training Corpus"
     fd.Filters.Clear
     fd.Filters.Add "Word Documents", "*.docx"
     If fd.Show <> -1 Then Exit Sub
     docPath = fd.SelectedItems(1)
-    
+
     On Error Resume Next
     Set wdApp = GetObject(, "Word.Application")
     If wdApp Is Nothing Then
         Set wdApp = CreateObject("Word.Application")
     End If
-    On Error GoTo 0
-    
+    On Error GoTo ErrHandler
+
     wdApp.Visible = True
     Set wdDoc = wdApp.Documents.Open(docPath)
-    
+
+    ' Word repaints on every revision Accept and Bookmark Add; with hundreds of
+    ' revisions/paragraphs that repaint dominates run time. Suspend it for the
+    ' whole pass and restore on every exit path (normal, early-return, error).
+    wdApp.ScreenUpdating = False
+    screenUpdatingChanged = True
+
     targetAuthor = modTrainingPipeline.SelectTargetAuthor(wdDoc)
-    
-    If targetAuthor = "" Then
-        wdDoc.Close False
-        Exit Sub
-    End If
-    
+
+    If targetAuthor = "" Then GoTo Cleanup
+
     ' Step: Compute target date range
     Dim minDate As Date
     Dim firstTargetFound As Boolean
     Dim rev As Object
     Dim cmt As Object
-    
+
     firstTargetFound = False
-    
+
     For Each rev In wdDoc.Revisions
         If StrComp(rev.Author, targetAuthor, vbTextCompare) = 0 Then
             If Not firstTargetFound Then
@@ -131,7 +148,7 @@ Public Sub AddDocToCorpus()
             End If
         End If
     Next rev
-    
+
     For Each cmt In wdDoc.Comments
         If StrComp(cmt.Author, targetAuthor, vbTextCompare) = 0 Then
             If Not firstTargetFound Then
@@ -142,7 +159,7 @@ Public Sub AddDocToCorpus()
             End If
         End If
     Next cmt
-    
+
     ' Build baseline: Accept non-target revisions before target earliest
     Dim i As Long
     For i = wdDoc.Revisions.Count To 1 Step -1
@@ -153,55 +170,142 @@ Public Sub AddDocToCorpus()
             End If
         End If
     Next i
-    
-    ' Stamp bookmarks
+
+    ' Stamp bookmarks. Extraction below relies on AR_PARA_ bookmarks for the
+    ' per-record "anchor" field, so stamping MUST precede extraction.
     modWordUtils.StampDocWithArBookmarks wdDoc
-    
+
+    ' Build a paragraph-start -> AR_PARA_ bookmark lookup once, in a single pass
+    ' over the (already-stamped) bookmarks. Revisions/comments then resolve their
+    ' enclosing paragraph's bookmark via a dictionary lookup instead of an O(n)
+    ' bookmark scan per record.
+    Dim paraBookmarks As Object
+    Dim bm As Object
+    Set paraBookmarks = CreateObject("Scripting.Dictionary")
+    For Each bm In wdDoc.Bookmarks
+        If Left$(bm.name, 8) = "AR_PARA_" Then
+            paraBookmarks(CStr(bm.Range.Start)) = bm.name
+        End If
+    Next bm
+
     ' Extract records to JSONL
     Dim fso As Object
     Dim ts As Object
     Dim corpusPath As String
-    
-    corpusPath = ThisWorkbook.path & "\" & activePersona & "_corpus.jsonl"
-    
+
+    corpusPath = modAppCore.GetWorkFolder() & "\" & personaToken & "_corpus.jsonl"
+
     Set fso = CreateObject("Scripting.FileSystemObject")
     Set ts = fso.OpenTextFile(corpusPath, 8, True, -1) ' 8=Append, True=Create, -1=Unicode
-    
+
+    Dim docIdEsc As String
+    Dim authorEsc As String
+    docIdEsc = modSysUtils.JsonEscape(wdDoc.name)
+    authorEsc = modSysUtils.JsonEscape(targetAuthor)
+
     ' Revisions output
     Dim jsonLine As String
+    Dim revTypeStr As String
+    Dim revAnchor As String
+    Dim revContext As String
+    Dim revParaRange As Object
+
     For Each rev In wdDoc.Revisions
         If StrComp(rev.Author, targetAuthor, vbTextCompare) = 0 Then
-            ' Simplified JSON construction for V1
-            jsonLine = "{""doc_id"":""" & Replace(wdDoc.name, "\", "\\") & """" & _
-                       ",""target_author"":""" & Replace(targetAuthor, """", "\""") & """" & _
+            Select Case rev.Type
+                Case wdRevisionInsert
+                    revTypeStr = "insert"
+                Case wdRevisionDelete
+                    revTypeStr = "delete"
+                Case Else
+                    revTypeStr = "format/other"
+            End Select
+
+            revAnchor = ""
+            revContext = ""
+            On Error Resume Next
+            Set revParaRange = rev.Range.Paragraphs(1).Range
+            If Not revParaRange Is Nothing Then
+                If paraBookmarks.Exists(CStr(revParaRange.Start)) Then
+                    revAnchor = paraBookmarks(CStr(revParaRange.Start))
+                End If
+                revContext = Trim$(revParaRange.Text)
+                If Len(revContext) > CONTEXT_CAP Then revContext = Left$(revContext, CONTEXT_CAP)
+            End If
+            Set revParaRange = Nothing
+            On Error GoTo ErrHandler
+
+            jsonLine = "{""doc_id"":""" & docIdEsc & """" & _
+                       ",""target_author"":""" & authorEsc & """" & _
                        ",""record_type"":""revision""" & _
-                       ",""date"":""" & rev.Date & """}"
+                       ",""date"":""" & rev.Date & """" & _
+                       ",""rev_type"":""" & revTypeStr & """" & _
+                       ",""text"":""" & modSysUtils.JsonEscape(rev.Range.Text) & """" & _
+                       ",""anchor"":""" & revAnchor & """" & _
+                       ",""context"":""" & modSysUtils.JsonEscape(revContext) & """}"
             ts.WriteLine jsonLine
         End If
     Next rev
-    
+
     ' Comments output
+    Dim cmtAnchor As String
+    Dim cmtScopeText As String
+    Dim cmtScopeRange As Object
+
     For Each cmt In wdDoc.Comments
         If StrComp(cmt.Author, targetAuthor, vbTextCompare) = 0 Then
-            jsonLine = "{""doc_id"":""" & Replace(wdDoc.name, "\", "\\") & """" & _
-                       ",""target_author"":""" & Replace(targetAuthor, """", "\""") & """" & _
+            cmtAnchor = ""
+            cmtScopeText = ""
+            On Error Resume Next
+            Set cmtScopeRange = cmt.Scope.Paragraphs(1).Range
+            If Not cmtScopeRange Is Nothing Then
+                If paraBookmarks.Exists(CStr(cmtScopeRange.Start)) Then
+                    cmtAnchor = paraBookmarks(CStr(cmtScopeRange.Start))
+                End If
+            End If
+            Set cmtScopeRange = Nothing
+            cmtScopeText = Trim$(cmt.Scope.Text)
+            If Len(cmtScopeText) > SCOPE_CAP Then cmtScopeText = Left$(cmtScopeText, SCOPE_CAP)
+            On Error GoTo ErrHandler
+
+            jsonLine = "{""doc_id"":""" & docIdEsc & """" & _
+                       ",""target_author"":""" & authorEsc & """" & _
                        ",""record_type"":""comment""" & _
-                       ",""date"":""" & cmt.Date & """}"
+                       ",""date"":""" & cmt.Date & """" & _
+                       ",""text"":""" & modSysUtils.JsonEscape(cmt.Range.Text) & """" & _
+                       ",""scope_text"":""" & modSysUtils.JsonEscape(cmtScopeText) & """" & _
+                       ",""anchor"":""" & cmtAnchor & """}"
             ts.WriteLine jsonLine
         End If
     Next cmt
-    
+
     ts.Close
-    
+
     ' Update Registry
     modAppCore.UpsertPersona activePersona, corpusPath:=corpusPath, incrementTrainingCount:=True
-    
-    wdDoc.Close False
+
+    completed = True
+
+Cleanup:
+    On Error Resume Next
+    If screenUpdatingChanged And Not wdApp Is Nothing Then
+        wdApp.ScreenUpdating = True
+        screenUpdatingChanged = False
+    End If
+    If Not wdDoc Is Nothing Then wdDoc.Close False
     Set wdDoc = Nothing
     Set wdApp = Nothing
     DoEvents
-    
-    MsgBox "Document added to corpus successfully.", vbInformation
+    On Error GoTo 0
+
+    If completed Then
+        MsgBox "Document added to corpus successfully.", vbInformation
+    End If
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error adding document to corpus: " & Err.Description, vbCritical
+    Resume Cleanup
 End Sub
 
 
@@ -214,6 +318,7 @@ End Sub
 ' beside the corpus and attached alongside it in the Reduce passes.
 Public Sub AddFinalizedExemplar()
     Dim activePersona As String
+    Dim personaToken As String
     Dim fd As FileDialog
     Dim docPath As String
     Dim wdApp As Object
@@ -224,12 +329,19 @@ Public Sub AddFinalizedExemplar()
     Dim ts As Object
     Dim exPath As String
     Dim n As Long
+    Dim screenUpdatingChanged As Boolean
+    Dim workFolder As String
 
-    activePersona = modAppCore.GetConfigValue("ActivePersona")
+    On Error GoTo ErrHandler
+
+    activePersona = Trim$(modAppCore.GetConfigValue("ActivePersona"))
     If activePersona = "" Then
         MsgBox "Please select an Active Persona first.", vbExclamation
         Exit Sub
     End If
+
+    personaToken = modSysUtils.SafeFileToken(activePersona)
+    If personaToken = "" Then Exit Sub
 
     Set fd = Application.FileDialog(msoFileDialogFilePicker)
     fd.Title = "Select a FINALIZED Word document (a known-good example)"
@@ -241,20 +353,26 @@ Public Sub AddFinalizedExemplar()
     On Error Resume Next
     Set wdApp = GetObject(, "Word.Application")
     If wdApp Is Nothing Then Set wdApp = CreateObject("Word.Application")
-    On Error GoTo 0
+    On Error GoTo ErrHandler
     wdApp.Visible = True
 
     Set wdDoc = wdApp.Documents.Open(docPath)
+
+    wdApp.ScreenUpdating = False
+    screenUpdatingChanged = True
 
     ' Accept any stray revisions in memory so we capture the FINAL clean text.
     ' The file is closed without saving, so the source is never modified.
     On Error Resume Next
     wdDoc.TrackRevisions = False
     wdDoc.AcceptAllRevisions
-    On Error GoTo 0
+    On Error GoTo ErrHandler
 
     docName = wdDoc.name
     cleanText = wdDoc.Content.Text
+
+    wdApp.ScreenUpdating = True
+    screenUpdatingChanged = False
 
     wdDoc.Close False
     Set wdDoc = Nothing
@@ -262,10 +380,11 @@ Public Sub AddFinalizedExemplar()
     DoEvents
 
     ' Pick the next free exemplar filename for this persona.
+    workFolder = modAppCore.GetWorkFolder()
     Set fso = CreateObject("Scripting.FileSystemObject")
     n = 1
     Do
-        exPath = ThisWorkbook.path & "\" & activePersona & "_exemplar_" & Format(n, "00") & ".txt"
+        exPath = workFolder & "\" & personaToken & "_exemplar_" & Format(n, "00") & ".txt"
         If Not fso.FileExists(exPath) Then Exit Do
         n = n + 1
     Loop
@@ -280,11 +399,22 @@ Public Sub AddFinalizedExemplar()
            "Add as many as you like, then run the Reduce passes. Exemplars are " & _
            "used as the gold standard for the persona's style -- with or without " & _
            "redlines from 'Add Doc to Corpus'.", vbInformation
+    Exit Sub
+
+ErrHandler:
+    On Error Resume Next
+    If screenUpdatingChanged And Not wdApp Is Nothing Then wdApp.ScreenUpdating = True
+    If Not wdDoc Is Nothing Then wdDoc.Close False
+    If Not wdApp Is Nothing Then Set wdApp = Nothing
+    Set wdDoc = Nothing
+    MsgBox "Error adding finalized exemplar: " & Err.Description, vbCritical
 End Sub
 
 ' Pass 1: Cluster
 Public Sub RunReducePass1()
     Dim activePersona As String
+    Dim personaToken As String
+    Dim workFolder As String
     Dim corpusPath As String
     Dim prompt As String
     Dim fso As Object
@@ -293,17 +423,21 @@ Public Sub RunReducePass1()
     Dim hasExemplars As Boolean
     Dim selectPath As String
 
-    activePersona = modAppCore.GetConfigValue("ActivePersona")
+    activePersona = Trim$(modAppCore.GetConfigValue("ActivePersona"))
     If activePersona = "" Then
         MsgBox "Please select an Active Persona first.", vbExclamation
         Exit Sub
     End If
 
-    corpusPath = ThisWorkbook.path & "\" & activePersona & "_corpus.jsonl"
+    personaToken = modSysUtils.SafeFileToken(activePersona)
+    If personaToken = "" Then Exit Sub
+
+    workFolder = modAppCore.GetWorkFolder()
+    corpusPath = workFolder & "\" & personaToken & "_corpus.jsonl"
 
     Set fso = CreateObject("Scripting.FileSystemObject")
     hasCorpus = fso.FileExists(corpusPath)
-    hasExemplars = fso.FileExists(ThisWorkbook.path & "\" & activePersona & "_exemplar_01.txt")
+    hasExemplars = fso.FileExists(workFolder & "\" & personaToken & "_exemplar_01.txt")
 
     If Not hasCorpus And Not hasExemplars Then
         MsgBox "No training input found for this persona. Add redline docs " & _
@@ -334,7 +468,7 @@ Public Sub RunReducePass1()
     If hasCorpus Then
         selectPath = corpusPath
     Else
-        selectPath = ThisWorkbook.path & "\" & activePersona & "_exemplar_01.txt"
+        selectPath = workFolder & "\" & personaToken & "_exemplar_01.txt"
     End If
     Shell "explorer.exe /select,""" & selectPath & """", vbNormalFocus
 
@@ -391,13 +525,18 @@ Public Sub SaveSkillMd()
     Dim skillContent As String
     Dim dataObj As Object
     
-    activePersona = modAppCore.GetConfigValue("ActivePersona")
+    Dim personaToken As String
+
+    activePersona = Trim$(modAppCore.GetConfigValue("ActivePersona"))
     If activePersona = "" Then
         MsgBox "Please select an Active Persona first.", vbExclamation
         Exit Sub
     End If
-    
-    skillPath = ThisWorkbook.path & "\" & activePersona & "_SKILL.md"
+
+    personaToken = modSysUtils.SafeFileToken(activePersona)
+    If personaToken = "" Then Exit Sub
+
+    skillPath = modAppCore.GetWorkFolder() & "\" & personaToken & "_SKILL.md"
     
     On Error Resume Next
     Set dataObj = CreateObject("new:{1C3B4210-F441-11CE-B9EA-00AA006B1A69}") ' MSForms.DataObject
