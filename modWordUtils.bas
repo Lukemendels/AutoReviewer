@@ -68,9 +68,10 @@ End Sub
 ' document order), so the export and apply passes -- which both call this on
 ' the same unchanged working copy -- produce identical ids. The counter `i`
 ' increments for EVERY paragraph, including skipped empty ones, so renumbering
-' never shifts. We use For Each rather than `Paragraphs(i)`: indexed access on
-' Word's Paragraphs collection walks from the start of the document each time,
-' making that loop O(n^2) on long documents; For Each is a single forward pass.
+' never shifts. We use For Each rather than indexed Paragraphs access: walking
+' Word's Paragraphs collection by index restarts from the start of the document
+' each time, making that loop O(n^2) on long documents; For Each is a single
+' forward pass.
 Private Sub StampParagraphBookmarks(ByVal wdDoc As Object)
     Dim i As Long
     Dim para As Object

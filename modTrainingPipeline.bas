@@ -175,19 +175,6 @@ Public Sub AddDocToCorpus()
     ' per-record "anchor" field, so stamping MUST precede extraction.
     modWordUtils.StampDocWithArBookmarks wdDoc
 
-    ' Build a paragraph-start -> AR_PARA_ bookmark lookup once, in a single pass
-    ' over the (already-stamped) bookmarks. Revisions/comments then resolve their
-    ' enclosing paragraph's bookmark via a dictionary lookup instead of an O(n)
-    ' bookmark scan per record.
-    Dim paraBookmarks As Object
-    Dim bm As Object
-    Set paraBookmarks = CreateObject("Scripting.Dictionary")
-    For Each bm In wdDoc.Bookmarks
-        If Left$(bm.name, 8) = "AR_PARA_" Then
-            paraBookmarks(CStr(bm.Range.Start)) = bm.name
-        End If
-    Next bm
-
     ' Extract records to JSONL
     Dim fso As Object
     Dim ts As Object
@@ -208,7 +195,8 @@ Public Sub AddDocToCorpus()
     Dim revTypeStr As String
     Dim revAnchor As String
     Dim revContext As String
-    Dim revParaRange As Object
+    Dim revParaIdx As Long
+    Dim ctxRange As Object
 
     For Each rev In wdDoc.Revisions
         If StrComp(rev.Author, targetAuthor, vbTextCompare) = 0 Then
@@ -221,18 +209,21 @@ Public Sub AddDocToCorpus()
                     revTypeStr = "format/other"
             End Select
 
+            ' AR_PARA numbering is a pure function of paragraph position (see
+            ' modWordUtils.StampParagraphBookmarks), so the anchor for any
+            ' range is computed directly -- one COM call, no bookmark scan.
             revAnchor = ""
             revContext = ""
             On Error Resume Next
-            Set revParaRange = rev.Range.Paragraphs(1).Range
-            If Not revParaRange Is Nothing Then
-                If paraBookmarks.Exists(CStr(revParaRange.Start)) Then
-                    revAnchor = paraBookmarks(CStr(revParaRange.Start))
-                End If
-                revContext = Trim$(revParaRange.Text)
-                If Len(revContext) > CONTEXT_CAP Then revContext = Left$(revContext, CONTEXT_CAP)
+            revParaIdx = wdDoc.Range(0, rev.Range.Start).Paragraphs.Count
+            If revParaIdx > 0 Then
+                revAnchor = "AR_PARA_" & Format$(revParaIdx, "00000")
             End If
-            Set revParaRange = Nothing
+            Set ctxRange = rev.Range.Duplicate
+            ctxRange.Expand 4 ' wdParagraph
+            revContext = Trim$(ctxRange.Text)
+            If Len(revContext) > CONTEXT_CAP Then revContext = Left$(revContext, CONTEXT_CAP)
+            Set ctxRange = Nothing
             On Error GoTo ErrHandler
 
             jsonLine = "{""doc_id"":""" & docIdEsc & """" & _
@@ -250,20 +241,17 @@ Public Sub AddDocToCorpus()
     ' Comments output
     Dim cmtAnchor As String
     Dim cmtScopeText As String
-    Dim cmtScopeRange As Object
+    Dim cmtParaIdx As Long
 
     For Each cmt In wdDoc.Comments
         If StrComp(cmt.Author, targetAuthor, vbTextCompare) = 0 Then
             cmtAnchor = ""
             cmtScopeText = ""
             On Error Resume Next
-            Set cmtScopeRange = cmt.Scope.Paragraphs(1).Range
-            If Not cmtScopeRange Is Nothing Then
-                If paraBookmarks.Exists(CStr(cmtScopeRange.Start)) Then
-                    cmtAnchor = paraBookmarks(CStr(cmtScopeRange.Start))
-                End If
+            cmtParaIdx = wdDoc.Range(0, cmt.Scope.Start).Paragraphs.Count
+            If cmtParaIdx > 0 Then
+                cmtAnchor = "AR_PARA_" & Format$(cmtParaIdx, "00000")
             End If
-            Set cmtScopeRange = Nothing
             cmtScopeText = Trim$(cmt.Scope.Text)
             If Len(cmtScopeText) > SCOPE_CAP Then cmtScopeText = Left$(cmtScopeText, SCOPE_CAP)
             On Error GoTo ErrHandler
