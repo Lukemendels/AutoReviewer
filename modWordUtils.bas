@@ -38,29 +38,44 @@ End Sub
 ' and the apply step produce identical AR_REV ids without persisting anything.
 Public Sub StampRevisionBookmarks(ByVal wdDoc As Object)
     Dim revIdx As Long
+    Dim rev As Object
     On Error Resume Next
     If wdDoc.Revisions.Count = 0 Then Exit Sub
-    For revIdx = 1 To wdDoc.Revisions.Count
+    revIdx = 0
+    For Each rev In wdDoc.Revisions
+        revIdx = revIdx + 1
         wdDoc.Bookmarks.Add Name:="AR_REV_" & Format$(revIdx, "00000"), _
-                            Range:=wdDoc.Revisions(revIdx).Range
-    Next revIdx
+                            Range:=rev.Range
+    Next rev
     On Error GoTo 0
 End Sub
 
 ' Remove every AR_* bookmark from the document. Used as the terminal step of the
 ' apply pipeline (leave the delivered doc clean) and defensively before
 ' re-stamping. Iterates descending because Delete reindexes the collection.
+' Delete removes a Bookmark and reindexes wdDoc.Bookmarks, so we cannot
+' enumerate-and-delete in one pass. Two-phase: For Each to collect the AR_*
+' bookmarks into a VBA Collection (the references stay valid as siblings are
+' removed), then Delete each one from that snapshot.
 Public Sub RemoveArBookmarks(ByVal wdDoc As Object)
-    Dim i As Long
+    Dim bm As Object
     Dim nm As String
+    Dim bmToDelete As Collection
+    Dim delBm As Object
+
+    Set bmToDelete = New Collection
 
     On Error Resume Next
-    For i = wdDoc.Bookmarks.Count To 1 Step -1
-        nm = CStr(wdDoc.Bookmarks(i).name)
+    For Each bm In wdDoc.Bookmarks
+        nm = CStr(bm.name)
         If Left$(nm, 3) = "AR_" Then
-            wdDoc.Bookmarks(i).Delete
+            bmToDelete.Add bm
         End If
-    Next i
+    Next bm
+
+    For Each delBm In bmToDelete
+        delBm.Delete
+    Next delBm
     On Error GoTo 0
 End Sub
 
@@ -107,9 +122,10 @@ Private Sub StampTableCellBookmarks(ByVal wdDoc As Object)
     Dim bmName As String
     
     On Error GoTo ErrHandler
-    
-    For t = 1 To wdDoc.Tables.Count
-        Set tbl = wdDoc.Tables(t)
+
+    t = 0
+    For Each tbl In wdDoc.Tables
+        t = t + 1
         For r = 1 To tbl.Rows.Count
             For c = 1 To tbl.Columns.Count
                 Set cellRange = tbl.Cell(r, c).Range
@@ -121,7 +137,7 @@ Private Sub StampTableCellBookmarks(ByVal wdDoc As Object)
                 End If
             Next c
         Next r
-    Next t
+    Next tbl
     
 Cleanup:
     Set cellRange = Nothing

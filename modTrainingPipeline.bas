@@ -86,6 +86,8 @@ Public Sub AddDocToCorpus()
     Dim targetAuthor As String
     Dim fd As FileDialog
     Dim screenUpdatingChanged As Boolean
+    Dim paginationChanged As Boolean
+    Dim origPagination As Boolean
     Dim completed As Boolean
 
     Dim activePersona As String
@@ -160,16 +162,36 @@ Public Sub AddDocToCorpus()
         End If
     Next cmt
 
-    ' Build baseline: Accept non-target revisions before target earliest
-    Dim i As Long
-    For i = wdDoc.Revisions.Count To 1 Step -1
-        Set rev = wdDoc.Revisions(i)
+    ' Build baseline: Accept non-target revisions before target earliest.
+    ' Accept removes the revision from wdDoc.Revisions and reindexes the
+    ' collection, so we cannot enumerate-and-accept in one pass. Two-phase:
+    ' For Each to collect the matching revisions into a VBA Collection (the
+    ' Range/Revision references stay valid after other revisions are
+    ' accepted), then Accept each one from that snapshot.
+    Dim revToAccept As Collection
+    Set revToAccept = New Collection
+    For Each rev In wdDoc.Revisions
         If StrComp(rev.Author, targetAuthor, vbTextCompare) <> 0 Then
             If firstTargetFound And rev.Date < minDate Then
-                rev.Accept
+                revToAccept.Add rev
             End If
         End If
-    Next i
+    Next rev
+
+    ' Accepting hundreds of revisions one at a time triggers repagination and
+    ' markup-display recalculation on each call; suspend both for the pass and
+    ' restore unconditionally (Cleanup/ErrHandler).
+    On Error Resume Next
+    origPagination = wdApp.Options.Pagination
+    wdApp.Options.Pagination = False
+    paginationChanged = True
+    wdDoc.Windows(1).View.ShowRevisionsAndComments = False
+    On Error GoTo ErrHandler
+
+    Dim acceptRev As Object
+    For Each acceptRev In revToAccept
+        acceptRev.Accept
+    Next acceptRev
 
     ' Stamp bookmarks. Extraction below relies on AR_PARA_ bookmarks for the
     ' per-record "anchor" field, so stamping MUST precede extraction.
@@ -276,6 +298,10 @@ Public Sub AddDocToCorpus()
 
 Cleanup:
     On Error Resume Next
+    If paginationChanged And Not wdApp Is Nothing Then
+        wdApp.Options.Pagination = origPagination
+        paginationChanged = False
+    End If
     If screenUpdatingChanged And Not wdApp Is Nothing Then
         wdApp.ScreenUpdating = True
         screenUpdatingChanged = False
