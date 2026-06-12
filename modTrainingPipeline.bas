@@ -74,6 +74,55 @@ Public Function SelectTargetAuthor(ByVal wdDoc As Object) As String
 End Function
 
 
+' Read a revision's Author/Date without letting a dead COM object (e.g. a
+' revision nested inside another deletion, or inside a field, that Word has
+' already discarded by the time we get to it) abort the whole corpus run.
+' Returns False -- and leaves outAuthor/outDate untouched -- if the object is
+' unreadable; callers count that as one skipped record.
+Private Function TryReadRevisionAuthorDate(ByVal rev As Object, ByRef outAuthor As String, ByRef outDate As Date) As Boolean
+    On Error Resume Next
+    Err.Clear
+    outAuthor = rev.Author
+    outDate = rev.Date
+    TryReadRevisionAuthorDate = (Err.Number = 0)
+    Err.Clear
+End Function
+
+' Read everything AddDocToCorpus needs from a target-author revision
+' (Author/Date/Type/Range.Text) in one guarded pass. Returns False if any of
+' them raise -- most commonly "Object has been deleted" on a revision whose
+' range was invalidated by an earlier Accept or by an enclosing revision.
+Private Function TryReadRevisionFull(ByVal rev As Object, ByRef outAuthor As String, ByRef outDate As Date, ByRef outType As Long, ByRef outText As String) As Boolean
+    On Error Resume Next
+    Err.Clear
+    outAuthor = rev.Author
+    outDate = rev.Date
+    outType = rev.Type
+    outText = rev.Range.Text
+    TryReadRevisionFull = (Err.Number = 0)
+    Err.Clear
+End Function
+
+' Comment counterparts of the above.
+Private Function TryReadCommentAuthorDate(ByVal cmt As Object, ByRef outAuthor As String, ByRef outDate As Date) As Boolean
+    On Error Resume Next
+    Err.Clear
+    outAuthor = cmt.Author
+    outDate = cmt.Date
+    TryReadCommentAuthorDate = (Err.Number = 0)
+    Err.Clear
+End Function
+
+Private Function TryReadCommentFull(ByVal cmt As Object, ByRef outAuthor As String, ByRef outDate As Date, ByRef outText As String) As Boolean
+    On Error Resume Next
+    Err.Clear
+    outAuthor = cmt.Author
+    outDate = cmt.Date
+    outText = cmt.Range.Text
+    TryReadCommentFull = (Err.Number = 0)
+    Err.Clear
+End Function
+
 Public Sub AddDocToCorpus()
     Const wdRevisionInsert As Long = 1
     Const wdRevisionDelete As Long = 2
@@ -89,6 +138,10 @@ Public Sub AddDocToCorpus()
     Dim paginationChanged As Boolean
     Dim origPagination As Boolean
     Dim completed As Boolean
+    Dim recordsWritten As Long
+    Dim skippedRecords As Long
+    Dim scanAuthor As String
+    Dim scanDate As Date
 
     Dim activePersona As String
     Dim personaToken As String
@@ -141,24 +194,32 @@ Public Sub AddDocToCorpus()
     firstTargetFound = False
 
     For Each rev In wdDoc.Revisions
-        If StrComp(rev.Author, targetAuthor, vbTextCompare) = 0 Then
-            If Not firstTargetFound Then
-                minDate = rev.Date
-                firstTargetFound = True
-            Else
-                If rev.Date < minDate Then minDate = rev.Date
+        If TryReadRevisionAuthorDate(rev, scanAuthor, scanDate) Then
+            If StrComp(scanAuthor, targetAuthor, vbTextCompare) = 0 Then
+                If Not firstTargetFound Then
+                    minDate = scanDate
+                    firstTargetFound = True
+                Else
+                    If scanDate < minDate Then minDate = scanDate
+                End If
             End If
+        Else
+            skippedRecords = skippedRecords + 1
         End If
     Next rev
 
     For Each cmt In wdDoc.Comments
-        If StrComp(cmt.Author, targetAuthor, vbTextCompare) = 0 Then
-            If Not firstTargetFound Then
-                minDate = cmt.Date
-                firstTargetFound = True
-            Else
-                If cmt.Date < minDate Then minDate = cmt.Date
+        If TryReadCommentAuthorDate(cmt, scanAuthor, scanDate) Then
+            If StrComp(scanAuthor, targetAuthor, vbTextCompare) = 0 Then
+                If Not firstTargetFound Then
+                    minDate = scanDate
+                    firstTargetFound = True
+                Else
+                    If scanDate < minDate Then minDate = scanDate
+                End If
             End If
+        Else
+            skippedRecords = skippedRecords + 1
         End If
     Next cmt
 
@@ -171,10 +232,14 @@ Public Sub AddDocToCorpus()
     Dim revToAccept As Collection
     Set revToAccept = New Collection
     For Each rev In wdDoc.Revisions
-        If StrComp(rev.Author, targetAuthor, vbTextCompare) <> 0 Then
-            If firstTargetFound And rev.Date < minDate Then
-                revToAccept.Add rev
+        If TryReadRevisionAuthorDate(rev, scanAuthor, scanDate) Then
+            If StrComp(scanAuthor, targetAuthor, vbTextCompare) <> 0 Then
+                If firstTargetFound And scanDate < minDate Then
+                    revToAccept.Add rev
+                End If
             End If
+        Else
+            skippedRecords = skippedRecords + 1
         End If
     Next rev
 
@@ -188,9 +253,20 @@ Public Sub AddDocToCorpus()
     wdDoc.Windows(1).View.ShowRevisionsAndComments = False
     On Error GoTo ErrHandler
 
+    ' Accepting one revision can invalidate an adjacent paired revision (e.g.
+    ' an insertion/deletion pair, or a revision nested inside one we just
+    ' accepted) that is also sitting in this snapshot -- a failed Accept on an
+    ' already-consumed revision is benign; count it and move on.
     Dim acceptRev As Object
     For Each acceptRev In revToAccept
+        On Error Resume Next
+        Err.Clear
         acceptRev.Accept
+        If Err.Number <> 0 Then
+            skippedRecords = skippedRecords + 1
+            Err.Clear
+        End If
+        On Error GoTo ErrHandler
     Next acceptRev
 
     ' Stamp bookmarks. Extraction below relies on AR_PARA_ bookmarks for the
@@ -202,7 +278,7 @@ Public Sub AddDocToCorpus()
     Dim ts As Object
     Dim corpusPath As String
 
-    corpusPath = modAppCore.GetWorkFolder() & "\" & personaToken & "_corpus.jsonl"
+    corpusPath = modAppCore.GetPersonaFolder(activePersona) & "\" & personaToken & "_corpus.jsonl"
 
     Set fso = CreateObject("Scripting.FileSystemObject")
     Set ts = fso.OpenTextFile(corpusPath, 8, True, -1) ' 8=Append, True=Create, -1=Unicode
@@ -219,44 +295,53 @@ Public Sub AddDocToCorpus()
     Dim revContext As String
     Dim revParaIdx As Long
     Dim ctxRange As Object
+    Dim revAuthorVal As String
+    Dim revDateVal As Date
+    Dim revTypeVal As Long
+    Dim revTextVal As String
 
     For Each rev In wdDoc.Revisions
-        If StrComp(rev.Author, targetAuthor, vbTextCompare) = 0 Then
-            Select Case rev.Type
-                Case wdRevisionInsert
-                    revTypeStr = "insert"
-                Case wdRevisionDelete
-                    revTypeStr = "delete"
-                Case Else
-                    revTypeStr = "format/other"
-            End Select
+        If TryReadRevisionFull(rev, revAuthorVal, revDateVal, revTypeVal, revTextVal) Then
+            If StrComp(revAuthorVal, targetAuthor, vbTextCompare) = 0 Then
+                Select Case revTypeVal
+                    Case wdRevisionInsert
+                        revTypeStr = "insert"
+                    Case wdRevisionDelete
+                        revTypeStr = "delete"
+                    Case Else
+                        revTypeStr = "format/other"
+                End Select
 
-            ' AR_PARA numbering is a pure function of paragraph position (see
-            ' modWordUtils.StampParagraphBookmarks), so the anchor for any
-            ' range is computed directly -- one COM call, no bookmark scan.
-            revAnchor = ""
-            revContext = ""
-            On Error Resume Next
-            revParaIdx = wdDoc.Range(0, rev.Range.Start).Paragraphs.Count
-            If revParaIdx > 0 Then
-                revAnchor = "AR_PARA_" & Format$(revParaIdx, "00000")
+                ' AR_PARA numbering is a pure function of paragraph position (see
+                ' modWordUtils.StampParagraphBookmarks), so the anchor for any
+                ' range is computed directly -- one COM call, no bookmark scan.
+                revAnchor = ""
+                revContext = ""
+                On Error Resume Next
+                revParaIdx = wdDoc.Range(0, rev.Range.Start).Paragraphs.Count
+                If revParaIdx > 0 Then
+                    revAnchor = "AR_PARA_" & Format$(revParaIdx, "00000")
+                End If
+                Set ctxRange = rev.Range.Duplicate
+                ctxRange.Expand 4 ' wdParagraph
+                revContext = Trim$(ctxRange.Text)
+                If Len(revContext) > CONTEXT_CAP Then revContext = Left$(revContext, CONTEXT_CAP)
+                Set ctxRange = Nothing
+                On Error GoTo ErrHandler
+
+                jsonLine = "{""doc_id"":""" & docIdEsc & """" & _
+                           ",""target_author"":""" & authorEsc & """" & _
+                           ",""record_type"":""revision""" & _
+                           ",""date"":""" & revDateVal & """" & _
+                           ",""rev_type"":""" & revTypeStr & """" & _
+                           ",""text"":""" & modSysUtils.JsonEscape(revTextVal) & """" & _
+                           ",""anchor"":""" & revAnchor & """" & _
+                           ",""context"":""" & modSysUtils.JsonEscape(revContext) & """}"
+                ts.WriteLine jsonLine
+                recordsWritten = recordsWritten + 1
             End If
-            Set ctxRange = rev.Range.Duplicate
-            ctxRange.Expand 4 ' wdParagraph
-            revContext = Trim$(ctxRange.Text)
-            If Len(revContext) > CONTEXT_CAP Then revContext = Left$(revContext, CONTEXT_CAP)
-            Set ctxRange = Nothing
-            On Error GoTo ErrHandler
-
-            jsonLine = "{""doc_id"":""" & docIdEsc & """" & _
-                       ",""target_author"":""" & authorEsc & """" & _
-                       ",""record_type"":""revision""" & _
-                       ",""date"":""" & rev.Date & """" & _
-                       ",""rev_type"":""" & revTypeStr & """" & _
-                       ",""text"":""" & modSysUtils.JsonEscape(rev.Range.Text) & """" & _
-                       ",""anchor"":""" & revAnchor & """" & _
-                       ",""context"":""" & modSysUtils.JsonEscape(revContext) & """}"
-            ts.WriteLine jsonLine
+        Else
+            skippedRecords = skippedRecords + 1
         End If
     Next rev
 
@@ -264,28 +349,36 @@ Public Sub AddDocToCorpus()
     Dim cmtAnchor As String
     Dim cmtScopeText As String
     Dim cmtParaIdx As Long
+    Dim cmtAuthorVal As String
+    Dim cmtDateVal As Date
+    Dim cmtTextVal As String
 
     For Each cmt In wdDoc.Comments
-        If StrComp(cmt.Author, targetAuthor, vbTextCompare) = 0 Then
-            cmtAnchor = ""
-            cmtScopeText = ""
-            On Error Resume Next
-            cmtParaIdx = wdDoc.Range(0, cmt.Scope.Start).Paragraphs.Count
-            If cmtParaIdx > 0 Then
-                cmtAnchor = "AR_PARA_" & Format$(cmtParaIdx, "00000")
-            End If
-            cmtScopeText = Trim$(cmt.Scope.Text)
-            If Len(cmtScopeText) > SCOPE_CAP Then cmtScopeText = Left$(cmtScopeText, SCOPE_CAP)
-            On Error GoTo ErrHandler
+        If TryReadCommentFull(cmt, cmtAuthorVal, cmtDateVal, cmtTextVal) Then
+            If StrComp(cmtAuthorVal, targetAuthor, vbTextCompare) = 0 Then
+                cmtAnchor = ""
+                cmtScopeText = ""
+                On Error Resume Next
+                cmtParaIdx = wdDoc.Range(0, cmt.Scope.Start).Paragraphs.Count
+                If cmtParaIdx > 0 Then
+                    cmtAnchor = "AR_PARA_" & Format$(cmtParaIdx, "00000")
+                End If
+                cmtScopeText = Trim$(cmt.Scope.Text)
+                If Len(cmtScopeText) > SCOPE_CAP Then cmtScopeText = Left$(cmtScopeText, SCOPE_CAP)
+                On Error GoTo ErrHandler
 
-            jsonLine = "{""doc_id"":""" & docIdEsc & """" & _
-                       ",""target_author"":""" & authorEsc & """" & _
-                       ",""record_type"":""comment""" & _
-                       ",""date"":""" & cmt.Date & """" & _
-                       ",""text"":""" & modSysUtils.JsonEscape(cmt.Range.Text) & """" & _
-                       ",""scope_text"":""" & modSysUtils.JsonEscape(cmtScopeText) & """" & _
-                       ",""anchor"":""" & cmtAnchor & """}"
-            ts.WriteLine jsonLine
+                jsonLine = "{""doc_id"":""" & docIdEsc & """" & _
+                           ",""target_author"":""" & authorEsc & """" & _
+                           ",""record_type"":""comment""" & _
+                           ",""date"":""" & cmtDateVal & """" & _
+                           ",""text"":""" & modSysUtils.JsonEscape(cmtTextVal) & """" & _
+                           ",""scope_text"":""" & modSysUtils.JsonEscape(cmtScopeText) & """" & _
+                           ",""anchor"":""" & cmtAnchor & """}"
+                ts.WriteLine jsonLine
+                recordsWritten = recordsWritten + 1
+            End If
+        Else
+            skippedRecords = skippedRecords + 1
         End If
     Next cmt
 
@@ -293,6 +386,14 @@ Public Sub AddDocToCorpus()
 
     ' Update Registry
     modAppCore.UpsertPersona activePersona, corpusPath:=corpusPath, incrementTrainingCount:=True
+
+    ' Record the run -- including how many revisions/comments could not be
+    ' read -- in the Trace sheet. Silent skips would hide a real gap in the
+    ' persona's training data; a counted skip is honest lineage.
+    On Error Resume Next
+    modAudit.AppendReviewTrace "Corpus", activePersona, docPath, wdDoc.name, _
+        "", "", "", recordsWritten + skippedRecords, recordsWritten, skippedRecords
+    On Error GoTo ErrHandler
 
     completed = True
 
@@ -313,7 +414,9 @@ Cleanup:
     On Error GoTo 0
 
     If completed Then
-        MsgBox "Document added to corpus successfully.", vbInformation
+        MsgBox "Document added to corpus successfully." & vbCrLf & vbCrLf & _
+               recordsWritten & " records written, " & skippedRecords & _
+               " skipped (unreadable).", vbInformation
     End If
     Exit Sub
 
@@ -394,7 +497,7 @@ Public Sub AddFinalizedExemplar()
     DoEvents
 
     ' Pick the next free exemplar filename for this persona.
-    workFolder = modAppCore.GetWorkFolder()
+    workFolder = modAppCore.GetPersonaFolder(activePersona)
     Set fso = CreateObject("Scripting.FileSystemObject")
     n = 1
     Do
@@ -446,7 +549,7 @@ Public Sub RunReducePass1()
     personaToken = modSysUtils.SafeFileToken(activePersona)
     If personaToken = "" Then Exit Sub
 
-    workFolder = modAppCore.GetWorkFolder()
+    workFolder = modAppCore.GetPersonaFolder(activePersona)
     corpusPath = workFolder & "\" & personaToken & "_corpus.jsonl"
 
     Set fso = CreateObject("Scripting.FileSystemObject")
@@ -562,7 +665,7 @@ Public Sub SaveSkillMd()
     personaToken = modSysUtils.SafeFileToken(activePersona)
     If personaToken = "" Then Exit Sub
 
-    skillPath = modAppCore.GetWorkFolder() & "\" & personaToken & "_SKILL.md"
+    skillPath = modAppCore.GetPersonaFolder(activePersona) & "\" & personaToken & "_SKILL.md"
     
     On Error Resume Next
     Set dataObj = CreateObject("new:{1C3B4210-F441-11CE-B9EA-00AA006B1A69}") ' MSForms.DataObject

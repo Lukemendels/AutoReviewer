@@ -517,6 +517,74 @@ Public Function GetWorkFolder() As String
     GetWorkFolder = candidate
 End Function
 
+' Resolve (creating if needed) the persona-scoped subfolder under
+' GetWorkFolder() where this persona's training artifacts live: corpus.jsonl,
+' exemplar .txt files, and SKILL.md. Non-persona artifacts (exports, working
+' copies, Trace) stay at the work-folder root.
+'
+' Migration: the first time a persona's folder is resolved, any legacy
+' <persona>_corpus.jsonl / <persona>_exemplar_NN.txt / <persona>_SKILL.md
+' files sitting at the work-folder root (from before this folder existed) are
+' moved into the new subfolder, and the move is reported via MsgBox so it is
+' never a silent change to where a user's files live.
+Public Function GetPersonaFolder(ByVal persona As String) As String
+    Dim fso As Object
+    Dim workFolder As String
+    Dim personaToken As String
+    Dim personaFolder As String
+    Dim movedList As String
+    Dim n As Long
+    Dim legacyPath As String
+    Dim newPath As String
+
+    personaToken = modSysUtils.SafeFileToken(persona)
+    If personaToken = "" Then
+        GetPersonaFolder = ""
+        Exit Function
+    End If
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    workFolder = modAppCore.GetWorkFolder()
+    personaFolder = workFolder & "\" & personaToken
+
+    If Not fso.FolderExists(personaFolder) Then
+        fso.CreateFolder personaFolder
+    End If
+
+    ' Migrate legacy root-level corpus and SKILL.md.
+    legacyPath = workFolder & "\" & personaToken & "_corpus.jsonl"
+    If fso.FileExists(legacyPath) Then
+        newPath = personaFolder & "\" & personaToken & "_corpus.jsonl"
+        fso.MoveFile legacyPath, newPath
+        movedList = movedList & vbCrLf & personaToken & "_corpus.jsonl"
+    End If
+
+    legacyPath = workFolder & "\" & personaToken & "_SKILL.md"
+    If fso.FileExists(legacyPath) Then
+        newPath = personaFolder & "\" & personaToken & "_SKILL.md"
+        fso.MoveFile legacyPath, newPath
+        movedList = movedList & vbCrLf & personaToken & "_SKILL.md"
+    End If
+
+    ' Migrate legacy root-level exemplars (<persona>_exemplar_01.txt .. _99.txt).
+    For n = 1 To 99
+        legacyPath = workFolder & "\" & personaToken & "_exemplar_" & Format$(n, "00") & ".txt"
+        If fso.FileExists(legacyPath) Then
+            newPath = personaFolder & "\" & personaToken & "_exemplar_" & Format$(n, "00") & ".txt"
+            fso.MoveFile legacyPath, newPath
+            movedList = movedList & vbCrLf & personaToken & "_exemplar_" & Format$(n, "00") & ".txt"
+        End If
+    Next n
+
+    If Len(movedList) > 0 Then
+        MsgBox "Moved existing training files for """ & persona & """ into its " & _
+               "persona folder:" & vbCrLf & personaFolder & vbCrLf & vbCrLf & _
+               "Files moved:" & movedList, vbInformation, "AutoReviewer Persona Folder"
+    End If
+
+    GetPersonaFolder = personaFolder
+End Function
+
 ' Sets and reads back 3 Config keys (including "ActivePersona") to verify
 ' GetConfigValue/SetConfigValue round-trip correctly: an exact, case-insensitive,
 ' Trim$ key match against column A, with the value read from the adjacent column
