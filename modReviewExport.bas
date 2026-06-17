@@ -193,14 +193,16 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
             Dim revObj As Object
             Dim revTypeStr As String
             Dim revIndexCounter As Long
-            revIndexCounter = 1
-            For Each revObj In wdDoc.Revisions
+            Dim revTotalCount As Long
+            revTotalCount = wdDoc.Revisions.Count
+            For revIndexCounter = 1 To revTotalCount
+                Set revObj = wdDoc.Revisions(revIndexCounter)
                 bufferRevisions = bufferRevisions & "## AR_REV_" & Format(revIndexCounter, "00000") & vbCrLf
-                
+
                 On Error Resume Next
                 bufferRevisions = bufferRevisions & "Author: " & CStr(revObj.Author) & vbCrLf
                 bufferRevisions = bufferRevisions & "Date: " & CStr(revObj.Date) & vbCrLf
-                
+
                 ' Word Revision Types: wdRevisionInsert = 1, wdRevisionDelete = 2
                 If revObj.Type = 1 Then
                     revTypeStr = "Insertion"
@@ -210,14 +212,13 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
                     revTypeStr = "Other (Type " & revObj.Type & ")"
                 End If
                 bufferRevisions = bufferRevisions & "Type: " & revTypeStr & vbCrLf
-                
+
                 ' Get the text (for deletion, it's the deleted text; for insertion, it's the new text)
                 bufferRevisions = bufferRevisions & "Text: " & CleanOneLine(revObj.Range.Text) & vbCrLf
                 On Error GoTo ErrHandler
-                
+
                 bufferRevisions = bufferRevisions & "---" & vbCrLf
-                revIndexCounter = revIndexCounter + 1
-            Next revObj
+            Next revIndexCounter
         End If
         bufferRevisions = bufferRevisions & "<<REVISIONS_END>>" & vbCrLf & vbCrLf
     End If

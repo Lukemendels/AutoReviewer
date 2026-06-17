@@ -37,17 +37,55 @@ End Sub
 ' The numbering is a pure function of the (unchanged) document, so the export
 ' and the apply step produce identical AR_REV ids without persisting anything.
 Public Sub StampRevisionBookmarks(ByVal wdDoc As Object)
+    Dim revCount As Long
     Dim revIdx As Long
-    Dim rev As Object
-    On Error Resume Next
-    If wdDoc.Revisions.Count = 0 Then Exit Sub
-    revIdx = 0
-    For Each rev In wdDoc.Revisions
-        revIdx = revIdx + 1
+    Dim origScreenUpdating As Boolean
+    Dim origPagination As Boolean
+    Dim bmCount As Long
+    Dim i As Long
+    Dim errNum As Long
+    Dim errDsc As String
+
+    On Error GoTo ErrHandler
+
+    revCount = wdDoc.Revisions.Count
+    If revCount = 0 Then Exit Sub
+
+    origScreenUpdating = wdDoc.Application.ScreenUpdating
+    origPagination = wdDoc.Application.Options.Pagination
+    wdDoc.Application.ScreenUpdating = False
+    wdDoc.Application.Options.Pagination = False
+
+    For revIdx = 1 To revCount
         wdDoc.Bookmarks.Add Name:="AR_REV_" & Format$(revIdx, "00000"), _
-                            Range:=rev.Range
-    Next rev
+                            Range:=wdDoc.Revisions(revIdx).Range
+    Next revIdx
+
+    ' Post-stamp parity check: AR_REV bookmark count must equal Revisions.Count.
+    bmCount = 0
+    For i = 1 To wdDoc.Bookmarks.Count
+        If Left$(wdDoc.Bookmarks(i).Name, 7) = "AR_REV_" Then bmCount = bmCount + 1
+    Next i
+    If bmCount <> revCount Then
+        Err.Raise vbObjectError + 1, "StampRevisionBookmarks", _
+            "AR_REV bookmark count (" & bmCount & ") does not match " & _
+            "Revisions.Count (" & revCount & "); anchors are incomplete."
+    End If
+
+Cleanup:
+    On Error Resume Next
+    wdDoc.Application.ScreenUpdating = origScreenUpdating
+    wdDoc.Application.Options.Pagination = origPagination
+    Exit Sub
+
+ErrHandler:
+    errNum = Err.Number
+    errDsc = Err.Description
+    On Error Resume Next
+    wdDoc.Application.ScreenUpdating = origScreenUpdating
+    wdDoc.Application.Options.Pagination = origPagination
     On Error GoTo 0
+    Err.Raise errNum, "StampRevisionBookmarks", errDsc
 End Sub
 
 ' Remove every AR_* bookmark from the document. Used as the terminal step of the
