@@ -57,15 +57,17 @@ source of record is never mutated.
 | `modReviewImport.bas` | JSONL → tracked changes (six change types), per-edit Log, JSONL fingerprint |
 | `modAudit.bas` | The `Trace` sheet — one `logic_trace` row per run (operator, route, fingerprints) |
 | `modDashboardUI.bas` | The dashboard: Train Persona / Run Review / Respond to Review |
-| `modTrainingPipeline.bas` | Author filter, corpus builder, three Reduce passes, Save SKILL.md |
+| `modTrainingPipeline.bas` | Author filter, corpus builder, three Reduce passes, Save SKILL.md (assembles co-thinker assistant from template + persona profile) |
 | `modSelfTest.bas` | Offline self-test harness: replays `tests/vectors/` against the deterministic VBA (no Word needed) |
 
 The deterministic core (fingerprint, JSONL contract, session gate) has a
 **Python reference twin** in `ref/` with golden vectors in `tests/vectors/` —
 see `TESTING.md` for the doctrine and the operator round-trip.
 
-Assistant prompts: `TEMPLATE_SKILL.md` (index), `TEMPLATE_SKILL_COTHINKER.md`
-(hot, per persona), `TEMPLATE_SKILL_INCORPORATOR.md` (hot, shared),
+Assistant system-prompt templates: `TEMPLATE_SKILL.md` (index),
+`TEMPLATE_SKILL_COTHINKER.md` (hot, per persona — assembled with a persona style
+profile by Save SKILL.md before pasting into DHSChat),
+`TEMPLATE_SKILL_INCORPORATOR.md` (hot, shared),
 `TEMPLATE_SKILL_RESEARCHER.md` (side, shared), `TEMPLATE_SKILL_CITATION.md`
 (canonical house citation/calc standard, standalone + embedded in the
 Researcher), `TEMPLATE_SKILL_SERIALIZER.md` (cold, shared). Behavioral fixtures
@@ -133,7 +135,10 @@ identically.
    sheets and the dashboard.
 2. Set up the shared **Serializer** assistant once: create a DHSChat assistant
    from `TEMPLATE_SKILL_SERIALIZER.md`, then dashboard → **Set Serializer URL**.
-3. Train a persona (see `USER_GUIDE.md`) to produce a co-thinker assistant.
+3. Set the `CothinkerTemplatePath` key in the Config sheet to the full path of
+   `TEMPLATE_SKILL_COTHINKER.md` (required by Save SKILL.md to assemble the
+   per-persona assistant).
+4. Train a persona (see `USER_GUIDE.md`) to produce a co-thinker assistant.
 4. Run a review: Select Persona → Prepare for Review → ratify → Hand off to
    Serializer → Apply.
 

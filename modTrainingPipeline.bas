@@ -612,49 +612,54 @@ Public Sub RunReducePass2()
            "1. Paste this prompt into the same DHSChat conversation and send.", vbInformation
 End Sub
 
-' Pass 3: Synthesize SKILL.md
+' Pass 3: Synthesize persona style profile
 Public Sub RunReducePass3()
     Dim prompt As String
-    prompt = "Synthesize the extracted heuristics into a SKILL.md for a HOT co-thinker " & _
-             "DHSChat assistant (the reviewer persona). It MUST: (a) carry the style " & _
-             "guidance and reviewer voice; (b) define the three-turn protocol explicitly: " & _
-             "Turn 1 THEMES -- cluster comments/revisions into 3-6 themes with a " & _
-             "recommended posture and strongest counter-case per theme, then STOP and ask " & _
-             "the human to rule on the themes before producing any blocks; Turn 2 BLOCKS " & _
-             "-- only after the human rules, produce numbered '[n] BOOKMARK: <AR_ id> / " & _
-             "ACTION / OLD_TEXT / NEW_TEXT / RATIONALE / COUNTER-CASE / CONFIDENCE' blocks " & _
-             "consistent with the ratified themes, end with the COVERAGE line, then STOP " & _
-             "and ask the human for a per-block KEEP / FIX: <instructions> / CUT ruling; " & _
-             "Turn 3 FINAL RATIFIED PACKET -- only after the human rules on every block, " & _
-             "reproduce KEEP blocks verbatim, apply FIX instructions exactly, omit CUT " & _
-             "blocks WITHOUT renumbering the rest, drop COUNTER-CASE/CONFIDENCE from every " & _
-             "surviving block, and make no other changes -- output only the final numbered " & _
-             "blocks, nothing else; (c) instruct the assistant to self-critique before " & _
-             "finishing each turn; (d) output human-readable DECISION PACKETS, never JSON, " & _
-             "in all three turns. Do NOT include any JSONL output contract -- a separate " & _
-             "cold serializer assistant owns that. Return ONLY the markdown code block " & _
-             "containing the SKILL.md."
+    prompt = "Based on the reviewer's patterns you have identified, produce a concise " & _
+             "persona style profile ready to paste under the ""Persona -- voice & standards"" " & _
+             "heading of the co-thinker assistant. The profile must cover: (1) the reviewer's " & _
+             "voice and tone -- formal register, directness, sentence structure, and anything " & _
+             "otherwise characteristic; (2) structural and formatting preferences -- how they " & _
+             "organize sections, what they add or trim, how they handle tables and lists; " & _
+             "(3) standards they enforce consistently -- citation requirements, level of detail, " & _
+             "precision expectations, audience assumptions; (4) recurring categories of edit -- " & _
+             "the kinds of changes they make most often, with brief illustrative examples drawn " & _
+             "from the corpus; and (5) what they reliably push back on -- the arguments or " & _
+             "framings they resist and why. Write in second person (""You enforce..."", " & _
+             """You prefer...""). Do not include a review protocol, output format specification, " & _
+             "or JSONL contract -- those are fixed in the template. Return only the profile " & _
+             "text, plain markdown, no code fences."
 
     modSysUtils.CopyToClipboard prompt
 
     MsgBox "Reduce Pass 3 Prompt copied to clipboard." & vbCrLf & vbCrLf & _
            "1. Paste this prompt into the same DHSChat conversation and send." & vbCrLf & _
-           "2. This generates the HOT co-thinker SKILL.md (with the three-turn " & _
-           "THEMES / BLOCKS / FINAL RATIFIED PACKET protocol). Save it via Save SKILL.md." & vbCrLf & _
-           "3. The COLD serializer is set up once from TEMPLATE_SKILL_SERIALIZER.md " & _
+           "2. This generates the persona style profile for this reviewer." & vbCrLf & _
+           "   Copy the result to your clipboard." & vbCrLf & _
+           "3. Click Save SKILL.md on the dashboard to assemble and save the " & _
+           "full co-thinker assistant file." & vbCrLf & _
+           "4. The COLD serializer is set up once from TEMPLATE_SKILL_SERIALIZER.md " & _
            "(dashboard: Set Serializer URL).", vbInformation
 End Sub
 
-' Save SKILL.md
+' Save SKILL.md — reads the Co-thinker template, injects the persona style profile
+' from the clipboard at [INSERT PERSONA STYLE PROFILE], and writes the assembled
+' ready-to-paste assistant file as <persona>_cothinker_assistant.md.
+' Requires the CothinkerTemplatePath key in the Config sheet to be set to the
+' full path of TEMPLATE_SKILL_COTHINKER.md.
 Public Sub SaveSkillMd()
     Dim activePersona As String
-    Dim skillPath As String
+    Dim personaToken As String
+    Dim templatePath As String
+    Dim assembledPath As String
     Dim fso As Object
     Dim ts As Object
-    Dim skillContent As String
+    Dim profileContent As String
+    Dim templateContent As String
+    Dim assembledContent As String
     Dim dataObj As Object
-    
-    Dim personaToken As String
+    Const SEAM_MARKER As String = "[INSERT PERSONA STYLE PROFILE]"
+    Const TEMPLATE_CONFIG_KEY As String = "CothinkerTemplatePath"
 
     activePersona = Trim$(modAppCore.GetConfigValue("ActivePersona"))
     If activePersona = "" Then
@@ -665,37 +670,59 @@ Public Sub SaveSkillMd()
     personaToken = modSysUtils.SafeFileToken(activePersona)
     If personaToken = "" Then Exit Sub
 
-    skillPath = modAppCore.GetPersonaFolder(activePersona) & "\" & personaToken & "_SKILL.md"
-    
+    ' Read the persona style profile from the clipboard
     On Error Resume Next
     Set dataObj = CreateObject("new:{1C3B4210-F441-11CE-B9EA-00AA006B1A69}") ' MSForms.DataObject
     dataObj.GetFromClipboard
-    skillContent = dataObj.GetText
+    profileContent = dataObj.GetText
     On Error GoTo 0
-    
-    If skillContent = "" Then
-        MsgBox "Please copy the generated SKILL.md text to the clipboard first.", vbExclamation
+
+    If profileContent = "" Then
+        MsgBox "Please copy the generated persona style profile to the clipboard first.", vbExclamation
         Exit Sub
     End If
-    
-    ' Strip markdown formatting if present
-    If Left(skillContent, 3) = "```" Then
-        ' Simple cleanup
-        skillContent = Replace(skillContent, "```markdown", "")
-        skillContent = Replace(skillContent, "```", "")
-        skillContent = Trim(skillContent)
+
+    ' Strip markdown code fences if present
+    If Left(profileContent, 3) = "```" Then
+        profileContent = Replace(profileContent, "```markdown", "")
+        profileContent = Replace(profileContent, "```", "")
+        profileContent = Trim(profileContent)
     End If
-    
+
+    ' Read the Co-thinker template from the path in Config
+    templatePath = Trim$(modAppCore.GetConfigValue(TEMPLATE_CONFIG_KEY, ""))
     Set fso = CreateObject("Scripting.FileSystemObject")
-    Set ts = fso.OpenTextFile(skillPath, 2, True, -1) ' 2=Write, True=Create, -1=Unicode
-    ts.Write skillContent
+
+    If templatePath = "" Or Not fso.FileExists(templatePath) Then
+        MsgBox "Co-thinker template not found. Set the '" & TEMPLATE_CONFIG_KEY & "' key " & _
+               "in the Config sheet to the full path of TEMPLATE_SKILL_COTHINKER.md.", vbExclamation
+        Exit Sub
+    End If
+
+    Set ts = fso.OpenTextFile(templatePath, 1, False, -1) ' 1=Read, -1=Unicode
+    templateContent = ts.ReadAll
     ts.Close
-    
-    modAppCore.UpsertPersona activePersona, skillMdPath:=skillPath
-    
-    MsgBox "Co-thinker SKILL.md saved to: " & skillPath & vbCrLf & vbCrLf & _
-           "Next Step: Create a new DHSChat Assistant (the HOT co-thinker), paste this " & _
-           "SKILL.md into its system prompt, and save its URL in the Personas sheet " & _
-           "(AssistantUrl column). The shared COLD serializer is set up separately, once.", vbInformation
+
+    ' Inject the profile at the seam marker
+    If InStr(templateContent, SEAM_MARKER) = 0 Then
+        MsgBox "Seam marker '" & SEAM_MARKER & "' not found in the Co-thinker template. " & _
+               "Verify that " & templatePath & " is the correct file.", vbExclamation
+        Exit Sub
+    End If
+
+    assembledContent = Replace(templateContent, SEAM_MARKER, profileContent, 1, 1)
+
+    ' Write the assembled assistant file
+    assembledPath = modAppCore.GetPersonaFolder(activePersona) & "\" & personaToken & "_cothinker_assistant.md"
+    Set ts = fso.OpenTextFile(assembledPath, 2, True, -1) ' 2=Write, True=Create, -1=Unicode
+    ts.Write assembledContent
+    ts.Close
+
+    modAppCore.UpsertPersona activePersona, skillMdPath:=assembledPath
+
+    MsgBox "Co-thinker assistant assembled and saved to:" & vbCrLf & assembledPath & vbCrLf & vbCrLf & _
+           "Next step: Open that file, copy its entire contents, create a new DHSChat " & _
+           "Assistant, paste into its Instructions field, and save its URL in the Personas " & _
+           "sheet (AssistantUrl column). The shared Serializer is set up separately, once.", vbInformation
 End Sub
 
