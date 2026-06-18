@@ -776,6 +776,8 @@ Private Function BuildFootnotesSection(ByVal wdDocFinal As Object, _
     Dim fnBody As String
     Dim paraText As String
     Dim fmt As String
+    Dim fnLines() As String
+    Dim fnLineIdx As Long
     
     On Error GoTo SafeExit
     
@@ -794,8 +796,12 @@ Private Function BuildFootnotesSection(ByVal wdDocFinal As Object, _
     On Error GoTo SafeExit
     
     exportFormat = LCase$(exportFormat)
-    sectionText = "<<FOOTNOTES_START>>" & vbCrLf
-    
+
+    ' Collect footnote lines into an array and Join once to avoid O(n²) copying
+    ' on documents with many footnotes (4 lines per footnote with content).
+    ReDim fnLines(1 To docForExport.Footnotes.Count * 4)
+    fnLineIdx = 0
+
     For Each fn In docForExport.Footnotes
         ' Anchor snippet: paragraph containing the footnote reference
         On Error Resume Next
@@ -804,32 +810,37 @@ Private Function BuildFootnotesSection(ByVal wdDocFinal As Object, _
             paraText = fn.Reference.Paragraph.Range.Text
         End If
         On Error GoTo SafeExit
-        
+
         anchorSnippet = CleanOneLine(paraText)
         If Len(anchorSnippet) > 200 Then
             anchorSnippet = Left$(anchorSnippet, 200) & "..."
         End If
-        
+
         ' Footnote body text
         On Error Resume Next
         fnBody = CleanOneLine(fn.Range.Text)
         On Error GoTo SafeExit
-        
+
         If Len(fnBody) > 0 Or Len(anchorSnippet) > 0 Then
             If exportFormat = "markdown" Then
-                sectionText = sectionText & "## Footnote " & fn.Index & vbCrLf
-                sectionText = sectionText & "Anchor: " & anchorSnippet & vbCrLf
-                sectionText = sectionText & "Text: " & fnBody & vbCrLf
-                sectionText = sectionText & "---" & vbCrLf
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "## Footnote " & fn.Index
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "Anchor: " & anchorSnippet
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "Text: " & fnBody
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "---"
             Else
-                sectionText = sectionText & "Footnote " & fn.Index & vbCrLf
-                sectionText = sectionText & "Anchor: " & anchorSnippet & vbCrLf
-                sectionText = sectionText & "Text: " & fnBody & vbCrLf
-                sectionText = sectionText & "----" & vbCrLf
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "Footnote " & fn.Index
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "Anchor: " & anchorSnippet
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "Text: " & fnBody
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "----"
             End If
         End If
     Next fn
-    
+
+    sectionText = "<<FOOTNOTES_START>>" & vbCrLf
+    If fnLineIdx > 0 Then
+        ReDim Preserve fnLines(1 To fnLineIdx)
+        sectionText = sectionText & Join(fnLines, vbCrLf) & vbCrLf
+    End If
     sectionText = sectionText & "<<FOOTNOTES_END>>" & vbCrLf & vbCrLf
     BuildFootnotesSection = sectionText
     Exit Function
