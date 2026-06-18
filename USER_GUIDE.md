@@ -20,7 +20,7 @@ This guide walks you through the end-to-end user experience (UX) for setting up 
 
 ## Phase 1: Creating a New Persona (Training)
 
-*Goal: Extract style rules from a batch of redlined documents to create a `SKILL.md` file, which will power your custom DHSChat Assistant.*
+*Goal: Extract the reviewer's style from a batch of redlined documents and assemble a custom DHSChat Assistant for that persona.*
 
 ### 1. Set the Active Persona
 Click **1. Set Active Persona** and type a name for your new persona (e.g., "Legal Reviewer V1"). This sets the active context for all following actions and creates a new row in the `Personas` registry sheet.
@@ -50,15 +50,22 @@ Now you will pass the corpus to DHSChat to analyze the patterns.
 2. Click **4. Reduce Pass 2: Heuristics**.
    - A new prompt is copied.
    - Paste it into the *same* DHSChat conversation and hit send.
-3. Click **5. Reduce Pass 3: SKILL.md**.
+3. Click **5. Reduce Pass 3: Persona Profile**.
    - A final prompt is copied.
-   - Paste it into the *same* conversation. DHSChat will generate a markdown code block containing your `SKILL.md` file.
+   - Paste it into the *same* conversation. DHSChat will generate the persona style profile for this reviewer.
 
 ### 4. Save and Wire Up the Persona
-1. In DHSChat, **copy** the generated `SKILL.md` text to your clipboard.
-2. Click **6. Save SKILL.md** on the Excel dashboard. The macro will save the file to your computer and link it in the `Personas` sheet.
-3. **Manual Step**: Go to DHSChat and create a new Assistant. Paste the contents of your new `SKILL.md` file into the "System Prompt" or "Instructions" box of the Assistant.
-4. Go to the `Personas` sheet in Excel and paste the URL of your new Assistant into the `AssistantUrl` column for your persona.
+1. In DHSChat, **copy** the generated persona style profile to your clipboard.
+2. Click **6. Save SKILL.md** on the Excel dashboard. The macro reads the
+   Co-thinker template (`TEMPLATE_SKILL_COTHINKER.md`, whose path must be set in
+   the Config sheet as `CothinkerTemplatePath`), injects your profile at the
+   persona seam, and saves the assembled assistant file as
+   `<PersonaName>_cothinker_assistant.md` in your persona's folder.
+3. **Manual Step**: Open the assembled `<PersonaName>_cothinker_assistant.md`
+   file, copy its entire contents, go to DHSChat, create a new Assistant, and
+   paste into its **Instructions** field.
+4. Go to the `Personas` sheet in Excel and paste the URL of your new Assistant
+   into the `AssistantUrl` column for your persona.
 
 ---
 

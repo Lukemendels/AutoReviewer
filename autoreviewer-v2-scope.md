@@ -33,9 +33,9 @@ N redlined .docx files in a folder
 [Reduce: human-in-the-loop, multi-pass through DHSChat]
    Pass 1 — Cluster revisions into pattern categories
    Pass 2 — Extract heuristic per category
-   Pass 3 — Synthesize into SKILL.md (style + JSON output contract)
+   Pass 3 — Synthesize persona style profile
             ↓
-SKILL.md → paste into new DHSChat Assistant system prompt
+Save SKILL.md → injects profile into co-thinker template → <persona>_cothinker_assistant.md → paste into new DHSChat Assistant Instructions
 Persona registered (URL + corpus + SKILL.md) in workbook
 ```
 
@@ -128,7 +128,7 @@ The `modAutoReview` / `modRuleExtractor` / `ExportToJSON` modules were cut, as p
 - **Author identity.** MS365 username (FirstName LastName) is the primary key. No fallback logic needed for V1 — if a doc has weird author strings, exclude it from the training set.
 - **Serial review assumption.** Baseline = non-target revisions dated before target's earliest revision. If target has multiple disjoint revision date clusters in one doc, warn the user and recommend exclusion. Not handled in code.
 - **Comments tagged separately from edits.** Both go in corpus, `record_type` field distinguishes. Reduce passes can weight comments differently (often carry the *reasoning*; edits carry the *action*).
-- **SKILL.md is the full Assistant system prompt.** Includes style heuristics + the bookmark-targeted JSONL output contract + change-type vocabulary + confidence guidance. Not split.
+- **SKILL.md is the full Assistant system prompt.** Includes style heuristics + the bookmark-targeted JSONL output contract + change-type vocabulary + confidence guidance. Not split. *(Revised: the frame, three-turn protocol, and output contract now live in the stable co-thinker template; the Reduce Pass 3 output is the persona style profile only, injected at a seam in the template by Save SKILL.md.)*
 - **Persona naming = role/document type, not person.** "TSA Economic Memo Review v1" not "Jim's Style." Durable across personnel, shareable, sidesteps surveillance perception. Hard rule.
 
 ## Definition of done
