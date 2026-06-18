@@ -128,80 +128,109 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
     
     Dim bufferComments As String
     Dim bufferRevisions As String
-    
-    bufferComments = "<<COMMENTS_START>>" & vbCrLf
 
     ' Persist the full ordered list of comment ids so the apply step can
     ' warn-gate on any comment that received no reply or comment (Goal 1).
     Dim commentIdList As String
     commentIdList = ""
 
+    ' Collect comment lines into an array (7 lines per comment) and Join once
+    ' to avoid O(n²) copying on documents with many comments.
+    Dim cmtBodyArr() As String
+    Dim cmtBodyIdx As Long
+    Dim cmtAuthorLine As String
+    Dim cmtDateLine As String
+
     If wdDoc.Comments.Count = 0 Then
-        bufferComments = bufferComments & "(No comments in document)" & vbCrLf
+        bufferComments = "<<COMMENTS_START>>" & vbCrLf & _
+                         "(No comments in document)" & vbCrLf & _
+                         "<<COMMENTS_END>>" & vbCrLf & vbCrLf
     Else
+        ReDim cmtBodyArr(1 To wdDoc.Comments.Count * 7)
+        cmtBodyIdx = 0
         For Each c In wdDoc.Comments
-            bufferComments = bufferComments & "## AR_COMMENT_" & c.Index & vbCrLf
+            cmtBodyIdx = cmtBodyIdx + 1: cmtBodyArr(cmtBodyIdx) = "## AR_COMMENT_" & c.Index
             If Len(commentIdList) > 0 Then commentIdList = commentIdList & ","
             commentIdList = commentIdList & "AR_COMMENT_" & c.Index
-            
+
             ' Author / Date
+            cmtAuthorLine = "Author: "
+            cmtDateLine = "Date: "
             On Error Resume Next
-            bufferComments = bufferComments & "Author: " & CStr(c.Author) & vbCrLf
-            bufferComments = bufferComments & "Date: " & CStr(c.Date) & vbCrLf
+            cmtAuthorLine = "Author: " & CStr(c.Author)
+            cmtDateLine = "Date: " & CStr(c.Date)
             On Error GoTo ErrHandler
-            
+            cmtBodyIdx = cmtBodyIdx + 1: cmtBodyArr(cmtBodyIdx) = cmtAuthorLine
+            cmtBodyIdx = cmtBodyIdx + 1: cmtBodyArr(cmtBodyIdx) = cmtDateLine
+
             ' Compute Scope Sentence for this comment
             scopeSentence = ""
             highlightText = ""
             commentBody = ""
-            
+
             On Error Resume Next
             highlightText = CStr(c.Scope.Text)   ' exact highlighted fragment
             commentBody = CStr(c.Range.Text)     ' comment text
-            
+
             Set rScope = c.Scope.Duplicate
             If Not rScope Is Nothing Then
                 rScope.Expand wdSentence         ' expand to full sentence(s)
                 scopeSentence = CStr(rScope.Text)
             End If
-            
+
             ' Fallback: if expansion fails or is empty, use the highlight itself
             If Len(Trim$(scopeSentence)) = 0 Then
                 scopeSentence = highlightText
             End If
             On Error GoTo ErrHandler
-            
+
             ' Output
-            bufferComments = bufferComments & "Scope Sentence: " & CleanOneLine(scopeSentence) & vbCrLf
-            bufferComments = bufferComments & "Highlight: " & CleanOneLine(highlightText) & vbCrLf
-            bufferComments = bufferComments & "Text: " & CleanOneLine(commentBody) & vbCrLf
-            
-            bufferComments = bufferComments & "---" & vbCrLf
+            cmtBodyIdx = cmtBodyIdx + 1: cmtBodyArr(cmtBodyIdx) = "Scope Sentence: " & CleanOneLine(scopeSentence)
+            cmtBodyIdx = cmtBodyIdx + 1: cmtBodyArr(cmtBodyIdx) = "Highlight: " & CleanOneLine(highlightText)
+            cmtBodyIdx = cmtBodyIdx + 1: cmtBodyArr(cmtBodyIdx) = "Text: " & CleanOneLine(commentBody)
+            cmtBodyIdx = cmtBodyIdx + 1: cmtBodyArr(cmtBodyIdx) = "---"
         Next c
+        ReDim Preserve cmtBodyArr(1 To cmtBodyIdx)
+        bufferComments = "<<COMMENTS_START>>" & vbCrLf & _
+                         Join(cmtBodyArr, vbCrLf) & vbCrLf & _
+                         "<<COMMENTS_END>>" & vbCrLf & vbCrLf
     End If
-    
-    bufferComments = bufferComments & "<<COMMENTS_END>>" & vbCrLf & vbCrLf
 
     ' Record the comment-id list for the apply-side coverage warn-gate.
     SetConfigValue "CommentIds", commentIdList
 
     If isRespondMode Then
-        bufferRevisions = "<<REVISIONS_START>>" & vbCrLf
+        ' Collect revision lines into an array (6 lines per revision) and Join
+        ' once to avoid O(n²) copying on documents with many tracked revisions.
+        Dim revObj As Object
+        Dim revTypeStr As String
+        Dim revIndexCounter As Long
+        Dim revTotalCount As Long
+        Dim revBodyArr() As String
+        Dim revBodyIdx As Long
+        Dim revAuthorLine As String
+        Dim revDateLine As String
+        Dim revTextLine As String
+
         If wdDoc.Revisions.Count = 0 Then
-            bufferRevisions = bufferRevisions & "(No revisions in document)" & vbCrLf
+            bufferRevisions = "<<REVISIONS_START>>" & vbCrLf & _
+                              "(No revisions in document)" & vbCrLf & _
+                              "<<REVISIONS_END>>" & vbCrLf & vbCrLf
         Else
-            Dim revObj As Object
-            Dim revTypeStr As String
-            Dim revIndexCounter As Long
-            Dim revTotalCount As Long
             revTotalCount = wdDoc.Revisions.Count
+            ReDim revBodyArr(1 To revTotalCount * 6)
+            revBodyIdx = 0
             For revIndexCounter = 1 To revTotalCount
                 Set revObj = wdDoc.Revisions(revIndexCounter)
-                bufferRevisions = bufferRevisions & "## AR_REV_" & Format(revIndexCounter, "00000") & vbCrLf
+                revBodyIdx = revBodyIdx + 1: revBodyArr(revBodyIdx) = "## AR_REV_" & Format(revIndexCounter, "00000")
 
+                revAuthorLine = "Author: "
+                revDateLine = "Date: "
+                revTypeStr = ""
+                revTextLine = "Text: "
                 On Error Resume Next
-                bufferRevisions = bufferRevisions & "Author: " & CStr(revObj.Author) & vbCrLf
-                bufferRevisions = bufferRevisions & "Date: " & CStr(revObj.Date) & vbCrLf
+                revAuthorLine = "Author: " & CStr(revObj.Author)
+                revDateLine = "Date: " & CStr(revObj.Date)
 
                 ' Word Revision Types: wdRevisionInsert = 1, wdRevisionDelete = 2
                 If revObj.Type = 1 Then
@@ -211,16 +240,21 @@ Public Sub ExportWordDocForLLM(Optional ByVal isRespondMode As Boolean = False)
                 Else
                     revTypeStr = "Other (Type " & revObj.Type & ")"
                 End If
-                bufferRevisions = bufferRevisions & "Type: " & revTypeStr & vbCrLf
 
                 ' Get the text (for deletion, it's the deleted text; for insertion, it's the new text)
-                bufferRevisions = bufferRevisions & "Text: " & CleanOneLine(revObj.Range.Text) & vbCrLf
+                revTextLine = "Text: " & CleanOneLine(revObj.Range.Text)
                 On Error GoTo ErrHandler
 
-                bufferRevisions = bufferRevisions & "---" & vbCrLf
+                revBodyIdx = revBodyIdx + 1: revBodyArr(revBodyIdx) = revAuthorLine
+                revBodyIdx = revBodyIdx + 1: revBodyArr(revBodyIdx) = revDateLine
+                revBodyIdx = revBodyIdx + 1: revBodyArr(revBodyIdx) = "Type: " & revTypeStr
+                revBodyIdx = revBodyIdx + 1: revBodyArr(revBodyIdx) = revTextLine
+                revBodyIdx = revBodyIdx + 1: revBodyArr(revBodyIdx) = "---"
             Next revIndexCounter
+            bufferRevisions = "<<REVISIONS_START>>" & vbCrLf & _
+                              Join(revBodyArr, vbCrLf) & vbCrLf & _
+                              "<<REVISIONS_END>>" & vbCrLf & vbCrLf
         End If
-        bufferRevisions = bufferRevisions & "<<REVISIONS_END>>" & vbCrLf & vbCrLf
     End If
 
     '---------------------------
@@ -659,6 +693,8 @@ Private Function BuildBookmarkIndexSection(ByVal wdDocFinal As Object, _
     Dim name As String
     Dim t As String
     Dim snippet As String
+    Dim bmLines() As String
+    Dim bmCount As Long
     
     On Error GoTo SafeExit
     
@@ -680,13 +716,16 @@ Private Function BuildBookmarkIndexSection(ByVal wdDocFinal As Object, _
         Exit Function
     End If
     
-    sb = "<<BOOKMARK_INDEX_START>>" & vbCrLf
-    
+    ' Collect bookmark lines into an array and Join once to avoid O(n²) copying
+    ' on documents with many AR_* bookmarks (scales with paragraph count).
+    ReDim bmLines(1 To docForExport.Bookmarks.Count)
+    bmCount = 0
+
     For Each bm In docForExport.Bookmarks
         On Error Resume Next
         name = CStr(bm.name)
         On Error GoTo SafeExit
-        
+
         ' Only include our AR_* bookmarks. Prefix lengths are exact:
         ' "AR_" = 3, "AR_PARA_"/"AR_CELL_" = 8, "AR_FN_" = 6.
         If Left$(name, 3) = "AR_" Then
@@ -700,19 +739,25 @@ Private Function BuildBookmarkIndexSection(ByVal wdDocFinal As Object, _
             Else
                 t = "other"
             End If
-            
+
             On Error Resume Next
             snippet = CleanOneLine(bm.Range.Text)
             On Error GoTo SafeExit
-            
+
             If Len(snippet) > 200 Then
                 snippet = Left$(snippet, 200) & "..."
             End If
-            
-            sb = sb & name & " | type=" & t & " | """ & snippet & """" & vbCrLf
+
+            bmCount = bmCount + 1
+            bmLines(bmCount) = name & " | type=" & t & " | """ & snippet & """"
         End If
     Next bm
-    
+
+    sb = "<<BOOKMARK_INDEX_START>>" & vbCrLf
+    If bmCount > 0 Then
+        ReDim Preserve bmLines(1 To bmCount)
+        sb = sb & Join(bmLines, vbCrLf) & vbCrLf
+    End If
     sb = sb & "<<BOOKMARK_INDEX_END>>" & vbCrLf & vbCrLf
     
     BuildBookmarkIndexSection = sb
@@ -731,6 +776,8 @@ Private Function BuildFootnotesSection(ByVal wdDocFinal As Object, _
     Dim fnBody As String
     Dim paraText As String
     Dim fmt As String
+    Dim fnLines() As String
+    Dim fnLineIdx As Long
     
     On Error GoTo SafeExit
     
@@ -749,8 +796,12 @@ Private Function BuildFootnotesSection(ByVal wdDocFinal As Object, _
     On Error GoTo SafeExit
     
     exportFormat = LCase$(exportFormat)
-    sectionText = "<<FOOTNOTES_START>>" & vbCrLf
-    
+
+    ' Collect footnote lines into an array and Join once to avoid O(n²) copying
+    ' on documents with many footnotes (4 lines per footnote with content).
+    ReDim fnLines(1 To docForExport.Footnotes.Count * 4)
+    fnLineIdx = 0
+
     For Each fn In docForExport.Footnotes
         ' Anchor snippet: paragraph containing the footnote reference
         On Error Resume Next
@@ -759,32 +810,37 @@ Private Function BuildFootnotesSection(ByVal wdDocFinal As Object, _
             paraText = fn.Reference.Paragraph.Range.Text
         End If
         On Error GoTo SafeExit
-        
+
         anchorSnippet = CleanOneLine(paraText)
         If Len(anchorSnippet) > 200 Then
             anchorSnippet = Left$(anchorSnippet, 200) & "..."
         End If
-        
+
         ' Footnote body text
         On Error Resume Next
         fnBody = CleanOneLine(fn.Range.Text)
         On Error GoTo SafeExit
-        
+
         If Len(fnBody) > 0 Or Len(anchorSnippet) > 0 Then
             If exportFormat = "markdown" Then
-                sectionText = sectionText & "## Footnote " & fn.Index & vbCrLf
-                sectionText = sectionText & "Anchor: " & anchorSnippet & vbCrLf
-                sectionText = sectionText & "Text: " & fnBody & vbCrLf
-                sectionText = sectionText & "---" & vbCrLf
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "## Footnote " & fn.Index
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "Anchor: " & anchorSnippet
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "Text: " & fnBody
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "---"
             Else
-                sectionText = sectionText & "Footnote " & fn.Index & vbCrLf
-                sectionText = sectionText & "Anchor: " & anchorSnippet & vbCrLf
-                sectionText = sectionText & "Text: " & fnBody & vbCrLf
-                sectionText = sectionText & "----" & vbCrLf
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "Footnote " & fn.Index
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "Anchor: " & anchorSnippet
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "Text: " & fnBody
+                fnLineIdx = fnLineIdx + 1: fnLines(fnLineIdx) = "----"
             End If
         End If
     Next fn
-    
+
+    sectionText = "<<FOOTNOTES_START>>" & vbCrLf
+    If fnLineIdx > 0 Then
+        ReDim Preserve fnLines(1 To fnLineIdx)
+        sectionText = sectionText & Join(fnLines, vbCrLf) & vbCrLf
+    End If
     sectionText = sectionText & "<<FOOTNOTES_END>>" & vbCrLf & vbCrLf
     BuildFootnotesSection = sectionText
     Exit Function
@@ -807,6 +863,8 @@ Private Function BuildDocumentTextSection(ByVal wdDocFinal As Object, _
     Dim isList As Boolean
     Dim line As String
     Dim lastWasBlank As Boolean
+    Dim docLines() As String
+    Dim dlIdx As Long
     
     On Error GoTo FallbackPlain
     
@@ -847,7 +905,7 @@ Private Function BuildDocumentTextSection(ByVal wdDocFinal As Object, _
     '---------------------------
     docText = ""
     lastWasBlank = False
-    
+
     ' Diagnostic: see what Word thinks is in the doc
     On Error Resume Next
     Debug.Print "BuildDocumentTextSection:", _
@@ -855,29 +913,35 @@ Private Function BuildDocumentTextSection(ByVal wdDocFinal As Object, _
                 "ContentLen=" & Len(docForExport.Content.Text) & "; " & _
                 "Paras=" & docForExport.Paragraphs.Count
     On Error GoTo FallbackPlain
-    
+
+    ' Collect paragraph output into an array and Join once to avoid O(n²)
+    ' copying on long documents (each para contributes at most 2 elements:
+    ' an optional blank-separator and a content line).
+    ReDim docLines(1 To docForExport.Paragraphs.Count * 2 + 1)
+    dlIdx = 0
+
     For Each para In docForExport.Paragraphs
         On Error Resume Next
         rawText = para.Range.Text
         On Error GoTo FallbackPlain
-        
+
         cleaned = CleanOneLine(rawText)
-        
+
         ' Skip purely empty paragraphs, but preserve spacing
         If Len(cleaned) = 0 Then
-            If Not lastWasBlank And Len(docText) > 0 Then
-                docText = docText & vbCrLf
+            If Not lastWasBlank And dlIdx > 0 Then
+                dlIdx = dlIdx + 1: docLines(dlIdx) = vbCrLf
                 lastWasBlank = True
             End If
             GoTo NextParagraph
         End If
-        
+
         ' Determine style name (e.g., "Heading 1", "Heading 2", etc.)
         styleName = ""
         On Error Resume Next
         styleName = CStr(para.Style)
         On Error GoTo FallbackPlain
-        
+
         headingLevel = 0
         Select Case LCase$(styleName)
             Case "heading 1"
@@ -889,7 +953,7 @@ Private Function BuildDocumentTextSection(ByVal wdDocFinal As Object, _
             Case "heading 4"
                 headingLevel = 4
         End Select
-        
+
         ' Determine if this paragraph is part of a list
         isList = False
         On Error Resume Next
@@ -901,7 +965,7 @@ Private Function BuildDocumentTextSection(ByVal wdDocFinal As Object, _
             End If
         End If
         On Error GoTo FallbackPlain
-        
+
         ' Build Markdown line
         If headingLevel > 0 Then
             ' Heading: #, ##, ###, etc.
@@ -913,18 +977,23 @@ Private Function BuildDocumentTextSection(ByVal wdDocFinal As Object, _
             ' Regular paragraph
             line = cleaned
         End If
-        
+
         ' Add blank line between blocks if needed
-        If Len(docText) > 0 And Not lastWasBlank Then
-            docText = docText & vbCrLf
+        If dlIdx > 0 And Not lastWasBlank Then
+            dlIdx = dlIdx + 1: docLines(dlIdx) = vbCrLf
         End If
-        
-        docText = docText & line & vbCrLf
+
+        dlIdx = dlIdx + 1: docLines(dlIdx) = line & vbCrLf
         lastWasBlank = False
-        
+
 NextParagraph:
     Next para
-    
+
+    If dlIdx > 0 Then
+        ReDim Preserve docLines(1 To dlIdx)
+        docText = Join(docLines, "")
+    End If
+
     BuildDocumentTextSection = "<<DOCUMENT_TEXT_START>>" & vbCrLf & _
                                docText & _
                                "<<DOCUMENT_TEXT_END>>" & vbCrLf & vbCrLf
