@@ -38,16 +38,50 @@ End Sub
 ' and the apply step produce identical AR_REV ids without persisting anything.
 Public Sub StampRevisionBookmarks(ByVal wdDoc As Object)
     Dim revIdx As Long
-    Dim rev As Object
-    On Error Resume Next
-    If wdDoc.Revisions.Count = 0 Then Exit Sub
-    revIdx = 0
-    For Each rev In wdDoc.Revisions
-        revIdx = revIdx + 1
+    Dim revCount As Long
+    Dim stamped As Long
+    Dim wdApp As Object
+    Dim savedScreen As Boolean
+    Dim savedPag As Boolean
+    Dim failMsg As String
+
+    revCount = wdDoc.Revisions.Count
+    If revCount = 0 Then Exit Sub
+
+    Set wdApp = wdDoc.Application
+    savedScreen = wdApp.ScreenUpdating
+    savedPag = wdApp.Options.Pagination
+    wdApp.ScreenUpdating = False
+    wdApp.Options.Pagination = False
+
+    On Error GoTo TrapStamp
+    For revIdx = 1 To revCount
         wdDoc.Bookmarks.Add Name:="AR_REV_" & Format$(revIdx, "00000"), _
-                            Range:=rev.Range
-    Next rev
+                            Range:=wdDoc.Revisions(revIdx).Range
+        stamped = stamped + 1
+    Next revIdx
     On Error GoTo 0
+
+    wdApp.ScreenUpdating = savedScreen
+    wdApp.Options.Pagination = savedPag
+
+    ' One anchor per revision, or abort. A silent gap here becomes a
+    ' silently-skipped revision verdict on apply, so fail loud instead.
+    If stamped <> revCount Then
+        Err.Raise vbObjectError + 514, "StampRevisionBookmarks", _
+            "AR_REV anchors (" & stamped & ") <> revisions (" & revCount & ")."
+    End If
+    Exit Sub
+
+TrapStamp:
+    failMsg = Err.Description
+    On Error Resume Next
+    wdApp.ScreenUpdating = savedScreen      ' restore display even on failure
+    wdApp.Options.Pagination = savedPag
+    On Error GoTo 0
+    Err.Raise vbObjectError + 513, "StampRevisionBookmarks", _
+        "Failed stamping AR_REV at revision " & revIdx & " of " & revCount & _
+        ": " & failMsg
 End Sub
 
 ' Remove every AR_* bookmark from the document. Used as the terminal step of the
