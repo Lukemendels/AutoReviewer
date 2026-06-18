@@ -38,13 +38,15 @@ Public Sub EnsureTraceSheet(ByRef wsTrace As Worksheet)
             .Range("L1").value = "Skipped"
             .Range("M1").value = "UnaddressedComments"
             .Range("N1").value = "CoverageDecision"
-            .Range("A1:N1").Font.Bold = True
-            .Columns("A:N").EntireColumn.AutoFit
+            .Range("O1").value = "WorkFolder"
+            .Range("A1:O1").Font.Bold = True
+            .Columns("A:O").EntireColumn.AutoFit
         End With
     Else
-        ' Backfill the coverage columns on a pre-existing Trace sheet.
+        ' Backfill the coverage/work-folder columns on a pre-existing Trace sheet.
         If CStr(wsTrace.Range("M1").value) <> "UnaddressedComments" Then wsTrace.Range("M1").value = "UnaddressedComments"
         If CStr(wsTrace.Range("N1").value) <> "CoverageDecision" Then wsTrace.Range("N1").value = "CoverageDecision"
+        If CStr(wsTrace.Range("O1").value) <> "WorkFolder" Then wsTrace.Range("O1").value = "WorkFolder"
     End If
 End Sub
 
@@ -64,11 +66,16 @@ Public Sub AppendReviewTrace(ByVal mode As String, _
                              Optional ByVal coverageDecision As String = "")
     Dim wsTrace As Worksheet
     Dim r As Long
+    Dim workFolder As String
 
     EnsureTraceSheet wsTrace
 
     r = wsTrace.Cells(wsTrace.Rows.Count, "A").End(xlUp).row + 1
     If r < 2 Then r = 2
+
+    On Error Resume Next
+    workFolder = modAppCore.GetWorkFolder()
+    On Error GoTo 0
 
     On Error Resume Next
     wsTrace.Cells(r, 1).value = Now
@@ -85,6 +92,7 @@ Public Sub AppendReviewTrace(ByVal mode As String, _
     wsTrace.Cells(r, 12).value = skippedCount
     wsTrace.Cells(r, 13).value = unaddressedComments
     wsTrace.Cells(r, 14).value = coverageDecision
-    wsTrace.Columns("A:N").EntireColumn.AutoFit
+    wsTrace.Cells(r, 15).value = workFolder
+    wsTrace.Columns("A:O").EntireColumn.AutoFit
     On Error GoTo 0
 End Sub

@@ -142,3 +142,54 @@ Public Function StripArTokens(ByVal s As String) As String
 Fallback:
     StripArTokens = s
 End Function
+
+' Escape a string for embedding as a JSON string value. Order matters: escape
+' backslashes FIRST (so later substitutions don't double-escape the backslashes
+' they introduce), then quotes, then map CR/LF/TAB to their JSON escapes. Used
+' for EVERY string field written to the corpus JSONL so escaping is consistent
+' (the prior ad-hoc escaping handled backslash and quote inconsistently per field).
+Public Function JsonEscape(ByVal s As String) As String
+    Dim t As String
+    t = s
+    t = Replace(t, "\", "\\")
+    t = Replace(t, """", "\""")
+    t = Replace(t, vbCr, "\n")
+    t = Replace(t, vbLf, "\n")
+    t = Replace(t, vbTab, "\t")
+    JsonEscape = t
+End Function
+
+' Sanitize a string for use as a path/filename component (e.g., the active
+' persona name, which is read from a worksheet cell and can carry trailing
+' whitespace, embedded newlines, or characters illegal in Windows filenames).
+' Returns "" and shows a MsgBox if nothing usable remains, so callers can
+' treat an empty result as "abort".
+Public Function SafeFileToken(ByVal s As String) As String
+    Dim t As String
+    t = Trim$(s)
+    t = Replace(t, vbCr, "")
+    t = Replace(t, vbLf, "")
+    t = Replace(t, vbTab, "")
+
+    t = Replace(t, "\", "_")
+    t = Replace(t, "/", "_")
+    t = Replace(t, ":", "_")
+    t = Replace(t, "*", "_")
+    t = Replace(t, "?", "_")
+    t = Replace(t, """", "_")
+    t = Replace(t, "<", "_")
+    t = Replace(t, ">", "_")
+    t = Replace(t, "|", "_")
+
+    t = Trim$(t)
+
+    If Len(t) = 0 Then
+        MsgBox "This value cannot be used to build a file name (it is empty " & _
+               "or contains only whitespace/illegal characters).", vbExclamation, _
+               "Invalid File Name"
+        SafeFileToken = ""
+        Exit Function
+    End If
+
+    SafeFileToken = t
+End Function

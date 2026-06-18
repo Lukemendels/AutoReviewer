@@ -40,7 +40,8 @@ Public Sub ApplyWordSuggestionsFromJson()
     Dim origUserName As String
     Dim origInitials As String
     Dim userNameChanged As Boolean
-    
+    Dim screenUpdatingChanged As Boolean
+
     Dim bookmarkId As String
     Dim changeType As String
     Dim oldText As String
@@ -230,6 +231,51 @@ Public Sub ApplyWordSuggestionsFromJson()
     Next i
 
     '---------------------------
+    ' 2c-1) Anchor reconciliation gate (default-deny, before Word opens).
+    ' HandOffToSerializer recorded the ratified packet's bookmark ids and edit
+    ' count in Config (ExpectedAnchors / ExpectedEditCount). If the pasted
+    ' JSONL doesn't name exactly that set of anchors -- or the count differs --
+    ' the serializer dropped, invented, or duplicated a decision. Abort with
+    ' zero Word writes and name the discrepancy. Skipped (not enforced) when
+    ' ExpectedAnchors is empty, so ad-hoc/manual JSONL pastes that bypass
+    ' HandOffToSerializer still work.
+    '---------------------------
+    Dim expectedAnchorsCsv As String
+    expectedAnchorsCsv = Trim$(GetConfigValue("ExpectedAnchors", ""))
+    If Len(expectedAnchorsCsv) > 0 Then
+        Dim expectedEditCount As Long
+        expectedEditCount = CLng(Val(GetConfigValue("ExpectedEditCount", "0")))
+
+        Dim expAnchors() As String
+        Dim expCount As Long
+        expCount = SplitCsv(expectedAnchorsCsv, expAnchors)
+
+        Dim missingAnchors As String
+        Dim extraAnchors As String
+        Dim reconciled As Boolean
+        reconciled = ReconcileAnchors(expAnchors, expCount, pBookmark, totalLines, missingAnchors, extraAnchors)
+
+        If Not reconciled Or totalLines <> expectedEditCount Then
+            Dim reconMsg As String
+            reconMsg = "The pasted JSONL does not match the ratified packet." & vbCrLf & vbCrLf & _
+                       "Expected " & expectedEditCount & " edit line(s); pasted " & totalLines & "." & vbCrLf
+            If Len(missingAnchors) > 0 Then reconMsg = reconMsg & vbCrLf & "Missing anchors: " & missingAnchors
+            If Len(extraAnchors) > 0 Then reconMsg = reconMsg & vbCrLf & "Extra/unexpected anchors: " & extraAnchors
+            reconMsg = reconMsg & vbCrLf & vbCrLf & "Nothing was applied."
+            MsgBox reconMsg, vbCritical, "Reconciliation Failed"
+
+            On Error Resume Next
+            modAudit.AppendReviewTrace "FAILED-RECONCILIATION", GetConfigValue("ActivePersona", ""), _
+                GetConfigValue("SourceDocPath", ""), wordPath, _
+                GetConfigValue("LastRecommendedRoute", ""), _
+                GetConfigValue("LastExportFingerprint", ""), jsonlFingerprint, _
+                totalLines, 0, 0, "MISSING: " & missingAnchors & " | EXTRA: " & extraAnchors, "FAILED-RECONCILIATION"
+            On Error GoTo ErrHandler
+            GoTo Cleanup
+        End If
+    End If
+
+    '---------------------------
     ' 2d) Comment-coverage warn-gate (Profile s9.4 false-negative guard). The
     ' export persisted the full ordered list of AR_COMMENT_ ids; a comment that
     ' received neither a reply_to_comment nor an add_comment_only is unaddressed.
@@ -327,7 +373,15 @@ Public Sub ApplyWordSuggestionsFromJson()
         MsgBox "Word could not open the document at:" & vbCrLf & wordPath, vbCritical
         GoTo Cleanup
     End If
-    
+
+    ' The stamping pass and the per-line apply loop both drive Word repeatedly;
+    ' suspend repaint for the duration and restore on every exit path (normal
+    ' teardown, Cleanup, and ErrHandler) so Word is never left frozen.
+    On Error Resume Next
+    wdApp.ScreenUpdating = False
+    screenUpdatingChanged = True
+    On Error GoTo ErrHandler
+
     ' Configure Final / No Markup view so we see final text
     On Error Resume Next
     With wdApp.ActiveWindow.View.RevisionsFilter
@@ -710,9 +764,20 @@ SkipLine:
 
     ' 5a) The run completed and the document is saved: clear the pasted payload
     ' so a stale JSONL cannot linger in LLM_Changes and be re-applied to the
-    ' wrong document later (belt to the session gate's suspenders).
+    ' wrong document later (belt to the session gate's suspenders). Also clear
+    ' the ratified packet and its reconciliation expectations, so a stale
+    ' Ratified sheet/ExpectedAnchors pair cannot gate the next, unrelated apply.
     On Error Resume Next
     wsChanges.Range("A8:A" & lastRow).ClearContents
+    SetConfigValue "ExpectedAnchors", ""
+    SetConfigValue "ExpectedEditCount", "0"
+    Dim wsRatifiedDone As Worksheet
+    Set wsRatifiedDone = wb.Worksheets("Ratified")
+    If Not wsRatifiedDone Is Nothing Then
+        Dim ratLastRow As Long
+        ratLastRow = wsRatifiedDone.Cells(wsRatifiedDone.Rows.Count, "A").End(xlUp).row
+        If ratLastRow >= 8 Then wsRatifiedDone.Range("A8:A" & ratLastRow).ClearContents
+    End If
     On Error GoTo ErrHandler
 
     '---------------------------
@@ -726,6 +791,10 @@ SkipLine:
         wdApp.UserName = origUserName
         wdApp.UserInitials = origInitials
         userNameChanged = False
+    End If
+    If screenUpdatingChanged And Not wdApp Is Nothing Then
+        wdApp.ScreenUpdating = True
+        screenUpdatingChanged = False
     End If
     If Not wdDoc Is Nothing Then wdDoc.Close SaveChanges:=True
     If Not wdApp Is Nothing Then
@@ -798,6 +867,10 @@ Cleanup:
         wdApp.UserName = origUserName
         wdApp.UserInitials = origInitials
         userNameChanged = False
+    End If
+    If screenUpdatingChanged And Not wdApp Is Nothing Then
+        wdApp.ScreenUpdating = True
+        screenUpdatingChanged = False
     End If
     ' Cleanup is reached ONLY by an early GoTo (before any edits) or by
     ' ErrHandler (a fault mid-apply). The successful run saves and closes in its
@@ -1366,6 +1439,52 @@ Public Function ComputeUnaddressed(ByRef commentIds() As String, ByVal idCount A
         End If
     Next i
     ComputeUnaddressed = res
+End Function
+
+' Set-equality check between the bookmark ids the ratified packet named
+' (expectedAnchors, from HandOffToSerializer's Config-stored ExpectedAnchors)
+' and the bookmark ids the pasted JSONL actually carries (actualAnchors,
+' i.e. pBookmark). Returns True only if every expected anchor is present and
+' no extra/unexpected anchors were added; missingList/extraList name the
+' discrepancies (deduped, comma-joined) for the abort message and Trace row.
+Public Function ReconcileAnchors(ByRef expectedAnchors() As String, ByVal expectedCount As Long, _
+                                 ByRef actualAnchors() As String, ByVal actualCount As Long, _
+                                 ByRef missingList As String, ByRef extraList As String) As Boolean
+    Dim expSet As Object
+    Dim actSet As Object
+    Dim i As Long
+    Dim a As String
+    Dim k As Variant
+
+    Set expSet = CreateObject("Scripting.Dictionary")
+    Set actSet = CreateObject("Scripting.Dictionary")
+
+    For i = 1 To expectedCount
+        a = TrimWs(expectedAnchors(i))
+        If Len(a) > 0 Then expSet(a) = True
+    Next i
+    For i = 1 To actualCount
+        a = TrimWs(actualAnchors(i))
+        If Len(a) > 0 Then actSet(a) = True
+    Next i
+
+    missingList = ""
+    For Each k In expSet.Keys
+        If Not actSet.Exists(k) Then
+            If Len(missingList) > 0 Then missingList = missingList & ","
+            missingList = missingList & k
+        End If
+    Next k
+
+    extraList = ""
+    For Each k In actSet.Keys
+        If Not expSet.Exists(k) Then
+            If Len(extraList) > 0 Then extraList = extraList & ","
+            extraList = extraList & k
+        End If
+    Next k
+
+    ReconcileAnchors = (Len(missingList) = 0 And Len(extraList) = 0)
 End Function
 
 '=== Session-binding gate (twin: ref/session.py) =====================

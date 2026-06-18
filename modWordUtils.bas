@@ -5,6 +5,19 @@ Option Explicit
 ' Stamp paragraphs, table cells, and footnotes with stable AR_ bookmarks.
 ' Call this once after opening the Word document (wdDoc) via COM.
 Public Sub StampDocWithArBookmarks(ByVal wdDoc As Object)
+    Dim wdApp As Object
+    Dim origPagination As Boolean
+    Dim paginationChanged As Boolean
+
+    ' Pagination/repagination during a long stamping pass costs real time on a
+    ' large document; suspend it for the duration and restore unconditionally.
+    On Error Resume Next
+    Set wdApp = wdDoc.Application
+    origPagination = wdApp.Options.Pagination
+    wdApp.Options.Pagination = False
+    paginationChanged = True
+    On Error GoTo 0
+
     ' Clear any stale AR_ anchors before re-stamping. Paragraph indices shift as
     ' a document is edited, so a leftover AR_PARA_00005 from a prior pass would
     ' point at the wrong paragraph; a clean slate keeps anchoring honest.
@@ -12,6 +25,12 @@ Public Sub StampDocWithArBookmarks(ByVal wdDoc As Object)
     StampParagraphBookmarks wdDoc
     StampTableCellBookmarks wdDoc
     StampFootnoteBookmarks wdDoc
+
+    If paginationChanged Then
+        On Error Resume Next
+        wdApp.Options.Pagination = origPagination
+        On Error GoTo 0
+    End If
 End Sub
 
 ' Stamp one AR_REV_NNNNN bookmark over each tracked revision, in revision order.
@@ -19,53 +38,78 @@ End Sub
 ' and the apply step produce identical AR_REV ids without persisting anything.
 Public Sub StampRevisionBookmarks(ByVal wdDoc As Object)
     Dim revIdx As Long
+    Dim rev As Object
     On Error Resume Next
     If wdDoc.Revisions.Count = 0 Then Exit Sub
-    For revIdx = 1 To wdDoc.Revisions.Count
+    revIdx = 0
+    For Each rev In wdDoc.Revisions
+        revIdx = revIdx + 1
         wdDoc.Bookmarks.Add Name:="AR_REV_" & Format$(revIdx, "00000"), _
-                            Range:=wdDoc.Revisions(revIdx).Range
-    Next revIdx
+                            Range:=rev.Range
+    Next rev
     On Error GoTo 0
 End Sub
 
 ' Remove every AR_* bookmark from the document. Used as the terminal step of the
 ' apply pipeline (leave the delivered doc clean) and defensively before
 ' re-stamping. Iterates descending because Delete reindexes the collection.
+' Delete removes a Bookmark and reindexes wdDoc.Bookmarks, so we cannot
+' enumerate-and-delete in one pass. Two-phase: For Each to collect the AR_*
+' bookmarks into a VBA Collection (the references stay valid as siblings are
+' removed), then Delete each one from that snapshot.
 Public Sub RemoveArBookmarks(ByVal wdDoc As Object)
-    Dim i As Long
+    Dim bm As Object
     Dim nm As String
+    Dim bmToDelete As Collection
+    Dim delBm As Object
+
+    Set bmToDelete = New Collection
 
     On Error Resume Next
-    For i = wdDoc.Bookmarks.Count To 1 Step -1
-        nm = CStr(wdDoc.Bookmarks(i).name)
+    For Each bm In wdDoc.Bookmarks
+        nm = CStr(bm.name)
         If Left$(nm, 3) = "AR_" Then
-            wdDoc.Bookmarks(i).Delete
+            bmToDelete.Add bm
         End If
-    Next i
+    Next bm
+
+    For Each delBm In bmToDelete
+        delBm.Delete
+    Next delBm
     On Error GoTo 0
 End Sub
 
+' AR_PARA numbering is a pure function of paragraph POSITION (1-based, in
+' document order), so the export and apply passes -- which both call this on
+' the same unchanged working copy -- produce identical ids. The counter `i`
+' increments for EVERY paragraph, including skipped empty ones, so renumbering
+' never shifts. We use For Each rather than indexed Paragraphs access: walking
+' Word's Paragraphs collection by index restarts from the start of the document
+' each time, making that loop O(n^2) on long documents; For Each is a single
+' forward pass.
 Private Sub StampParagraphBookmarks(ByVal wdDoc As Object)
     Dim i As Long
+    Dim para As Object
     Dim paraRange As Object
     Dim bmName As String
-    
+
     On Error GoTo ErrHandler
-    
-    For i = 1 To wdDoc.Paragraphs.Count
-        Set paraRange = wdDoc.Paragraphs(i).Range
-        
-        ' Skip empty/whitespace-only paragraphs
+
+    i = 0
+    For Each para In wdDoc.Paragraphs
+        i = i + 1
+        Set paraRange = para.Range
+
+        ' Skip empty/whitespace-only paragraphs (counter above already advanced)
         If Len(Trim$(paraRange.Text)) > 0 Then
             bmName = "AR_PARA_" & Format$(i, "00000")
-            If Not wdDoc.Bookmarks.Exists(bmName) Then
-                wdDoc.Bookmarks.Add name:=bmName, Range:=paraRange
-            End If
+            wdDoc.Bookmarks.Add name:=bmName, Range:=paraRange
         End If
-    Next i
-    
+    Next para
+
 Cleanup:
     Set paraRange = Nothing
+    Set para = Nothing
     Exit Sub
 ErrHandler:
     Resume Cleanup
@@ -78,9 +122,10 @@ Private Sub StampTableCellBookmarks(ByVal wdDoc As Object)
     Dim bmName As String
     
     On Error GoTo ErrHandler
-    
-    For t = 1 To wdDoc.Tables.Count
-        Set tbl = wdDoc.Tables(t)
+
+    t = 0
+    For Each tbl In wdDoc.Tables
+        t = t + 1
         For r = 1 To tbl.Rows.Count
             For c = 1 To tbl.Columns.Count
                 Set cellRange = tbl.Cell(r, c).Range
@@ -88,13 +133,11 @@ Private Sub StampTableCellBookmarks(ByVal wdDoc As Object)
                 cellRange.End = cellRange.End - 1
                 If Len(Trim$(cellRange.Text)) > 0 Then
                     bmName = "AR_CELL_" & t & "_" & r & "_" & c
-                    If Not wdDoc.Bookmarks.Exists(bmName) Then
-                        wdDoc.Bookmarks.Add name:=bmName, Range:=cellRange
-                    End If
+                    wdDoc.Bookmarks.Add name:=bmName, Range:=cellRange
                 End If
             Next c
         Next r
-    Next t
+    Next tbl
     
 Cleanup:
     Set cellRange = Nothing
@@ -117,9 +160,7 @@ Private Sub StampFootnoteBookmarks(ByVal wdDoc As Object)
         Set fnRange = wdDoc.Footnotes(i).Range
         If Len(Trim$(fnRange.Text)) > 0 Then
             bmName = "AR_FN_" & Format$(i, "000")
-            If Not wdDoc.Bookmarks.Exists(bmName) Then
-                wdDoc.Bookmarks.Add name:=bmName, Range:=fnRange
-            End If
+            wdDoc.Bookmarks.Add name:=bmName, Range:=fnRange
         End If
     Next i
     
@@ -158,8 +199,8 @@ Public Sub TestStampFinalCopyBookmarks()
     With fd
         .Title = "Select Word document to test AR bookmark stamping"
         .AllowMultiSelect = False
-        If Len(ThisWorkbook.Path) > 0 Then
-            .InitialFileName = ThisWorkbook.Path & "\"
+        If Len(modAppCore.GetWorkFolder()) > 0 Then
+            .InitialFileName = modAppCore.GetWorkFolder() & "\"
         End If
 
         If .Show <> -1 Then
