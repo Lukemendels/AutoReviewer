@@ -1,0 +1,2530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoReviewer — Offline Word Document Reviewer</title>
+    <style>
+        /* Modern Premium Dark CSS Theme */
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: rgba(17, 24, 39, 0.7);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --primary: #6366f1;
+            --primary-hover: #4f46e5;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #f43f5e;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            --font-family: 'Outfit', 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: var(--font-family);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.1) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.05) 0px, transparent 50%);
+        }
+
+        header {
+            padding: 2rem 2rem 1rem;
+            max-width: 1200px;
+            margin: 0 auto;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo-area h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            background: linear-gradient(to right, #818cf8, #a78bfa, #34d399);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .logo-area h1 span.badge {
+            font-size: 0.75rem;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            border: 1px solid rgba(129, 140, 248, 0.3);
+            background: rgba(129, 140, 248, 0.1);
+            color: #818cf8;
+            letter-spacing: 0.05em;
+            -webkit-text-fill-color: initial;
+        }
+
+        header p {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-top: 0.25rem;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 1rem;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--border-color);
+            padding: 0.3rem;
+            border-radius: 8px;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            padding: 0.5rem 1.2rem;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .tab-btn.active {
+            background: var(--primary);
+            color: white;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+        }
+
+        .tab-btn:hover:not(.active) {
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        main {
+            flex: 1;
+            max-width: 1200px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 0 2rem 3rem;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .content-panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 2rem;
+            margin-top: 1rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .tab-content {
+            display: none;
+            flex-direction: column;
+            gap: 1.5rem;
+            flex: 1;
+        }
+
+        .tab-content.active {
+            display: flex;
+        }
+
+        /* File Dropzone */
+        .dropzone {
+            border: 2px dashed rgba(255, 255, 255, 0.15);
+            border-radius: 8px;
+            padding: 3rem 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: rgba(255, 255, 255, 0.01);
+        }
+
+        .dropzone:hover, .dropzone.dragover {
+            border-color: var(--primary);
+            background: rgba(99, 102, 241, 0.03);
+        }
+
+        .dropzone svg {
+            width: 48px;
+            height: 48px;
+            margin-bottom: 1rem;
+            color: var(--text-muted);
+        }
+
+        .dropzone h3 {
+            font-size: 1.1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .dropzone p {
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        /* Dashboard & Grid */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 1.5rem;
+            flex: 1;
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        .card h4 {
+            font-size: 0.95rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.5rem;
+            margin-bottom: 0.25rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .stat-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.9rem;
+        }
+
+        .stat-val {
+            font-weight: 600;
+            color: var(--text-main);
+        }
+
+        .input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .input-group label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        .input-row {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        input[type="text"], textarea {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            color: var(--text-main);
+            padding: 0.6rem 0.8rem;
+            font-family: inherit;
+            font-size: 0.9rem;
+            transition: border-color 0.2s ease;
+            width: 100%;
+        }
+
+        input[type="text"]:focus, textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 120px;
+        }
+
+        .payload-textarea {
+            font-family: monospace;
+            font-size: 0.8rem;
+            line-height: 1.4;
+            flex: 1;
+            min-height: 350px;
+        }
+
+        /* Buttons */
+        .btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            color: var(--text-main);
+            padding: 0.6rem 1.2rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            border-color: transparent;
+            color: white;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.2);
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-hover);
+        }
+
+        .btn-success {
+            background: var(--success);
+            border-color: transparent;
+            color: white;
+            box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
+        }
+
+        .btn-success:hover {
+            background: #059669;
+        }
+
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        /* Validation Table */
+        .table-container {
+            max-height: 250px;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+            font-size: 0.85rem;
+        }
+
+        th, td {
+            padding: 0.6rem 0.8rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        th {
+            background: rgba(255, 255, 255, 0.03);
+            font-weight: 600;
+            color: var(--text-muted);
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+
+        .badge-status {
+            display: inline-block;
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-status.valid {
+            background: rgba(16, 185, 129, 0.15);
+            color: #34d399;
+        }
+
+        .badge-status.invalid {
+            background: rgba(244, 63, 94, 0.15);
+            color: #fb7185;
+        }
+
+        .badge-status.warning {
+            background: rgba(245, 158, 11, 0.15);
+            color: #fbbf24;
+        }
+
+        /* Warnings Box */
+        .alert-box {
+            background: rgba(245, 158, 11, 0.07);
+            border: 1px solid rgba(245, 158, 11, 0.2);
+            border-radius: 6px;
+            padding: 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+        }
+
+        .alert-box.error {
+            background: rgba(244, 63, 94, 0.07);
+            border: 1px solid rgba(244, 63, 94, 0.2);
+        }
+
+        .alert-box h5 {
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .alert-box.warning h5 {
+            color: #fbbf24;
+        }
+
+        .alert-box.error h5 {
+            color: #fb7185;
+        }
+
+        /* Footer & Affordance */
+        footer {
+            padding: 1.5rem 2rem;
+            max-width: 1200px;
+            width: 100%;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            border-top: 1px solid var(--border-color);
+        }
+
+        .affordance {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            cursor: pointer;
+            transition: color 0.2s ease;
+        }
+
+        .affordance:hover {
+            color: var(--text-main);
+        }
+
+        /* Modal / Welcome Overlay */
+        .overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .overlay-content {
+            background: #0f172a;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            width: 90%;
+            max-width: 700px;
+            max-height: 85vh;
+            overflow-y: auto;
+            padding: 2.5rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            transform: translateY(20px);
+            transition: transform 0.3s ease;
+        }
+
+        .overlay.active .overlay-content {
+            transform: translateY(0);
+        }
+
+        .overlay-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 1rem;
+        }
+
+        .overlay-header h2 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #818cf8, #a78bfa);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .close-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .close-btn:hover {
+            color: var(--text-main);
+        }
+
+        .overlay-body {
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        .code-box {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 0.75rem;
+            max-height: 150px;
+            overflow-y: auto;
+            position: relative;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .code-box-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .code-box-header span {
+            font-weight: 600;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        /* Diagnostic Panel */
+        .diagnostic-panel {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 0.8rem;
+            margin-top: 1.5rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .diagnostic-panel h5 {
+            font-family: var(--font-family);
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: #818cf8;
+            margin-bottom: 0.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .test-line {
+            padding: 0.2rem 0;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .test-line.pass {
+            color: #34d399;
+        }
+
+        .test-line.fail {
+            color: #f87171;
+        }
+
+        /* Utilities */
+        .hidden {
+            display: none !important;
+        }
+
+        .flex-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+        
+        .flex-end {
+            display: flex;
+            justify-content: flex-end;
+            gap: 1rem;
+        }
+
+        .spinner {
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border-left-color: var(--text-main);
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* StickShift Compliance Panel Styles */
+        .ss-banner {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .ss-panel {
+            margin-top: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .ss-panel .card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .ss-branch {
+            margin-top: 1rem;
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+        }
+        .ss-branch p {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo-area">
+            <h1>AutoReviewer <span class="badge">STICKSHIFT TOOL</span></h1>
+            <p>100% Offline browser-based document redline engine</p>
+        </div>
+        <div class="tabs">
+            <button class="tab-btn active" id="tab-prepare-btn" onclick="switchTab('prepare')">1. Prepare Document</button>
+            <button class="tab-btn" id="tab-apply-btn" onclick="switchTab('apply')">2. Apply Suggestions</button>
+        </div>
+    </header>
+
+    <main>
+        <div class="content-panel">
+            <!-- TAB 1: PREPARE -->
+            <div class="tab-content active" id="tab-prepare">
+                <div class="dropzone" id="file-dropzone" onclick="document.getElementById('file-input').click()">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                    </svg>
+                    <h3 id="dropzone-text">Drop your draft.docx here</h3>
+                    <p>or click to browse from local computer</p>
+                    <input type="file" id="file-input" accept=".docx" class="hidden" onchange="handleFileSelect(event)">
+                </div>
+
+                <div class="dashboard-grid hidden" id="prepare-dashboard">
+                    <!-- Left Stats Panel -->
+                    <div class="card">
+                        <h4>Document Summary</h4>
+                        <div class="stat-list">
+                            <div class="stat-item">
+                                <span class="stat-lbl">Filename</span>
+                                <span class="stat-val" id="doc-filename">-</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-lbl">Paragraphs</span>
+                                <span class="stat-val" id="stat-paragraphs">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-lbl">Table Cells</span>
+                                <span class="stat-val" id="stat-cells">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-lbl">Footnotes</span>
+                                <span class="stat-val" id="stat-footnotes">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-lbl">Comments</span>
+                                <span class="stat-val" id="stat-comments">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-lbl">Revisions</span>
+                                <span class="stat-val" id="stat-revisions">0</span>
+                            </div>
+                        </div>
+
+                        <div class="input-group">
+                            <label for="session-token-field">Session Token (Fingerprint)</label>
+                            <div class="input-row">
+                                <input type="text" id="session-token-field" readonly value="">
+                                <button class="btn" onclick="copyText('session-token-field', this)">Copy</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right Payload Panel -->
+                    <div class="card" style="flex: 1; display: flex; flex-direction: column;">
+                        <h4>
+                            Markdown Payload (For LLM Review)
+                            <button class="btn btn-primary" onclick="copyText('payload-text-field', this)">Copy Payload</button>
+                        </h4>
+                        <textarea class="payload-textarea" id="payload-text-field" readonly placeholder="Uploading document..."></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TAB 2: APPLY -->
+            <div class="tab-content" id="tab-apply">
+                <div class="dashboard-grid" style="grid-template-columns: 1fr 1fr;">
+                    <!-- Left: Paste JSONL -->
+                    <div class="card" style="display: flex; flex-direction: column; height: 100%;">
+                        <h4>Paste JSONL suggestions</h4>
+                        <textarea class="payload-textarea" id="jsonl-input-field" placeholder="Paste the JSONL payload from DHSChat here..." oninput="handleJsonlInput()"></textarea>
+                    </div>
+
+                    <!-- Right: Validation and Output -->
+                    <div class="card" style="display: flex; flex-direction: column; gap: 1rem; height: 100%;">
+                        <h4>Review & Apply Suggestions</h4>
+                        
+                        <div class="alert-box error hidden" id="apply-error-box">
+                            <h5>Error</h5>
+                            <p id="apply-error-message"></p>
+                        </div>
+
+                        <div class="alert-box warning hidden" id="apply-warning-box">
+                            <h5>Warnings</h5>
+                            <ul id="apply-warning-list" style="padding-left: 1.2rem; margin-top: 0.25rem;"></ul>
+                        </div>
+
+                        <div class="stat-list" style="background: rgba(0,0,0,0.1); padding: 0.75rem; border-radius: 6px;">
+                            <div class="stat-item">
+                                <span>Total Lines</span>
+                                <span class="stat-val" id="apply-stat-total">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span>Valid Edits</span>
+                                <span class="stat-val" id="apply-stat-valid" style="color: #34d399;">0</span>
+                            </div>
+                            <div class="stat-item">
+                                <span>Skipped / Invalid</span>
+                                <span class="stat-val" id="apply-stat-invalid" style="color: #f87171;">0</span>
+                            </div>
+                        </div>
+
+                        <div class="table-container">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Line</th>
+                                        <th>Anchor</th>
+                                        <th>Action</th>
+                                        <th>Status</th>
+                                        <th>Reason</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="validation-table-body">
+                                    <tr>
+                                        <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">No data pasted yet</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="flex-end">
+                            <button class="btn" id="download-receipt-btn" disabled onclick="downloadAuditReceipt()">Download Receipt</button>
+                            <button class="btn btn-success" id="apply-changes-btn" disabled onclick="applySuggestions()">Apply & Download docx</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card hidden" id="receipt-card" style="margin-top: 1.5rem;">
+                    <h4>
+                        Audit Receipt
+                        <button class="btn" onclick="copyText('receipt-text-field', this)">Copy Receipt</button>
+                    </h4>
+                    <pre class="code-box" id="receipt-text-field" style="max-height: 250px; background: rgba(0,0,0,0.3); font-size: 0.8rem;"></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Hidden Diagnostic Area (Activated by query params) -->
+        <div class="diagnostic-panel hidden" id="diagnostic-panel">
+            <h5>
+                System Diagnostics
+                <span class="badge-status valid" id="diagnostic-summary">All Tests Passed</span>
+            </h5>
+            <div id="diagnostic-log"></div>
+        </div>
+        <!-- StickShift onboarding panel (collapsible, compliant card) -->
+        <div class="ss-panel hidden" id="ss-panel">
+            <div class="card">
+                <h4>
+                    <span>StickShift Setup Integration</span>
+                    <button class="close-btn" onclick="toggleSsPanel(false)" style="font-size: 1.2rem; cursor: pointer;">&times;</button>
+                </h4>
+                <p><strong>What is StickShift?</strong> StickShift is an Excel cockpit that gives your AI assistant (running DHSChat) a persistent, file-based memory and lets it launch local browser tools like this one. This tool also works on its own.</p>
+                <p><strong>Are you using StickShift?</strong>
+                   <button class="btn btn-primary" id="ss-yes" onclick="selectSsBranch(true)">Yes</button> 
+                   <button class="btn" id="ss-no" onclick="selectSsBranch(false)">No</button>
+                </p>
+
+                <div class="ss-branch hidden" id="ss-branch-yes">
+                    <ol style="margin-left: 1.5rem; line-height: 1.6;">
+                        <li>In StickShift, click <strong>Install HTML Tool</strong> and select this file (<code>autoreviewer.html</code>). That copies the tool and installs its companion skill in one step.</li>
+                        <li>Or copy the skill below and paste it into <strong>Apply Write Envelope</strong>:
+                            <button class="btn btn-success" id="ss-copy-skill" onclick="copySsSkill(this)" style="margin-left: 0.5rem; padding: 0.3rem 0.6rem; font-size: 0.8rem;">Copy skill</button>
+                        </li>
+                    </ol>
+                </div>
+                <div class="ss-branch hidden" id="ss-branch-no">
+                    <p>StickShift is the governance platform for DHS AI tools. You can use this tool standalone right now - just drop your document in and proceed. Come back to set up the integration when you are ready.</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div>AutoReviewer — Sandboxed & Deterministic</div>
+        <p class="ss-banner">New here? <button class="btn" id="ss-open" onclick="toggleSsPanel(true)">Set up with StickShift</button></p>
+    </footer>
+
+    <!-- Identity declaration -->
+    <script>
+        const STICKSHIFT_TOOL = {
+            file: "autoreviewer.html",
+            skillSlug: "autoreviewer-tool",
+            title: "AutoReviewer"
+        };
+    </script>
+
+    <!-- Embedded companion skill -->
+    <script type="text/markdown" id="stickshift-skill" data-skill-slug="autoreviewer-tool">
+---
+okf_version: "0.1"
+type: Skill
+title: AutoReviewer (Tracked-Changes Tool)
+description: Produces a Word document with real tracked changes from a review, using a local browser tool that writes OOXML markup directly (no Word, no COM). Use this skill when the operator wants tracked changes or redlines in a .docx, to mark up a document, or to turn review feedback into suggested edits.
+tags: [skill, html-tool, document-review]
+---
+
+# autoreviewer-tool
+
+## Purpose
+Turn review feedback into a .docx with genuine tracked changes, via this local browser tool.
+The tool runs on the operator's machine, takes their document, and downloads a marked-up copy.
+
+## When to use this skill
+- The operator wants tracked changes / redlines in a Word document.
+- The operator has review feedback to apply as suggestions rather than as prose.
+
+## How to open the tool
+A local HTML tool cannot be opened from a chat hyperlink - the operator launches it from
+StickShift. Give the operator this block verbatim (these exact lines, no code fence), then one
+instruction line, and nothing else:
+
+<HTML_OPEN>
+tool: autoreviewer.html
+include:
+- skills/autoreviewer-tool.md
+</HTML_OPEN>
+
+Instruction line: "Copy the block above and click Open HTML Tool in StickShift."
+
+## Then walk them through it
+Once open: drop the .docx in, paste the review block when prompted, download the marked-up copy.
+Proceed with the review content normally.
+    </script>
+
+    <!-- JSZIP VENDOR SCRIPT INLINE -->
+    <script>
+        /* {{JSZIP_MIN_JS}} */
+    </script>
+
+    <!-- CORE APPLICATION CODE -->
+    <script>
+        // Namespace URIs
+        const wNS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+        const w15NS = 'http://schemas.microsoft.com/office/word/2012/wordml';
+        const xmlNS = 'http://www.w3.org/XML/1998/namespace';
+
+        // Global State
+        let currentDocument = null; // Stores parsed parts: document, comments, footnotes, revisions, zip instance
+        let currentFileName = "";
+        let prepareSessionToken = "";
+        let extractedCommentsCount = 0;
+        let originalCommentIds = []; // Holds AR_COMMENT_X labels
+        let maxXmlId = 0; // Max ID tracked across XML nodes to avoid collisions
+
+        // Diagnostic Mode check
+        window.addEventListener('DOMContentLoaded', () => {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('test') === 'true') {
+                runDiagnostics();
+            }
+        });
+
+        // Tab Switcher
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+
+            document.getElementById(`tab-${tabId}-btn`).classList.add('active');
+            document.getElementById(`tab-${tabId}`).classList.add('active');
+        }
+
+        // StickShift panel toggling
+        function toggleSsPanel(show) {
+            const panel = document.getElementById('ss-panel');
+            if (show === undefined) {
+                panel.classList.toggle('hidden');
+            } else {
+                panel.classList.toggle('hidden', !show);
+            }
+            if (!panel.classList.contains('hidden')) {
+                panel.scrollIntoView({ behavior: 'smooth' });
+            }
+        }
+
+        function selectSsBranch(isYes) {
+            document.getElementById('ss-branch-yes').classList.toggle('hidden', !isYes);
+            document.getElementById('ss-branch-no').classList.toggle('hidden', isYes);
+        }
+
+        function getSkillMarkdown() {
+            return document.getElementById('stickshift-skill').textContent.trim();
+        }
+
+        function copySsSkill(btn) {
+            copyText(getSkillMarkdown(), btn);
+        }
+
+        // Clipboard on file:// standard-compliant copy (Section 9)
+        function copyText(text, btn) {
+            const success = () => {
+                if (btn) {
+                    const oldText = btn.textContent;
+                    btn.textContent = "Copied!";
+                    btn.style.borderColor = "var(--success)";
+                    setTimeout(() => {
+                        btn.textContent = oldText;
+                        btn.style.borderColor = "";
+                    }, 2000);
+                }
+            };
+            
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(success).catch(() => legacyCopy(text, success));
+            } else {
+                legacyCopy(text, success);
+            }
+        }
+
+        function legacyCopy(text, successCallback) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            try {
+                document.execCommand('copy');
+                if (successCallback) successCallback();
+            } catch (e) {
+                console.error("Legacy copy failed:", e);
+            }
+            document.body.removeChild(ta);
+        }
+
+        // Dropzone drag-drop
+        const dropzone = document.getElementById('file-dropzone');
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.classList.add('dragover');
+        });
+        dropzone.addEventListener('dragleave', () => {
+            dropzone.classList.remove('dragover');
+        });
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                processDocxFile(e.dataTransfer.files[0]);
+            }
+        });
+
+        function handleFileSelect(e) {
+            if (e.target.files.length > 0) {
+                processDocxFile(e.target.files[0]);
+            }
+        }
+
+        // SHA-256 generation
+        async function generateSHA256(text) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(text);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('').substring(0, 16).toUpperCase();
+        }
+
+        // Normalization matching VBA
+        function normalizeText(text) {
+            if (!text) return "";
+            return text
+                .replace(/[\u201c\u201d]/g, '"') // smart double quotes
+                .replace(/[\u2018\u2019]/g, "'") // smart single quotes
+                .replace(/[\u2013\u2014]/g, '-') // dashes
+                .replace(/\r\n/g, '\n')
+                .replace(/\r/g, '\n');
+        }
+
+        // XML Node Text Extractor (skips nested elements like footnotes/comments)
+        function getCleanNodeText(element) {
+            let text = "";
+            function traverse(node) {
+                if (node.nodeType === 1) { // ELEMENT_NODE
+                    if (node !== element && (node.localName === 'footnote' || node.localName === 'comment')) {
+                        return; // do not extract text inside inline footnote/comment tags
+                    }
+                    if (node.localName === 't' || node.localName === 'delText') {
+                        text += node.textContent;
+                    } else {
+                        for (let child of node.childNodes) {
+                            traverse(child);
+                        }
+                    }
+                }
+            }
+            traverse(element);
+            return text;
+        }
+
+        // Main .docx file processor
+        async function processDocxFile(file) {
+            currentFileName = file.name;
+            const dropzoneText = document.getElementById('dropzone-text');
+            dropzoneText.innerHTML = `<span class="spinner"></span> Parsing ${file.name}...`;
+
+            try {
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    const arrayBuffer = e.target.result;
+                    
+                    // Unzip docx
+                    const zip = await JSZip.loadAsync(arrayBuffer);
+                    
+                    // Read document.xml
+                    const docXmlText = await zip.file("word/document.xml").async("text");
+                    const parser = new DOMParser();
+                    const docDom = parser.parseFromString(docXmlText, "application/xml");
+
+                    // Read footnotes.xml if present
+                    let footnotesDom = null;
+                    if (zip.file("word/footnotes.xml")) {
+                        const footnotesXml = await zip.file("word/footnotes.xml").async("text");
+                        footnotesDom = parser.parseFromString(footnotesXml, "application/xml");
+                    }
+
+                    // Read comments.xml if present
+                    let commentsDom = null;
+                    if (zip.file("word/comments.xml")) {
+                        const commentsXml = await zip.file("word/comments.xml").async("text");
+                        commentsDom = parser.parseFromString(commentsXml, "application/xml");
+                    }
+
+                    // Read commentsExtended.xml if present
+                    let commentsExDom = null;
+                    if (zip.file("word/commentsExtended.xml")) {
+                        const commentsExXml = await zip.file("word/commentsExtended.xml").async("text");
+                        commentsExDom = parser.parseFromString(commentsExXml, "application/xml");
+                    }
+
+                    currentDocument = {
+                        zip,
+                        docDom,
+                        footnotesDom,
+                        commentsDom,
+                        commentsExDom
+                    };
+
+                    // Execute mapping & extraction
+                    await extractAndBuildPayload();
+                };
+                reader.readAsArrayBuffer(file);
+            } catch (err) {
+                console.error(err);
+                dropzoneText.textContent = "Failed to parse document. Is it a valid .docx?";
+                alert("Error unzipping / parsing document: " + err.message);
+            }
+        }
+
+        // Extractor & Anchor Builder
+        async function extractAndBuildPayload() {
+            if (!currentDocument) return;
+
+            const docDom = currentDocument.docDom;
+            const footnotesDom = currentDocument.footnotesDom;
+            const commentsDom = currentDocument.commentsDom;
+
+            // 1. Gather paragraphs (w:p) and table cells (w:tc) in document.xml
+            const paragraphs = Array.from(docDom.getElementsByTagNameNS('*', 'p'));
+            const cells = Array.from(docDom.getElementsByTagNameNS('*', 'tc'));
+
+            // 2. Gather footnotes (w:footnote with positive ID)
+            let footnotes = [];
+            if (footnotesDom) {
+                footnotes = Array.from(footnotesDom.getElementsByTagNameNS('*', 'footnote'))
+                    .filter(fn => {
+                        const id = parseInt(fn.getAttribute('w:id'));
+                        return !isNaN(id) && id > 0;
+                    });
+            }
+
+            // 3. Gather comments (w:comment)
+            let comments = [];
+            if (commentsDom) {
+                comments = Array.from(commentsDom.getElementsByTagNameNS('*', 'comment'));
+            }
+
+            // 4. Gather revisions (w:ins / w:del)
+            const revisions = [];
+            const allElements = docDom.querySelectorAll('*');
+            for (let el of allElements) {
+                if (el.localName === 'ins' || el.localName === 'del') {
+                    revisions.push(el);
+                }
+            }
+
+            // Setup document summary stats
+            document.getElementById('doc-filename').textContent = currentFileName;
+            document.getElementById('stat-paragraphs').textContent = paragraphs.length;
+            document.getElementById('stat-cells').textContent = cells.length;
+            document.getElementById('stat-footnotes').textContent = footnotes.length;
+            document.getElementById('stat-comments').textContent = comments.length;
+            document.getElementById('stat-revisions').textContent = revisions.length;
+
+            extractedCommentsCount = comments.length;
+            originalCommentIds = comments.map((c, idx) => `AR_COMMENT_${idx + 1}`);
+
+            // Prepare Payload output sections
+            let docTextSection = "";
+            let bookmarkIndexSection = "";
+            let footnotesSection = "";
+            let commentsSection = "";
+            let revisionsSection = "";
+
+            // Helper to pad numbering
+            const pad = (num, size = 5) => num.toString().padStart(size, '0');
+
+            // Format main document text with embedded virtual anchors
+            paragraphs.forEach((p, idx) => {
+                const paraId = `AR_PARA_${pad(idx + 1)}`;
+                let text = getCleanNodeText(p).trim();
+                
+                // Determine structure styling (Heading1-Heading4, list, blockquote, normal)
+                let prefix = "";
+                let style = "";
+                const pPr = p.getElementsByTagNameNS('*', 'pPr')[0];
+                if (pPr) {
+                    const pStyle = pPr.getElementsByTagNameNS('*', 'pStyle')[0];
+                    if (pStyle) {
+                        const styleVal = pStyle.getAttribute('w:val') || "";
+                        if (styleVal.toLowerCase().includes('heading1')) { style = "# "; }
+                        else if (styleVal.toLowerCase().includes('heading2')) { style = "## "; }
+                        else if (styleVal.toLowerCase().includes('heading3')) { style = "### "; }
+                        else if (styleVal.toLowerCase().includes('heading4')) { style = "#### "; }
+                    }
+                    const numPr = pPr.getElementsByTagNameNS('*', 'numPr')[0];
+                    if (numPr) {
+                        style = "- ";
+                    }
+                }
+
+                // Check cell boundary context: if this paragraph starts a table cell, note the cell ID
+                let cellPrefix = "";
+                let parentCell = p.parentNode;
+                while (parentCell && parentCell.localName !== 'tc' && parentCell.localName !== 'document') {
+                    parentCell = parentCell.parentNode;
+                }
+                if (parentCell && parentCell.localName === 'tc') {
+                    const cellIdx = cells.indexOf(parentCell);
+                    if (cellIdx !== -1) {
+                        const firstParaOfCell = parentCell.getElementsByTagNameNS('*', 'p')[0];
+                        if (firstParaOfCell === p) {
+                            cellPrefix = `[AR_CELL_${pad(cellIdx + 1)}] `;
+                        }
+                    }
+                }
+
+                if (text || style) {
+                    docTextSection += `${cellPrefix}[${paraId}] ${style}${text}\n\n`;
+                }
+            });
+
+            // Format bookmark indexes for reference
+            paragraphs.forEach((p, idx) => {
+                const paraId = `AR_PARA_${pad(idx + 1)}`;
+                const text = getCleanNodeText(p);
+                const snippet = text.length > 200 ? text.substring(0, 200) + "..." : text;
+                bookmarkIndexSection += `${paraId} | type=paragraph | "${snippet.replace(/"/g, '\\"')}"\n`;
+            });
+            cells.forEach((c, idx) => {
+                const cellId = `AR_CELL_${pad(idx + 1)}`;
+                const text = getCleanNodeText(c);
+                const snippet = text.length > 200 ? text.substring(0, 200) + "..." : text;
+                bookmarkIndexSection += `${cellId} | type=table_cell | "${snippet.replace(/"/g, '\\"')}"\n`;
+            });
+            footnotes.forEach((fn, idx) => {
+                const fnId = `AR_FN_${pad(idx + 1)}`;
+                const text = getCleanNodeText(fn);
+                const snippet = text.length > 200 ? text.substring(0, 200) + "..." : text;
+                bookmarkIndexSection += `${fnId} | type=footnote | "${snippet.replace(/"/g, '\\"')}"\n`;
+            });
+
+            // Format footnotes section
+            if (footnotes.length > 0) {
+                footnotes.forEach((fn, idx) => {
+                    const fnId = `AR_FN_${pad(idx + 1)}`;
+                    const text = getCleanNodeText(fn).trim();
+                    
+                    // Attempt to locate where it is anchored in doc text
+                    let anchorText = "(Unknown Anchor)";
+                    const fnDbId = fn.getAttribute('w:id');
+                    const refNode = docDom.querySelector(`footnoteReference[id="${fnDbId}"], footnoteReference[*|id="${fnDbId}"]`);
+                    if (refNode) {
+                        let parentPara = refNode.parentNode;
+                        while (parentPara && parentPara.localName !== 'p') {
+                            parentPara = parentPara.parentNode;
+                        }
+                        if (parentPara) {
+                            anchorText = getCleanNodeText(parentPara);
+                            if (anchorText.length > 150) anchorText = anchorText.substring(0, 150) + "...";
+                        }
+                    }
+                    footnotesSection += `## ${fnId}\nAnchor: ${anchorText}\nText: ${text}\n---\n`;
+                });
+            } else {
+                footnotesSection = "(No footnotes found)\n";
+            }
+
+            // Format comments section
+            if (comments.length > 0) {
+                comments.forEach((c, idx) => {
+                    const commentId = `AR_COMMENT_${idx + 1}`;
+                    const author = c.getAttribute('w:author') || "Unknown";
+                    const date = c.getAttribute('w:date') || "Unknown Date";
+                    const text = getCleanNodeText(c).trim();
+
+                    // Resolve scope sentence and exact highlighted fragment
+                    const dbId = c.getAttribute('w:id');
+                    const rangeStart = docDom.querySelector(`commentRangeStart[id="${dbId}"], commentRangeStart[*|id="${dbId}"]`);
+                    const rangeEnd = docDom.querySelector(`commentRangeEnd[id="${dbId}"], commentRangeEnd[*|id="${dbId}"]`);
+
+                    let highlightText = "";
+                    let scopeSentence = "";
+                    
+                    if (rangeStart && rangeEnd) {
+                        // Gather runs between rangeStart and rangeEnd
+                        let current = rangeStart.nextSibling;
+                        let textAccumulator = "";
+                        while (current && current !== rangeEnd) {
+                            if (current.nodeType === 1) { // element
+                                if (current.localName === 'r') {
+                                    const tNodes = current.getElementsByTagNameNS('*', 't');
+                                    for (let t of tNodes) textAccumulator += t.textContent;
+                                }
+                            }
+                            current = current.nextSibling;
+                        }
+                        highlightText = textAccumulator.trim();
+
+                        // Get full paragraph text as scope sentence fallback
+                        let parentPara = rangeStart.parentNode;
+                        while (parentPara && parentPara.localName !== 'p') {
+                            parentPara = parentPara.parentNode;
+                        }
+                        if (parentPara) {
+                            scopeSentence = getCleanNodeText(parentPara).trim();
+                        }
+                    }
+
+                    commentsSection += `## ${commentId}\nAuthor: ${author}\nDate: ${date}\nScope Sentence: ${scopeSentence || highlightText || "(Unknown scope)"}\nHighlight: ${highlightText || "(No highlight)"}\nText: ${text}\n---\n`;
+                });
+            } else {
+                commentsSection = "(No comments in document)\n";
+            }
+
+            // Format revisions section
+            if (revisions.length > 0) {
+                revisions.forEach((r, idx) => {
+                    const revId = `AR_REV_${pad(idx + 1)}`;
+                    const author = r.getAttribute('w:author') || "Unknown";
+                    const date = r.getAttribute('w:date') || "Unknown Date";
+                    const type = r.localName === 'ins' ? 'Insertion' : 'Deletion';
+                    const text = getCleanNodeText(r).trim();
+                    revisionsSection += `## ${revId}\nAuthor: ${author}\nDate: ${date}\nType: ${type}\nText: ${text}\n---\n`;
+                });
+            } else {
+                revisionsSection = "(No revisions in document)\n";
+            }
+
+            // Construct full payload string
+            let payloadText = `<<DOCUMENT_TEXT_START>>\n${docTextSection}<<DOCUMENT_TEXT_END>>\n\n`;
+            payloadText += `<<BOOKMARK_INDEX_START>>\n${bookmarkIndexSection}<<BOOKMARK_INDEX_END>>\n\n`;
+            payloadText += `<<FOOTNOTES_START>>\n${footnotesSection}<<FOOTNOTES_END>>\n\n`;
+            payloadText += `<<COMMENTS_START>>\n${commentsSection}<<COMMENTS_END>>\n\n`;
+            payloadText += `<<REVISIONS_START>>\n${revisionsSection}<<REVISIONS_END>>\n`;
+
+            // Calculate Token Session Fingerprint
+            prepareSessionToken = await generateSHA256(payloadText);
+            
+            // Output payload to screen
+            document.getElementById('session-token-field').value = prepareSessionToken;
+            document.getElementById('payload-text-field').value = `<<PAYLOAD_FINGERPRINT: ${prepareSessionToken}>>\n\n${payloadText}`;
+
+            // Switch to Dashboard
+            document.getElementById('file-dropzone').classList.add('hidden');
+            document.getElementById('prepare-dashboard').classList.remove('hidden');
+        }
+
+        // Custom JSONL Tokenizer Engine (P3, I.3 contract)
+        function customParseJsonl(text) {
+            // Unify line endings and filter fences
+            let rawLines = text.split(/\r?\n/);
+            let filtered = [];
+            let inFence = false;
+
+            for (let line of rawLines) {
+                let trimmed = line.trim();
+                if (trimmed.startsWith('```jsonl')) {
+                    inFence = true;
+                    continue;
+                }
+                if (inFence && trimmed.startsWith('```')) {
+                    break;
+                }
+                if (trimmed !== '') {
+                    filtered.push(line);
+                }
+            }
+
+            if (filtered.length === 0) {
+                throw new Error('NO_PAYLOAD');
+            }
+
+            // Custom line-by-line parsing
+            const results = [];
+            for (let i = 0; i < filtered.length; i++) {
+                const line = filtered[i].trim();
+                if (line === '') continue;
+                
+                try {
+                    const parsed = parseJsonlLine(line);
+                    results.push({
+                        lineNum: i + 1,
+                        raw: line,
+                        parsed: parsed,
+                        status: 'VALID',
+                        reason: ''
+                    });
+                } catch (e) {
+                    results.push({
+                        lineNum: i + 1,
+                        raw: line,
+                        parsed: null,
+                        status: 'PARSE',
+                        reason: 'JSON Parse Error'
+                    });
+                }
+            }
+            return results;
+        }
+
+        // Handles Apply Suggestions Slot Input and triggers live validation
+        function handleJsonlInput() {
+            const inputVal = document.getElementById('jsonl-input-field').value;
+            const tableBody = document.getElementById('validation-table-body');
+            const errorBox = document.getElementById('apply-error-box');
+            const warningBox = document.getElementById('apply-warning-box');
+            const warningList = document.getElementById('apply-warning-list');
+            const applyBtn = document.getElementById('apply-changes-btn');
+            const receiptBtn = document.getElementById('download-receipt-btn');
+
+            tableBody.innerHTML = '';
+            errorBox.classList.add('hidden');
+            warningBox.classList.add('hidden');
+            warningList.innerHTML = '';
+            applyBtn.disabled = true;
+            receiptBtn.disabled = true;
+
+            if (!inputVal.trim()) {
+                tableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">No data pasted yet</td></tr>';
+                document.getElementById('apply-stat-total').textContent = '0';
+                document.getElementById('apply-stat-valid').textContent = '0';
+                document.getElementById('apply-stat-invalid').textContent = '0';
+                return;
+            }
+
+            try {
+                if (!currentDocument) {
+                    throw new Error("No active document loaded in memory. Go to Step 1 and upload a file first.");
+                }
+
+                const lines = customParseJsonl(inputVal);
+                
+                // 1. Process meta line (session-binding gate - I.5)
+                const firstLine = lines[0];
+                if (firstLine.status === 'PARSE' || !firstLine.parsed || (firstLine.parsed.meta !== 'autoreviewer' && !firstLine.parsed.session)) {
+                    throw new Error("META_MISSING: First line must be metadata mapping session token");
+                }
+
+                const meta = firstLine.parsed;
+                const token = meta.session;
+                const expectedCount = parseInt(meta.count);
+
+                if (!token) throw new Error("NO_EXPORT_TOKEN: Session token missing on meta line");
+                if (token !== prepareSessionToken) throw new Error("TOKEN_MISMATCH: Payload session token does not match loaded document session");
+                if (isNaN(expectedCount)) throw new Error("COUNT_MISMATCH: Count field missing or invalid on meta line");
+                if (expectedCount !== (lines.length - 1)) throw new Error(`COUNT_MISMATCH: Metadata count (${expectedCount}) does not match trailing edits count (${lines.length - 1})`);
+
+                firstLine.status = 'META';
+                firstLine.reason = 'Session Bound';
+
+                // 2. Validate all other edit lines
+                let validCount = 0;
+                let invalidCount = 0;
+                const addressedComments = new Set();
+
+                for (let i = 1; i < lines.length; i++) {
+                    const item = lines[i];
+                    if (item.status === 'PARSE') {
+                        invalidCount++;
+                        continue;
+                    }
+
+                    const validationCode = validateLine(item.parsed);
+                    if (validationCode !== 'VALID') {
+                        item.status = 'INVALID';
+                        item.reason = validationCode;
+                        invalidCount++;
+                        continue;
+                    }
+
+                    // Perform target element binding checks
+                    const anchor = item.parsed.bookmark_id;
+                    const docDom = currentDocument.docDom;
+                    const commentsDom = currentDocument.commentsDom;
+                    const footnotesDom = currentDocument.footnotesDom;
+                    const pad = (num, size = 5) => num.toString().padStart(size, '0');
+
+                    // Bind Paragraphs
+                    if (anchor.startsWith('AR_PARA_')) {
+                        const idx = parseInt(anchor.substring(8)) - 1;
+                        const paras = Array.from(docDom.getElementsByTagNameNS('*', 'p'));
+                        if (idx < 0 || idx >= paras.length) {
+                            item.status = 'INVALID';
+                            item.reason = 'TARGET_NOT_FOUND';
+                            invalidCount++;
+                            continue;
+                        }
+                    }
+                    // Bind Table Cells
+                    else if (anchor.startsWith('AR_CELL_')) {
+                        const idx = parseInt(anchor.substring(8)) - 1;
+                        const cells = Array.from(docDom.getElementsByTagNameNS('*', 'tc'));
+                        if (idx < 0 || idx >= cells.length) {
+                            item.status = 'INVALID';
+                            item.reason = 'TARGET_NOT_FOUND';
+                            invalidCount++;
+                            continue;
+                        }
+                    }
+                    // Bind Footnotes
+                    else if (anchor.startsWith('AR_FN_')) {
+                        const idx = parseInt(anchor.substring(6)) - 1;
+                        let footnotes = [];
+                        if (footnotesDom) {
+                            footnotes = Array.from(footnotesDom.getElementsByTagNameNS('*', 'footnote'))
+                                .filter(fn => {
+                                    const id = parseInt(fn.getAttribute('w:id'));
+                                    return !isNaN(id) && id > 0;
+                                });
+                        }
+                        if (idx < 0 || idx >= footnotes.length) {
+                            item.status = 'INVALID';
+                            item.reason = 'TARGET_NOT_FOUND';
+                            invalidCount++;
+                            continue;
+                        }
+                    }
+                    // Bind Comments
+                    else if (anchor.startsWith('AR_COMMENT_')) {
+                        const idx = parseInt(anchor.substring(11)) - 1;
+                        let comments = [];
+                        if (commentsDom) {
+                            comments = Array.from(commentsDom.getElementsByTagNameNS('*', 'comment'));
+                        }
+                        if (idx < 0 || idx >= comments.length) {
+                            item.status = 'INVALID';
+                            item.reason = 'TARGET_NOT_FOUND';
+                            invalidCount++;
+                            continue;
+                        }
+                        // Record comment coverage
+                        if (item.parsed.change_type === 'reply_to_comment' || item.parsed.change_type === 'add_comment_only') {
+                            addressedComments.add(anchor);
+                        }
+                    }
+                    // Bind Revisions
+                    else if (anchor.startsWith('AR_REV_')) {
+                        const idx = parseInt(anchor.substring(7)) - 1;
+                        const revisions = [];
+                        const allElements = docDom.querySelectorAll('*');
+                        for (let el of allElements) {
+                            if (el.localName === 'ins' || el.localName === 'del') {
+                                revisions.push(el);
+                            }
+                        }
+                        if (idx < 0 || idx >= revisions.length) {
+                            item.status = 'INVALID';
+                            item.reason = 'TARGET_NOT_FOUND';
+                            invalidCount++;
+                            continue;
+                        }
+                    } else {
+                        item.status = 'INVALID';
+                        item.reason = 'UNKNOWN_ANCHOR_TYPE';
+                        invalidCount++;
+                        continue;
+                    }
+
+                    // Check if apply_change is false (explicitly skipped by LLM)
+                    if (item.parsed.apply_change === false) {
+                        item.status = 'SKIPPED';
+                        item.reason = 'apply_change=false';
+                        invalidCount++;
+                        continue;
+                    }
+
+                    validCount++;
+                }
+
+                // Comment Coverage Gate Check (I.6)
+                const unaddressed = originalCommentIds.filter(id => !addressedComments.has(id));
+                if (unaddressed.length > 0) {
+                    warningBox.classList.remove('hidden');
+                    const li = document.createElement('li');
+                    li.textContent = `Unaddressed comment threads: ${unaddressed.join(', ')}`;
+                    warningList.appendChild(li);
+                }
+
+                // Render Table Rows
+                lines.forEach(item => {
+                    const tr = document.createElement('tr');
+                    
+                    const tdLine = document.createElement('td');
+                    tdLine.textContent = item.lineNum;
+                    
+                    const tdAnchor = document.createElement('td');
+                    tdAnchor.textContent = item.parsed ? item.parsed.bookmark_id || '-' : '-';
+                    
+                    const tdAction = document.createElement('td');
+                    tdAction.textContent = item.parsed ? item.parsed.change_type || '-' : '-';
+                    
+                    const tdStatus = document.createElement('td');
+                    const badge = document.createElement('span');
+                    badge.className = `badge-status ${item.status.toLowerCase()}`;
+                    badge.textContent = item.status;
+                    tdStatus.appendChild(badge);
+                    
+                    const tdReason = document.createElement('td');
+                    tdReason.textContent = item.reason || '-';
+                    
+                    tr.appendChild(tdLine);
+                    tr.appendChild(tdAnchor);
+                    tr.appendChild(tdAction);
+                    tr.appendChild(tdStatus);
+                    tr.appendChild(tdReason);
+                    
+                    tableBody.appendChild(tr);
+                });
+
+                document.getElementById('apply-stat-total').textContent = lines.length;
+                document.getElementById('apply-stat-valid').textContent = validCount;
+                document.getElementById('apply-stat-invalid').textContent = invalidCount;
+
+                if (validCount > 0) {
+                    applyBtn.disabled = false;
+                    receiptBtn.disabled = false;
+                }
+
+            } catch (err) {
+                errorBox.classList.remove('hidden');
+                document.getElementById('apply-error-message').textContent = err.message;
+                tableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">Error processing input</td></tr>';
+            }
+        }
+
+        // Apply suggestions and download updated docx
+        async function applySuggestions() {
+            if (!currentDocument) return;
+            const inputVal = document.getElementById('jsonl-input-field').value;
+            const applyBtn = document.getElementById('apply-changes-btn');
+            const originalBtnText = applyBtn.innerHTML;
+            applyBtn.innerHTML = `<span class="spinner"></span> Applying...`;
+            applyBtn.disabled = true;
+
+            try {
+                const lines = customParseJsonl(inputVal);
+                const docDom = currentDocument.docDom;
+                const zip = currentDocument.zip;
+                const pad = (num, size = 5) => num.toString().padStart(size, '0');
+
+                // Determine maximum XML ID to avoid conflict when writing new markup
+                maxXmlId = 0;
+                const allElements = docDom.querySelectorAll('*');
+                for (let el of allElements) {
+                    for (let attr of el.attributes) {
+                        if (attr.name.endsWith(':id') || attr.name === 'id') {
+                            const val = parseInt(attr.value);
+                            if (!isNaN(val) && val > maxXmlId) maxXmlId = val;
+                        }
+                    }
+                }
+                
+                // Max ID check for footnotes and comments DOM
+                if (currentDocument.footnotesDom) {
+                    const fnElements = currentDocument.footnotesDom.querySelectorAll('*');
+                    for (let el of fnElements) {
+                        for (let attr of el.attributes) {
+                            if (attr.name.endsWith(':id') || attr.name === 'id') {
+                                const val = parseInt(attr.value);
+                                if (!isNaN(val) && val > maxXmlId) maxXmlId = val;
+                            }
+                        }
+                    }
+                }
+                if (currentDocument.commentsDom) {
+                    const cmtElements = currentDocument.commentsDom.querySelectorAll('*');
+                    for (let el of cmtElements) {
+                        for (let attr of el.attributes) {
+                            if (attr.name.endsWith(':id') || attr.name === 'id') {
+                                const val = parseInt(attr.value);
+                                if (!isNaN(val) && val > maxXmlId) maxXmlId = val;
+                            }
+                        }
+                    }
+                }
+
+                const generateNewId = () => ++maxXmlId;
+
+                const paragraphs = Array.from(docDom.getElementsByTagNameNS('*', 'p'));
+                const cells = Array.from(docDom.getElementsByTagNameNS('*', 'tc'));
+                let footnotes = [];
+                if (currentDocument.footnotesDom) {
+                    footnotes = Array.from(currentDocument.footnotesDom.getElementsByTagNameNS('*', 'footnote'))
+                        .filter(fn => {
+                            const id = parseInt(fn.getAttribute('w:id'));
+                            return !isNaN(id) && id > 0;
+                        });
+                }
+                let comments = [];
+                if (currentDocument.commentsDom) {
+                    comments = Array.from(currentDocument.commentsDom.getElementsByTagNameNS('*', 'comment'));
+                }
+
+                // Track receipt details
+                const receiptRecords = {
+                    applied: 0,
+                    skipped: 0,
+                    details: []
+                };
+
+                // Skip meta line (first line) and iterate Suggestions
+                for (let k = 1; k < lines.length; k++) {
+                    const item = lines[k];
+                    // Skip invalid lines
+                    if (item.status === 'PARSE' || item.status === 'INVALID' || item.parsed.apply_change === false) {
+                        receiptRecords.skipped++;
+                        receiptRecords.details.push(`Line ${item.lineNum} (${item.parsed ? item.parsed.bookmark_id : 'unknown'}): Skipped or invalid`);
+                        continue;
+                    }
+
+                    const edit = item.parsed;
+                    const changeType = edit.change_type;
+                    const anchor = edit.bookmark_id;
+                    let targetNode = null;
+
+                    // Locate XML DOM Node mapped to Virtual Anchor
+                    if (anchor.startsWith('AR_PARA_')) {
+                        const idx = parseInt(anchor.substring(8)) - 1;
+                        targetNode = paragraphs[idx];
+                    } else if (anchor.startsWith('AR_CELL_')) {
+                        const idx = parseInt(anchor.substring(8)) - 1;
+                        targetNode = cells[idx];
+                    } else if (anchor.startsWith('AR_FN_')) {
+                        const idx = parseInt(anchor.substring(6)) - 1;
+                        targetNode = footnotes[idx];
+                    } else if (anchor.startsWith('AR_COMMENT_')) {
+                        const idx = parseInt(anchor.substring(11)) - 1;
+                        targetNode = comments[idx];
+                    } else if (anchor.startsWith('AR_REV_')) {
+                        const idx = parseInt(anchor.substring(7)) - 1;
+                        const revisions = [];
+                        for (let el of allElements) {
+                            if (el.localName === 'ins' || el.localName === 'del') {
+                                revisions.push(el);
+                            }
+                        }
+                        targetNode = revisions[idx];
+                    }
+
+                    if (!targetNode) {
+                        receiptRecords.skipped++;
+                        receiptRecords.details.push(`Line ${item.lineNum} (${anchor}): Node not found at apply phase`);
+                        continue;
+                    }
+
+                    // Surgery executions
+                    if (changeType === 'replace_text' || changeType === 'delete_element') {
+                        const map = buildTextMap(targetNode);
+                        let text = map.text;
+                        let runs = map.runs;
+
+                        let matchStart = 0;
+                        let matchEnd = text.length;
+                        let matchFound = true;
+
+                        if (edit.old_text) {
+                            const normText = normalizeText(text);
+                            const normOld = normalizeText(edit.old_text);
+                            const matchIndex = normText.indexOf(normOld);
+                            if (matchIndex === -1) {
+                                matchFound = false;
+                            } else {
+                                matchStart = matchIndex;
+                                matchEnd = matchIndex + edit.old_text.length;
+                            }
+                        }
+
+                        if (!matchFound) {
+                            receiptRecords.skipped++;
+                            receiptRecords.details.push(`Line ${item.lineNum} (${anchor}): old_text not found in paragraph text`);
+                            continue;
+                        }
+
+                        // Split runs at match boundaries
+                        // Split start first
+                        if (matchStart > 0) {
+                            // Find run containing matchStart
+                            for (let run of runs) {
+                                if (matchStart > run.start && matchStart < run.end) {
+                                    const splitOffset = matchStart - run.start;
+                                    const newRunObj = splitRun(run, splitOffset);
+                                    
+                                    // Refresh map after insertion
+                                    const newMap = buildTextMap(targetNode);
+                                    runs = newMap.runs;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Split end next
+                        if (matchEnd < text.length) {
+                            for (let run of runs) {
+                                if (matchEnd > run.start && matchEnd < run.end) {
+                                    const splitOffset = matchEnd - run.start;
+                                    const newRunObj = splitRun(run, splitOffset);
+                                    
+                                    // Refresh map
+                                    const newMap = buildTextMap(targetNode);
+                                    runs = newMap.runs;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Find runs inside target interval
+                        const runsToDelete = [];
+                        for (let run of runs) {
+                            if (run.start >= matchStart && run.end <= matchEnd) {
+                                runsToDelete.push(run.runNode);
+                            }
+                        }
+
+                        if (runsToDelete.length > 0) {
+                            const firstRun = runsToDelete[0];
+                            const doc = docDom;
+                            const timestamp = new Date().toISOString().split('.')[0] + 'Z';
+                            const revisionId = generateNewId();
+
+                            // 1. Wrap in deletion tracking markup
+                            const delNode = doc.createElementNS(wNS, 'w:del');
+                            delNode.setAttributeNS(wNS, 'w:id', revisionId);
+                            delNode.setAttributeNS(wNS, 'w:author', 'AutoReviewer');
+                            delNode.setAttributeNS(wNS, 'w:date', timestamp);
+
+                            firstRun.parentNode.insertBefore(delNode, firstRun);
+
+                            for (let rNode of runsToDelete) {
+                                // Convert w:t to w:delText inside
+                                convertToDelText(rNode, doc);
+                                delNode.appendChild(rNode);
+                            }
+
+                            // 2. Wrap new_text in insertion tracking if replace_text
+                            if (changeType === 'replace_text') {
+                                const insNode = doc.createElementNS(wNS, 'w:ins');
+                                insNode.setAttributeNS(wNS, 'w:id', generateNewId());
+                                insNode.setAttributeNS(wNS, 'w:author', 'AutoReviewer');
+                                insNode.setAttributeNS(wNS, 'w:date', timestamp);
+
+                                const rNode = doc.createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:r');
+                                
+                                // Copy formatting (w:rPr) from first deleted run if exists
+                                const rPr = firstRun.getElementsByTagNameNS('*', 'rPr')[0];
+                                if (rPr) {
+                                    rNode.appendChild(rPr.cloneNode(true));
+                                }
+
+                                const tNode = doc.createElementNS(wNS, 'w:t');
+                                // Strip anchor tokens from written text (I.8 token hygiene)
+                                tNode.textContent = edit.new_text.replace(/AR_[A-Z]+_\d+/g, "");
+                                tNode.setAttributeNS(xmlNS, 'xml:space', 'preserve');
+
+                                rNode.appendChild(tNode);
+                                insNode.appendChild(rNode);
+
+                                delNode.parentNode.insertBefore(insNode, delNode.nextSibling);
+                            }
+
+                            receiptRecords.applied++;
+                            receiptRecords.details.push(`Line ${item.lineNum} (${anchor}): Applied ${changeType}`);
+
+                            // Apply optional side comment
+                            if (edit.add_comment) {
+                                const commentRng = doc.createRange();
+                                commentRng.selectNode(changeType === 'replace_text' ? delNode.nextSibling : delNode);
+                                addWordComment(edit.add_comment, edit.confidence || 'Medium', delNode);
+                            }
+                        } else {
+                            receiptRecords.skipped++;
+                            receiptRecords.details.push(`Line ${item.lineNum} (${anchor}): Run splitting resolved empty range`);
+                        }
+                    }
+                    
+                    else if (changeType === 'add_comment_only') {
+                        addWordComment(edit.add_comment, edit.confidence || 'Medium', targetNode);
+                        receiptRecords.applied++;
+                        receiptRecords.details.push(`Line ${item.lineNum} (${anchor}): Added comment`);
+                    }
+                    
+                    else if (changeType === 'reply_to_comment') {
+                        const parentCmtId = targetNode.getAttribute('w:id');
+                        const replyCmtId = generateNewId();
+                        const timestamp = new Date().toISOString().split('.')[0] + 'Z';
+
+                        // Check if comments.xml loaded
+                        let cDom = currentDocument.commentsDom;
+                        if (!cDom) {
+                            cDom = parser.parseFromString(
+                                `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+                                `<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+                                `</w:comments>`,
+                                "application/xml"
+                            );
+                            currentDocument.commentsDom = cDom;
+                        }
+
+                        // Create w:comment element in comments.xml
+                        const commentElement = cDom.createElementNS(wNS, 'w:comment');
+                        commentElement.setAttributeNS(wNS, 'w:id', replyCmtId);
+                        commentElement.setAttributeNS(wNS, 'w:parent', parentCmtId); // Set backward compatible parent ID
+                        commentElement.setAttributeNS(wNS, 'w:author', 'AutoReviewer');
+                        commentElement.setAttributeNS(wNS, 'w:initials', 'AR');
+                        commentElement.setAttributeNS(wNS, 'w:date', timestamp);
+
+                        const pNode = cDom.createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:p');
+                        const rNode = cDom.createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:r');
+                        const tNode = cDom.createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:t');
+                        tNode.textContent = `[Confidence: ${edit.confidence || 'Medium'}] ${edit.add_comment}`;
+                        
+                        rNode.appendChild(tNode);
+                        pNode.appendChild(rNode);
+                        commentElement.appendChild(pNode);
+
+                        cDom.documentElement.appendChild(commentElement);
+
+                        // Modern Word commentsExtended.xml mapping
+                        let cExDom = currentDocument.commentsExDom;
+                        if (!cExDom && zip.file("word/commentsExtended.xml")) {
+                            const cExText = await zip.file("word/commentsExtended.xml").async("text");
+                            cExDom = parser.parseFromString(cExText, "application/xml");
+                            currentDocument.commentsExDom = cExDom;
+                        }
+
+                        if (cExDom) {
+                            // Find parent commentEx
+                            let w15ns = 'http://schemas.microsoft.com/office/word/2012/wordml';
+                            let parentParaId = "";
+                            // Find parent comment in comments.xml to get its w15:paraId if it exists
+                            const parentParaNode = targetNode.getElementsByTagNameNS('*', 'p')[0];
+                            if (parentParaNode) {
+                                parentParaId = parentParaNode.getAttribute('w15:paraId') || parentParaNode.getAttribute('w14:paraId') || "";
+                            }
+                            
+                            const replyParaId = pad(generateNewId(), 8); // unique 8 digit hexadecimal
+
+                            // We assign new paraId to the reply paragraph
+                            pNode.setAttributeNS(w15NS, 'w15:paraId', replyParaId);
+
+                            const cEx = cExDom.createElementNS(w15NS, 'w15:commentEx');
+                            cEx.setAttributeNS(w15NS, 'w15:paraId', replyParaId);
+                            if (parentParaId) {
+                                cEx.setAttributeNS(w15NS, 'w15:paraIdParent', parentParaId);
+                            }
+                            cExDom.documentElement.appendChild(cEx);
+                        }
+
+                        receiptRecords.applied++;
+                        receiptRecords.details.push(`Line ${item.lineNum} (${anchor}): Replied to comment ${parentCmtId}`);
+                    }
+                    
+                    else if (changeType === 'accept_revision') {
+                        const parent = targetNode.parentNode;
+                        if (targetNode.localName === 'ins') {
+                            // Keep content
+                            const fragment = docDom.createDocumentFragment();
+                            while (targetNode.firstChild) {
+                                fragment.appendChild(targetNode.firstChild);
+                            }
+                            parent.replaceChild(fragment, targetNode);
+                        } else if (targetNode.localName === 'del') {
+                            // Remove content
+                            parent.removeChild(targetNode);
+                        }
+                        receiptRecords.applied++;
+                        receiptRecords.details.push(`Line ${item.lineNum} (${anchor}): Accepted revision`);
+                    }
+                    
+                    else if (changeType === 'reject_revision') {
+                        const parent = targetNode.parentNode;
+                        if (targetNode.localName === 'ins') {
+                            // Remove inserted text
+                            parent.removeChild(targetNode);
+                        } else if (targetNode.localName === 'del') {
+                            // Restore original text (converting delText back to t)
+                            const fragment = docDom.createDocumentFragment();
+                            const runs = Array.from(targetNode.getElementsByTagNameNS('*', 'r'));
+                            for (let rNode of runs) {
+                                const delTextList = Array.from(rNode.getElementsByTagNameNS('*', 'delText'));
+                                for (let dT of delTextList) {
+                                    const tNode = docDom.createElementNS(dT.namespaceURI, 'w:t');
+                                    tNode.textContent = dT.textContent;
+                                    if (dT.getAttribute('xml:space') === 'preserve') {
+                                        tNode.setAttributeNS(xmlNS, 'xml:space', 'preserve');
+                                    }
+                                    dT.parentNode.replaceChild(tNode, dT);
+                                }
+                                fragment.appendChild(rNode);
+                            }
+                            parent.replaceChild(fragment, targetNode);
+                        }
+                        receiptRecords.applied++;
+                        receiptRecords.details.push(`Line ${item.lineNum} (${anchor}): Rejected revision`);
+                    }
+                    
+                    else if (changeType === 'add_footnote') {
+                        const fDom = currentDocument.footnotesDom;
+                        if (!fDom) {
+                            fDom = parser.parseFromString(
+                                `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+                                `<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+                                `</w:footnotes>`,
+                                "application/xml"
+                            );
+                            currentDocument.footnotesDom = fDom;
+                        }
+
+                        const fnId = generateNewId();
+                        
+                        // 1. Create footnote entry in footnotes.xml
+                        const fnElement = fDom.createElementNS(wNS, 'w:footnote');
+                        fnElement.setAttributeNS(wNS, 'w:id', fnId);
+
+                        const pNode = fDom.createElementNS(wNS, 'w:p');
+                        const pPr = fDom.createElementNS(wNS, 'w:pPr');
+                        const pStyle = fDom.createElementNS(wNS, 'w:pStyle');
+                        pStyle.setAttributeNS(wNS, 'w:val', 'FootnoteText');
+                        pPr.appendChild(pStyle);
+                        pNode.appendChild(pPr);
+
+                        const rNodeRef = fDom.createElementNS(wNS, 'w:r');
+                        const rPrRef = fDom.createElementNS(wNS, 'w:rPr');
+                        const rStyleRef = fDom.createElementNS(wNS, 'w:rStyle');
+                        rStyleRef.setAttributeNS(wNS, 'w:val', 'FootnoteReference');
+                        rPrRef.appendChild(rStyleRef);
+                        rNodeRef.appendChild(rPrRef);
+                        rNodeRef.appendChild(fDom.createElementNS(wNS, 'w:footnoteRef'));
+                        pNode.appendChild(rNodeRef);
+
+                        const rNodeText = fDom.createElementNS(wNS, 'w:r');
+                        const tNodeText = fDom.createElementNS(wNS, 'w:t');
+                        tNodeText.textContent = ` ` + edit.new_text.replace(/AR_[A-Z]+_\d+/g, "");
+                        tNodeText.setAttributeNS(xmlNS, 'xml:space', 'preserve');
+                        rNodeText.appendChild(tNodeText);
+                        pNode.appendChild(rNodeText);
+
+                        fnElement.appendChild(pNode);
+                        fDom.documentElement.appendChild(fnElement);
+
+                        // 2. Inject footnote reference into document.xml (wrapped in tracked insertion)
+                        const timestamp = new Date().toISOString().split('.')[0] + 'Z';
+                        const insNode = docDom.createElementNS(wNS, 'w:ins');
+                        insNode.setAttributeNS(wNS, 'w:id', generateNewId());
+                        insNode.setAttributeNS(wNS, 'w:author', 'AutoReviewer');
+                        insNode.setAttributeNS(wNS, 'w:date', timestamp);
+
+                        const rNodeDoc = docDom.createElementNS(wNS, 'w:r');
+                        const rPrDoc = docDom.createElementNS(wNS, 'w:rPr');
+                        const rStyleDoc = docDom.createElementNS(wNS, 'w:rStyle');
+                        rStyleDoc.setAttributeNS(wNS, 'w:val', 'FootnoteReference');
+                        rPrDoc.appendChild(rStyleDoc);
+                        rNodeDoc.appendChild(rPrDoc);
+
+                        const fnRefDoc = docDom.createElementNS(wNS, 'w:footnoteReference');
+                        fnRefDoc.setAttributeNS(wNS, 'w:id', fnId);
+                        rNodeDoc.appendChild(fnRefDoc);
+                        
+                        insNode.appendChild(rNodeDoc);
+
+                        // Append reference immediately inside targetNode's runs
+                        const runs = targetNode.getElementsByTagNameNS('*', 'r');
+                        if (runs.length > 0) {
+                            const lastRun = runs[runs.length - 1];
+                            lastRun.parentNode.insertBefore(insNode, lastRun.nextSibling);
+                        } else {
+                            targetNode.appendChild(insNode);
+                        }
+
+                        receiptRecords.applied++;
+                        receiptRecords.details.push(`Line ${item.lineNum} (${anchor}): Added footnote reference`);
+                    }
+                }
+
+                // Serializing modified DOM XML strings back to zip
+                const serializer = new XMLSerializer();
+                
+                zip.file("word/document.xml", serializer.serializeToString(docDom));
+                
+                if (currentDocument.footnotesDom) {
+                    zip.file("word/footnotes.xml", serializer.serializeToString(currentDocument.footnotesDom));
+                }
+                
+                if (currentDocument.commentsDom) {
+                    zip.file("word/comments.xml", serializer.serializeToString(currentDocument.commentsDom));
+                }
+                
+                if (currentDocument.commentsExDom) {
+                    zip.file("word/commentsExtended.xml", serializer.serializeToString(currentDocument.commentsExDom));
+                }
+
+                // Generate trigger download
+                const outputBlob = await zip.generateAsync({type:"blob"});
+                const downloadUrl = URL.createObjectURL(outputBlob);
+                const a = document.createElement("a");
+                a.href = downloadUrl;
+                a.download = currentFileName.replace(/\.docx$/i, "") + "_reviewed.docx";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+
+                // Build Markdown Receipt (II.2 contract)
+                let receiptText = `reviewed: ${currentFileName} | session ${prepareSessionToken} | ${receiptRecords.applied} applied, ${receiptRecords.skipped} skipped\n`;
+                receiptText += `unaddressed comments: ${originalCommentIds.filter(id => !lines.some(l => l.parsed && l.parsed.bookmark_id === id)).join(', ') || '(none)'}\n`;
+                receiptText += `details:\n` + receiptRecords.details.map(d => `- ${d}`).join('\n');
+
+                const receiptCard = document.getElementById('receipt-card');
+                receiptCard.classList.remove('hidden');
+                document.getElementById('receipt-text-field').textContent = receiptText;
+
+                alert("Suggestions applied successfully! Reviewed document download has started.");
+
+            } catch (err) {
+                console.error(err);
+                alert("Error applying modifications: " + err.message);
+            } finally {
+                applyBtn.innerHTML = originalBtnText;
+                applyBtn.disabled = false;
+            }
+        }
+
+        // Helper to insert a comment node into comment XML and range tags in document XML
+        function addWordComment(text, confidence, targetNode) {
+            const parser = new DOMParser();
+            const docDom = currentDocument.docDom;
+            const cmtId = ++maxXmlId;
+            const timestamp = new Date().toISOString().split('.')[0] + 'Z';
+
+            // Create comments.xml if missing
+            let cDom = currentDocument.commentsDom;
+            if (!cDom) {
+                cDom = parser.parseFromString(
+                    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+                    `<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+                    `</w:comments>`,
+                    "application/xml"
+                );
+                currentDocument.commentsDom = cDom;
+            }
+
+            const commentElement = cDom.createElementNS(wNS, 'w:comment');
+            commentElement.setAttributeNS(wNS, 'w:id', cmtId);
+            commentElement.setAttributeNS(wNS, 'w:author', 'AutoReviewer');
+            commentElement.setAttributeNS(wNS, 'w:initials', 'AR');
+            commentElement.setAttributeNS(wNS, 'w:date', timestamp);
+
+            const pNode = cDom.createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:p');
+            const rNode = cDom.createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:r');
+            const tNode = cDom.createElementNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'w:t');
+            tNode.textContent = `[Confidence: ${confidence}] ${text}`;
+            
+            rNode.appendChild(tNode);
+            pNode.appendChild(rNode);
+            commentElement.appendChild(pNode);
+            cDom.documentElement.appendChild(commentElement);
+
+            // Anchor ranges in document.xml around targetNode's children
+            const rangeStart = docDom.createElementNS(wNS, 'w:commentRangeStart');
+            rangeStart.setAttributeNS(wNS, 'w:id', cmtId);
+            
+            const rangeEnd = docDom.createElementNS(wNS, 'w:commentRangeEnd');
+            rangeEnd.setAttributeNS(wNS, 'w:id', cmtId);
+
+            const refRun = docDom.createElementNS(wNS, 'w:r');
+            const refEl = docDom.createElementNS(wNS, 'w:commentReference');
+            refEl.setAttributeNS(wNS, 'w:id', cmtId);
+            refRun.appendChild(refEl);
+
+            if (targetNode.firstChild) {
+                targetNode.insertBefore(rangeStart, targetNode.firstChild);
+                targetNode.appendChild(rangeEnd);
+                targetNode.appendChild(refRun);
+            } else {
+                targetNode.appendChild(rangeStart);
+                targetNode.appendChild(rangeEnd);
+                targetNode.appendChild(refRun);
+            }
+        }
+
+        // Subroutine helper converts run elements to w:delText
+        function convertToDelText(runNode, doc) {
+            const tNodes = Array.from(runNode.getElementsByTagNameNS('*', 't'));
+            for (let t of tNodes) {
+                const delText = doc.createElementNS(wNS, 'w:delText');
+                delText.setAttributeNS(xmlNS, 'xml:space', 'preserve');
+                delText.textContent = t.textContent;
+                t.parentNode.replaceChild(delText, t);
+            }
+        }
+
+        // Reconstruct run maps
+        function buildTextMap(targetNode) {
+            const runs = [];
+            let text = "";
+            
+            function traverse(node) {
+                if (node.nodeType === 1) { // ELEMENT
+                    if (node.localName === 'footnote' || node.localName === 'comment') return;
+                    if (node.localName === 't') {
+                        let str = node.textContent;
+                        runs.push({
+                            node: node, // w:t
+                            runNode: node.parentNode, // w:r
+                            start: text.length,
+                            end: text.length + str.length,
+                            text: str
+                        });
+                        text += str;
+                    } else {
+                        for (let child of node.childNodes) {
+                            traverse(child);
+                        }
+                    }
+                }
+            }
+            traverse(targetNode);
+            return { text, runs };
+        }
+
+        // Splits a run element w:r at splitOffset index
+        function splitRun(runObj, splitOffset) {
+            const tNode = runObj.node;
+            const rNode = runObj.runNode;
+            const fullText = tNode.textContent;
+            
+            const textLeft = fullText.substring(0, splitOffset);
+            const textRight = fullText.substring(splitOffset);
+            
+            // Adjust left side text node
+            tNode.textContent = textLeft;
+            tNode.setAttributeNS(xmlNS, 'xml:space', 'preserve');
+            
+            // Clone run node for right side
+            const rNodeRight = rNode.cloneNode(true);
+            const tNodeRight = rNodeRight.getElementsByTagNameNS('*', 't')[0];
+            tNodeRight.textContent = textRight;
+            tNodeRight.setAttributeNS(xmlNS, 'xml:space', 'preserve');
+            
+            // Insert right run node after original
+            rNode.parentNode.insertBefore(rNodeRight, rNode.nextSibling);
+            
+            return {
+                node: tNodeRight,
+                runNode: rNodeRight,
+                start: runObj.start + splitOffset,
+                end: runObj.end,
+                text: textRight
+            };
+        }
+
+        // Download Audit Receipt as file
+        function downloadAuditReceipt() {
+            const text = document.getElementById('receipt-text-field').textContent;
+            if (!text) return;
+            const blob = new Blob([text], {type: "text/plain;charset=utf-8"});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = currentFileName.replace(/\.docx$/i, "") + "_audit_receipt.txt";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        // JSON unescape helper
+        function parseJsonlLine(line) {
+            line = line.trim();
+            if (!line.startsWith('{') || !line.endsWith('}')) {
+                throw new Error('PARSE');
+            }
+            
+            let i = 1; // skip '{'
+            const obj = {};
+            const rawKeys = new Set();
+            
+            while (i < line.length - 1) {
+                while (i < line.length - 1 && isWhitespace(line[i])) i++;
+                if (i >= line.length - 1) break;
+                
+                if (line[i] !== '"') throw new Error('PARSE');
+                const keyResult = parseString(line, i);
+                const key = keyResult.value;
+                i = keyResult.nextIndex;
+                
+                while (i < line.length - 1 && isWhitespace(line[i])) i++;
+                if (line[i] !== ':') throw new Error('PARSE');
+                i++; // skip ':'
+                
+                while (i < line.length - 1 && isWhitespace(line[i])) i++;
+                
+                let val;
+                if (line[i] === '"') {
+                    const valResult = parseString(line, i);
+                    val = valResult.value;
+                    i = valResult.nextIndex;
+                } else if (line.startsWith('true', i)) {
+                    val = true;
+                    i += 4;
+                } else if (line.startsWith('false', i)) {
+                    val = false;
+                    i += 5;
+                } else if (line.startsWith('null', i)) {
+                    val = null;
+                    i += 4;
+                } else {
+                    let valStr = "";
+                    while (i < line.length - 1 && line[i] !== ',' && line[i] !== '}' && !isWhitespace(line[i])) {
+                        valStr += line[i];
+                        i++;
+                    }
+                    if (valStr === "") throw new Error('PARSE');
+                    const num = Number(valStr);
+                    if (!isNaN(num)) val = num;
+                    else val = valStr;
+                }
+                
+                if (!rawKeys.has(key)) {
+                    rawKeys.add(key);
+                    obj[key] = val;
+                }
+                
+                while (i < line.length - 1 && isWhitespace(line[i])) i++;
+                if (line[i] === ',') {
+                    i++;
+                } else if (line[i] !== '}') {
+                    throw new Error('PARSE');
+                }
+            }
+            
+            if (obj.meta === 'autoreviewer') {
+                return obj;
+            }
+            if (typeof obj.bookmark_id !== 'string') throw new Error('PARSE');
+            if (typeof obj.change_type !== 'string') throw new Error('PARSE');
+            
+            return obj;
+        }
+
+        function isWhitespace(c) {
+            return c === ' ' || c === '\t' || c === '\r' || c === '\n';
+        }
+
+        function parseString(str, startIdx) {
+            let i = startIdx + 1; // skip opening "
+            let result = "";
+            while (i < str.length) {
+                let c = str[i];
+                if (c === '"') {
+                    let bsCount = 0;
+                    let k = i - 1;
+                    while (k >= startIdx && str[k] === '\\') {
+                        bsCount++;
+                        k--;
+                    }
+                    if (bsCount % 2 === 0) {
+                        return { value: result, nextIndex: i + 1 };
+                    }
+                }
+                
+                if (c === '\\' && i < str.length - 1) {
+                    let nextC = str[i + 1];
+                    switch (nextC) {
+                        case '\\': result += '\\'; break;
+                        case '"': result += '"'; break;
+                        case '/': result += '/'; break;
+                        case 'b': result += '\b'; break;
+                        case 'f': result += '\f'; break;
+                        case 'n': result += '\n'; break;
+                        case 'r': result += '\n'; break;
+                        case 't': result += '\t'; break;
+                        case 'u':
+                            if (i + 5 < str.length) {
+                                let hex = str.substring(i + 2, i + 6);
+                                if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+                                    result += String.fromCharCode(parseInt(hex, 16));
+                                    i += 4;
+                                } else {
+                                    result += 'u';
+                                }
+                            } else {
+                                result += 'u';
+                            }
+                            break;
+                        default:
+                            result += nextC;
+                    }
+                    i += 2;
+                } else {
+                    result += c;
+                    i++;
+                }
+            }
+            throw new Error('PARSE');
+        }
+
+        function validateLine(parsed) {
+            if (!parsed.bookmark_id || parsed.bookmark_id.trim() === '') return 'MISSING_BOOKMARK';
+            if (!parsed.change_type || parsed.change_type.trim() === '') return 'MISSING_CHANGE_TYPE';
+            
+            const allowedTypes = [
+                'replace_text', 'delete_element', 'add_comment_only', 'reply_to_comment',
+                'accept_revision', 'reject_revision', 'add_footnote'
+            ];
+            if (!allowedTypes.includes(parsed.change_type)) return 'UNKNOWN_CHANGE_TYPE';
+            
+            if (parsed.change_type === 'replace_text') {
+                if (parsed.new_text === undefined || parsed.new_text === null || parsed.new_text === '') {
+                    return 'REPLACE_REQUIRES_NEW_TEXT';
+                }
+            }
+            if (parsed.change_type === 'add_comment_only') {
+                if (parsed.add_comment === undefined || parsed.add_comment === null || parsed.add_comment === '') {
+                    return 'COMMENT_REQUIRES_TEXT';
+                }
+            }
+            if (parsed.change_type === 'reply_to_comment') {
+                if (!parsed.bookmark_id.startsWith('AR_COMMENT_')) {
+                    return 'REPLY_REQUIRES_COMMENT_TARGET';
+                }
+                if (parsed.add_comment === undefined || parsed.add_comment === null || parsed.add_comment === '') {
+                    return 'REPLY_REQUIRES_TEXT';
+                }
+            }
+            if (parsed.change_type === 'accept_revision' || parsed.change_type === 'reject_revision') {
+                if (parsed.bookmark_id.startsWith('AR_COMMENT_')) {
+                    return 'REVISION_REQUIRES_RANGE_TARGET';
+                }
+            }
+            if (parsed.change_type === 'add_footnote') {
+                if (parsed.bookmark_id.startsWith('AR_COMMENT_')) {
+                    return 'FOOTNOTE_REQUIRES_RANGE_TARGET';
+                }
+                if (parsed.new_text === undefined || parsed.new_text === null || parsed.new_text === '') {
+                    return 'FOOTNOTE_REQUIRES_TEXT';
+                }
+            }
+            return 'VALID';
+        }
+
+        // Inline Testing Harness (Task 9)
+        function runDiagnostics() {
+            const panel = document.getElementById('diagnostic-panel');
+            const logs = document.getElementById('diagnostic-log');
+            const summary = document.getElementById('diagnostic-summary');
+            panel.classList.remove('hidden');
+            logs.innerHTML = '';
+            
+            let pass = true;
+            const assert = (condition, msg) => {
+                const line = document.createElement('div');
+                line.className = `test-line ${condition ? 'pass' : 'fail'}`;
+                line.textContent = `${condition ? 'PASS' : 'FAIL'}: ${msg}`;
+                logs.appendChild(line);
+                if (!condition) pass = false;
+            };
+
+            // Test 1: JSONL Tokenizer esc-parity
+            try {
+                const testLine1 = '{"bookmark_id":"AR_PARA_00001","change_type":"replace_text","new_text":"a \\"escaped\\" b"}';
+                const parsed1 = parseJsonlLine(testLine1);
+                assert(parsed1.new_text === 'a "escaped" b', "Escaped quotes parsed correctly");
+            } catch (e) {
+                assert(false, "Test 1 failed with error: " + e.message);
+            }
+
+            // Test 2: JSONL Tokenizer first-key wins
+            try {
+                const testLine2 = '{"bookmark_id":"AR_PARA_00001","change_type":"replace_text","new_text":"first","new_text":"second"}';
+                const parsed2 = parseJsonlLine(testLine2);
+                assert(parsed2.new_text === 'first', "Duplicate keys - first occurrence wins");
+            } catch (e) {
+                assert(false, "Test 2 failed with error: " + e.message);
+            }
+
+            // Test 3: Validation checks
+            try {
+                const invalid1 = validateLine({ bookmark_id: "AR_PARA_001", change_type: "replace_text" });
+                assert(invalid1 === 'REPLACE_REQUIRES_NEW_TEXT', "replace_text empty new_text rejected");
+
+                const invalid2 = validateLine({ bookmark_id: "AR_PARA_001", change_type: "add_comment_only", add_comment: "" });
+                assert(invalid2 === 'COMMENT_REQUIRES_TEXT', "add_comment_only empty text rejected");
+
+                const invalid3 = validateLine({ bookmark_id: "AR_PARA_001", change_type: "reply_to_comment", add_comment: "reply" });
+                assert(invalid3 === 'REPLY_REQUIRES_COMMENT_TARGET', "reply_to_comment not targeting comment rejected");
+            } catch (e) {
+                assert(false, "Test 3 failed: " + e.message);
+            }
+
+            // Test 4: XML run-splitting logic
+            try {
+                const doc = new DOMParser().parseFromString(
+                    `<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+                    `<w:r><w:t>hello world</w:t></w:r>` +
+                    `</w:p>`, 
+                    "application/xml"
+                );
+                const pNode = doc.documentElement;
+                const map = buildTextMap(pNode);
+                
+                assert(map.text === "hello world", "DOM structure text mapped correctly");
+                assert(map.runs.length === 1, "One initial run node mapped");
+                
+                // split 'world' (start index 6, length 5)
+                const splitOffset = 6;
+                const runObj = map.runs[0];
+                const newRun = splitRun(runObj, splitOffset);
+
+                const finalMap = buildTextMap(pNode);
+                assert(finalMap.runs.length === 2, "Run successfully split into two runs");
+                assert(finalMap.runs[0].text === "hello ", "First split run text matches");
+                assert(finalMap.runs[1].text === "world", "Second split run text matches");
+            } catch(e) {
+                assert(false, "Test 4 failed: " + e.message);
+            }
+
+            if (pass) {
+                summary.textContent = "All Tests Passed";
+                summary.className = "badge-status valid";
+            } else {
+                summary.textContent = "Some Tests Failed";
+                summary.className = "badge-status invalid";
+            }
+        }
+    </script>
+</body>
+</html>
