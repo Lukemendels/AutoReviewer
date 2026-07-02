@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Redline → Markdown</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#0f172a; --muted:#64748b;
+    --line:#d7dce3; --accent:#4f46e5; --accent-soft:#eef2ff;
+    --ok:#0f766e; --err:#b91c1c; --code:#f1f5f9;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  .wrap{max-width:920px; margin:0 auto; padding:32px 20px 60px}
+  header h1{font-size:22px; margin:0 0 4px; letter-spacing:-0.01em}
+  header p{margin:0; color:var(--muted); font-size:13.5px}
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:18px; margin-top:20px;
+  }
+  .drop{
+    border:2px dashed var(--line); border-radius:12px; padding:34px 20px; text-align:center;
+    color:var(--muted); cursor:pointer; transition:.15s; background:var(--panel);
+  }
+  .drop:hover{border-color:var(--accent); color:var(--ink)}
+  .drop.over{border-color:var(--accent); background:var(--accent-soft); color:var(--ink)}
+  .drop strong{color:var(--ink)}
+  .drop .sub{font-size:12.5px; margin-top:6px}
+  input[type=file]{display:none}
+  .controls{display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-top:16px}
+  .controls .spacer{flex:1}
+  label.chk{display:inline-flex; align-items:center; gap:7px; font-size:13.5px; color:var(--ink); cursor:pointer; user-select:none}
+  button{
+    font:inherit; font-size:13.5px; font-weight:600; padding:8px 14px; border-radius:9px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink); cursor:pointer;
+  }
+  button.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+  button:disabled{opacity:.45; cursor:not-allowed}
+  #status{margin-top:14px; font-size:13px; color:var(--muted); min-height:18px}
+  #status.ok{color:var(--ok)}
+  #status.err{color:var(--err)}
+  #summary{margin-top:14px; font-size:12.5px; color:var(--muted); display:none}
+  #summary code{background:var(--code); padding:1px 6px; border-radius:5px; font-size:12px}
+  textarea{
+    width:100%; height:460px; margin-top:14px; resize:vertical;
+    font:12.5px/1.5 "SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
+    padding:14px; border:1px solid var(--line); border-radius:10px; background:#fcfdff; color:var(--ink);
+    white-space:pre; tab-size:2;
+  }
+  details{margin-top:20px; font-size:13px; color:var(--muted)}
+  details summary{cursor:pointer; color:var(--ink); font-weight:600}
+  .legend{margin-top:10px}
+  .legend code{background:var(--code); padding:1px 6px; border-radius:5px; font-size:12px; color:var(--ink)}
+  .foot{margin-top:26px; font-size:12px; color:var(--muted); text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Redline → Markdown</h1>
+    <p>Drop a Word <code>.docx</code> with tracked changes &amp; comments. Get a CriticMarkup <code>.md</code> to hand an LLM. Runs entirely in your browser — nothing is uploaded.</p>
+  </header>
+
+  <div class="card">
+    <div class="drop" id="drop">
+      <strong>Drop a .docx here</strong> or click to choose
+      <div class="sub">Tracked insertions, deletions, substitutions, and comment threads are preserved.</div>
+    </div>
+    <input type="file" id="file" accept=".docx">
+
+    <div class="controls">
+      <label class="chk"><input type="checkbox" id="annotate"> Annotate edit authors</label>
+      <span class="spacer"></span>
+      <button id="copy" disabled>Copy</button>
+      <button id="download" class="primary" disabled>Download .md</button>
+    </div>
+
+    <div id="status"></div>
+    <div id="summary"></div>
+    <textarea id="out" spellcheck="false" placeholder="Converted Markdown will appear here…"></textarea>
+  </div>
+
+  <details>
+    <summary>CriticMarkup legend</summary>
+    <div class="legend">
+      <p><code>{++inserted++}</code> &nbsp; <code>{--deleted--}</code> &nbsp; <code>{~~old~&gt;new~~}</code> (substitution) &nbsp; <code>{==highlighted==}</code> &nbsp; <code>{&gt;&gt;comment&lt;&lt;}</code></p>
+      <p>Comments carry author, date, and thread structure; replies are prefixed <code>↳</code> and resolved threads tagged <code>[resolved]</code>. Images become <code>[image: name]</code>. This is a one-way export — apply the LLM's suggested copy back in Word yourself.</p>
+    </div>
+  </details>
+
+  <div class="foot">Offline · no dependencies · no data leaves this page</div>
+</div>
+
+<script>
+"use strict";
+
+/* ------------------------------------------------------------------ *
+ * Namespaces
+ * ------------------------------------------------------------------ */
+const NS = {
+  w:   "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+  w14: "http://schemas.microsoft.com/office/word/2010/wordml",
+  w15: "http://schemas.microsoft.com/office/word/2012/wordml",
+  r:   "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+};
+const wAttr   = (el,n)=> el.getAttributeNS(NS.w,  n) ?? el.getAttribute("w:"+n);
+const w14Attr = (el,n)=> el.getAttributeNS(NS.w14,n) ?? el.getAttribute("w14:"+n);
+const w15Attr = (el,n)=> el.getAttributeNS(NS.w15,n) ?? el.getAttribute("w15:"+n);
+const rAttr   = (el,n)=> el.getAttributeNS(NS.r,  n) ?? el.getAttribute("r:"+n);
+const kids    = (el,ln)=> [...el.children].filter(c=>c.localName===ln);
+const kid     = (el,ln)=> [...el.children].find(c=>c.localName===ln) || null;
+const basename= (p)=> String(p).split("/").pop().split("\\").pop();
+const fmtDate = (d)=>{ if(!d) return ""; const t=d.indexOf("T"); return t>0? d.slice(0,t): d; };
+
+/* ------------------------------------------------------------------ *
+ * Minimal ZIP reader (uses the browser's native DecompressionStream)
+ * A .docx is just a ZIP of XML parts.
+ * ------------------------------------------------------------------ */
+async function unzip(buf){
+  const dv = new DataView(buf), bytes = new Uint8Array(buf), len = bytes.length;
+  let eocd = -1;
+  for (let i = len - 22; i >= Math.max(0, len - 22 - 65535); i--){
+    if (dv.getUint32(i, true) === 0x06054b50){ eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("not a valid .docx (no ZIP end record)");
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const entries = {};
+  for (let n = 0; n < count; n++){
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method   = dv.getUint16(p + 10, true);
+    const compSize = dv.getUint32(p + 20, true);
+    const nameLen  = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commLen  = dv.getUint16(p + 32, true);
+    const localOff = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + nameLen));
+    entries[name] = { method, compSize, localOff };
+    p += 46 + nameLen + extraLen + commLen;
+  }
+  return { dv, bytes, entries };
+}
+async function inflateRaw(u8){
+  const stream = new Blob([u8]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function readEntry(zip, name){
+  const e = zip.entries[name];
+  if (!e) return null;
+  if (zip.dv.getUint32(e.localOff, true) !== 0x04034b50) throw new Error("bad local header: " + name);
+  const nameLen  = zip.dv.getUint16(e.localOff + 26, true);
+  const extraLen = zip.dv.getUint16(e.localOff + 28, true);
+  const start = e.localOff + 30 + nameLen + extraLen;
+  const comp = zip.bytes.subarray(start, start + e.compSize);
+  let out;
+  if (e.method === 0) out = comp;                    // stored
+  else if (e.method === 8) out = await inflateRaw(comp); // deflate
+  else throw new Error("unsupported compression in " + name);
+  return new TextDecoder("utf-8").decode(out);
+}
+
+/* ------------------------------------------------------------------ *
+ * State
+ * ------------------------------------------------------------------ */
+let comments = {};        // id -> {id, author, date, text, done, parentId}
+let childrenMap = {};     // parentId -> [childId,...]
+let counts = { ins:0, del:0, sub:0, fmt:0 };
+let emitted = new Set();  // comment ids already rendered
+let annotate = false;
+let cur = { body:null, docDoc:null, filename:null, rels:{} };
+
+/* ------------------------------------------------------------------ *
+ * Relationships (hyperlink URLs, image filenames)
+ * ------------------------------------------------------------------ */
+function parseRels(xml){
+  const map = {};
+  if (!xml) return map;
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  for (const rel of doc.getElementsByTagName("*")){
+    if (rel.localName === "Relationship"){
+      const id = rel.getAttribute("Id"), target = rel.getAttribute("Target");
+      if (id) map[id] = target;
+    }
+  }
+  return map;
+}
+
+/* ------------------------------------------------------------------ *
+ * Comments + threads
+ * ------------------------------------------------------------------ */
+function buildComments(commentsXml, extXml){
+  comments = {}; childrenMap = {};
+  const paraIdToId = {};
+  if (commentsXml){
+    const doc = new DOMParser().parseFromString(commentsXml, "application/xml");
+    for (const cm of doc.getElementsByTagName("*")){
+      if (cm.localName !== "comment") continue;
+      const id = wAttr(cm, "id");
+      const author = wAttr(cm, "author") || "Unknown";
+      const date = fmtDate(wAttr(cm, "date"));
+      const ps = [];
+      for (const p of cm.getElementsByTagName("*")){
+        if (p.localName === "p"){
+          ps.push(p);
+          const pid = w14Attr(p, "paraId");
+          if (pid) paraIdToId[pid] = id;
+        }
+      }
+      const text = ps.map(p => collectRunsText(p).trim()).filter(Boolean).join(" ") || "(empty comment)";
+      comments[id] = { id, author, date, text, done:false, parentId:null };
+    }
+  }
+  if (extXml){
+    const doc = new DOMParser().parseFromString(extXml, "application/xml");
+    for (const ce of doc.getElementsByTagName("*")){
+      if (ce.localName !== "commentEx") continue;
+      const pid = w15Attr(ce, "paraId");
+      const parent = w15Attr(ce, "paraIdParent");
+      const done = w15Attr(ce, "done");
+      const id = paraIdToId[pid];
+      if (id == null || !comments[id]) continue;
+      comments[id].done = (done === "1" || done === "true");
+      if (parent){ const par = paraIdToId[parent]; if (par != null) comments[id].parentId = par; }
+    }
+  }
+  for (const id in comments){
+    const pid = comments[id].parentId;
+    if (pid != null) (childrenMap[pid] = childrenMap[pid] || []).push(id);
+  }
+}
+function commentToken(c, depth){
+  const arrow = depth > 0 ? "↳".repeat(depth) + " " : "";
+  const date = c.date ? " (" + c.date + ")" : "";
+  const res = c.done ? " [resolved]" : "";
+  return "{>>" + arrow + c.author + date + res + ": " + c.text + "<<}";
+}
+function renderReplies(parentId, depth){
+  let s = "";
+  for (const childId of (childrenMap[parentId] || [])){
+    s += commentToken(comments[childId], depth);
+    s += renderReplies(childId, depth + 1);
+  }
+  return s;
+}
+function renderThread(id){
+  const c = comments[id];
+  if (!c) return "";
+  return commentToken(c, 0) + renderReplies(id, 1);
+}
+
+/* ------------------------------------------------------------------ *
+ * Run / text extraction
+ * ------------------------------------------------------------------ */
+function runText(r){
+  let s = "";
+  for (const c of r.children){
+    if (c.localName === "t" || c.localName === "delText") s += c.textContent;
+    else if (c.localName === "tab") s += " ";
+    else if (c.localName === "br" || c.localName === "cr") s += "  \n";
+  }
+  return s;
+}
+function runEmph(r){
+  const rPr = kid(r, "rPr");
+  let b = false, i = false;
+  if (rPr){
+    const be = kid(rPr, "b"); if (be){ const v = wAttr(be, "val"); b = !(v === "0" || v === "false"); }
+    const ie = kid(rPr, "i"); if (ie){ const v = wAttr(ie, "val"); i = !(v === "0" || v === "false"); }
+  }
+  return { b, i };
+}
+function emph(s, { b, i }){
+  if (!s || !s.trim()) return s;
+  const lead = s.match(/^\s*/)[0], trail = s.match(/\s*$/)[0];
+  let core = s.slice(lead.length, s.length - trail.length);
+  if (i) core = "*" + core + "*";
+  if (b) core = "**" + core + "**";
+  return lead + core + trail;
+}
+// gather text from all runs under an element (used for ins/del/hyperlink wrappers)
+function collectRunsText(el){
+  let s = "";
+  for (const c of el.children){
+    if (c.localName === "r") s += emph(runText(c), runEmph(c));
+    else if (["ins","del","hyperlink","smartTag"].includes(c.localName)) s += collectRunsText(c);
+  }
+  return s;
+}
+function findImage(r, rels){
+  for (const e of r.getElementsByTagName("*")){
+    if (e.localName === "blip"){
+      const id = rAttr(e, "embed") || rAttr(e, "link");
+      if (id && rels[id]) return basename(rels[id]);
+      if (id) return "image";
+    }
+    if (e.localName === "imagedata"){
+      const id = rAttr(e, "id");
+      if (id && rels[id]) return basename(rels[id]);
+    }
+  }
+  return null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Paragraph -> ordered segment list
+ * ------------------------------------------------------------------ */
+function buildSegments(p, rels){
+  const segs = [];
+  for (const c of p.children){
+    const ln = c.localName;
+    if (ln === "commentRangeStart") segs.push({ t:"cstart", id: wAttr(c,"id") });
+    else if (ln === "commentRangeEnd") segs.push({ t:"cend", id: wAttr(c,"id") });
+    else if (ln === "r"){
+      const img = findImage(c, rels);
+      if (img){ segs.push({ t:"text", s:"[image: " + img + "]" }); continue; }
+      const txt = emph(runText(c), runEmph(c));
+      if (txt) segs.push({ t:"text", s: txt });
+    }
+    else if (ln === "ins") segs.push({ t:"ins", s: collectRunsText(c), author: wAttr(c,"author"), date: wAttr(c,"date") });
+    else if (ln === "del") segs.push({ t:"del", s: collectRunsText(c), author: wAttr(c,"author"), date: wAttr(c,"date") });
+    else if (ln === "hyperlink"){
+      const txt = collectRunsText(c), url = rels[rAttr(c,"id")] || "";
+      segs.push({ t:"text", s: url ? "[" + txt + "](" + url + ")" : txt });
+    }
+    // other node types (bookmarkStart/End, proofErr, etc.) ignored
+  }
+  return segs;
+}
+// merge fragmented same-type runs; collapse adjacent del->ins into a substitution
+function normalize(segs){
+  const merged = [];
+  for (const s of segs){
+    const last = merged[merged.length - 1];
+    if (last && last.t === s.t && (s.t === "ins" || s.t === "del" || s.t === "text")) last.s += s.s;
+    else merged.push({ ...s });
+  }
+  const out = [];
+  for (let i = 0; i < merged.length; i++){
+    const curr = merged[i], next = merged[i + 1];
+    if (curr.t === "del" && next && next.t === "ins"){
+      out.push({ t:"sub", del: curr.s, ins: next.s, author: next.author, date: next.date });
+      i++; // consume the ins
+    } else out.push(curr);
+  }
+  return out;
+}
+function authorTag(s){ return (annotate && s.author) ? "{>>—" + s.author + "<<}" : ""; }
+function cendAfter(segs, i, id){
+  for (let j = i + 1; j < segs.length; j++) if (segs[j].t === "cend" && segs[j].id === id) return true;
+  return false;
+}
+function serializeSegs(segs){
+  let out = "", openId = null;
+  for (let i = 0; i < segs.length; i++){
+    const s = segs[i];
+    if (s.t === "text") out += s.s;
+    else if (s.t === "ins"){ out += "{++" + s.s + "++}" + authorTag(s); counts.ins++; }
+    else if (s.t === "del"){ out += "{--" + s.s + "--}" + authorTag(s); counts.del++; }
+    else if (s.t === "sub"){ out += "{~~" + s.del + "~>" + s.ins + "~~}" + authorTag(s); counts.sub++; }
+    else if (s.t === "cstart"){
+      if (openId === null && cendAfter(segs, i, s.id)){ openId = s.id; out += "{=="; }
+      else if (!emitted.has(s.id)){ out += renderThread(s.id); emitted.add(s.id); } // cross-paragraph / overlap: anchor without highlight
+    }
+    else if (s.t === "cend"){
+      if (openId === s.id){ out += "==}"; openId = null; if (!emitted.has(s.id)){ out += renderThread(s.id); emitted.add(s.id); } }
+    }
+  }
+  if (openId !== null){ out += "==}"; if (!emitted.has(openId)){ out += renderThread(openId); emitted.add(openId); } }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Block-level rendering
+ * ------------------------------------------------------------------ */
+function renderParagraph(p, rels){
+  const pPr = kid(p, "pPr");
+  let style = "", isList = false, ilvl = 0;
+  if (pPr){
+    const ps = kid(pPr, "pStyle"); if (ps) style = wAttr(ps, "val") || "";
+    const np = kid(pPr, "numPr");
+    if (np){ isList = true; const il = kid(np, "ilvl"); if (il) ilvl = parseInt(wAttr(il, "val") || "0", 10) || 0; }
+  }
+  const text = serializeSegs(normalize(buildSegments(p, rels)));
+  const h = /^Heading([1-6])$/.exec(style);
+  if (h) return "#".repeat(+h[1]) + " " + text.trim();
+  if (style === "Title") return "# " + text.trim();
+  if (isList) return "  ".repeat(ilvl) + "- " + text.trim();
+  const trimmed = text.trim();
+  return trimmed === "" ? "" : trimmed;
+}
+function renderTable(tbl, rels){
+  const rows = kids(tbl, "tr");
+  if (!rows.length) return "";
+  const cellText = (tc) =>
+    kids(tc, "p").map(p => serializeSegs(normalize(buildSegments(p, rels))).trim())
+                 .join(" ").replace(/\|/g, "\\|").trim() || " ";
+  const matrix = rows.map(tr => kids(tr, "tc").map(cellText));
+  const cols = Math.max(...matrix.map(r => r.length));
+  const pad = (r) => { while (r.length < cols) r.push(" "); return r; };
+  let md = "| " + pad(matrix[0]).join(" | ") + " |\n";
+  md += "| " + Array(cols).fill("---").join(" | ") + " |\n";
+  for (let i = 1; i < matrix.length; i++) md += "| " + pad(matrix[i]).join(" | ") + " |\n";
+  return md.trimEnd();
+}
+function walkBody(body, rels){
+  const blocks = [];
+  for (const el of body.children){
+    if (el.localName === "p") blocks.push(renderParagraph(el, rels));
+    else if (el.localName === "tbl") blocks.push(renderTable(el, rels));
+    // sectPr and others skipped
+  }
+  return blocks.filter(Boolean).join("\n\n");
+}
+
+/* ------------------------------------------------------------------ *
+ * Header + full render
+ * ------------------------------------------------------------------ */
+function buildHeader(filename){
+  const total = Object.keys(comments).length;
+  const unresolved = Object.values(comments).filter(c => !c.done).length;
+  const parts = [];
+  if (counts.ins) parts.push(counts.ins + " insertion" + (counts.ins !== 1 ? "s" : ""));
+  if (counts.del) parts.push(counts.del + " deletion" + (counts.del !== 1 ? "s" : ""));
+  if (counts.sub) parts.push(counts.sub + " substitution" + (counts.sub !== 1 ? "s" : ""));
+  if (total)      parts.push(total + " comment" + (total !== 1 ? "s" : "") + (unresolved ? " (" + unresolved + " unresolved)" : ""));
+  if (counts.fmt) parts.push(counts.fmt + " formatting change" + (counts.fmt !== 1 ? "s" : ""));
+  const summary = parts.length ? parts.join(" · ") : "no tracked changes or comments detected";
+  return "<!-- Redline export from: " + filename + ".docx -->\n" +
+         "<!-- " + summary + " -->\n" +
+         "<!-- CriticMarkup legend: {++ins++} {--del--} {~~old~>new~~} {==highlighted==} {>>comment<<} -->";
+}
+function render(){
+  if (!cur.body) return "";
+  counts = { ins:0, del:0, sub:0, fmt:0 };
+  emitted = new Set();
+  for (const e of cur.docDoc.getElementsByTagName("*"))
+    if (e.localName === "rPrChange" || e.localName === "pPrChange") counts.fmt++;
+
+  const md = walkBody(cur.body, cur.rels);
+
+  let orphanMd = "";
+  const orphans = Object.values(comments).filter(c => !c.parentId && !emitted.has(c.id));
+  if (orphans.length){
+    orphanMd = "\n\n## Unanchored comments\n\n" +
+      orphans.map(c => { emitted.add(c.id); return "- " + renderThread(c.id); }).join("\n");
+  }
+  return buildHeader(cur.filename) + "\n\n" + md + orphanMd + "\n";
+}
+
+/* ------------------------------------------------------------------ *
+ * Processing + UI
+ * ------------------------------------------------------------------ */
+const $ = (id) => document.getElementById(id);
+const outEl = $("out"), statusEl = $("status"), summaryEl = $("summary");
+
+function status(msg, kind){ statusEl.textContent = msg; statusEl.className = kind === true ? "err" : (kind === "ok" ? "ok" : ""); }
+function showOutput(text){
+  outEl.value = text;
+  $("copy").disabled = false;
+  $("download").disabled = false;
+  const parts = [];
+  if (counts.ins) parts.push(counts.ins + " ins");
+  if (counts.del) parts.push(counts.del + " del");
+  if (counts.sub) parts.push(counts.sub + " sub");
+  const total = Object.keys(comments).length;
+  const unresolved = Object.values(comments).filter(c => !c.done).length;
+  if (total) parts.push(total + " comment" + (total !== 1 ? "s" : "") + (unresolved ? ", " + unresolved + " unresolved" : ""));
+  summaryEl.style.display = "block";
+  summaryEl.innerHTML = parts.length ? parts.map(p => "<code>" + p + "</code>").join(" ") : "<code>no revisions or comments found</code>";
+}
+
+async function processFile(file){
+  if (!file) return;
+  if (!/\.docx$/i.test(file.name)){ status("Please choose a .docx file (not .doc or other formats).", true); return; }
+  status("Reading “" + file.name + "”…");
+  try{
+    if (typeof DecompressionStream === "undefined"){
+      status("This tool needs a modern browser (Chromium-based Edge, Chrome, or Firefox 113+) — the required decompression API is unavailable here.", true);
+      return;
+    }
+    const zip = await unzip(await file.arrayBuffer());
+    const docXml = await readEntry(zip, "word/document.xml");
+    if (!docXml){ status("That doesn't look like a Word document (no word/document.xml inside).", true); return; }
+
+    cur.rels = parseRels(await readEntry(zip, "word/_rels/document.xml.rels"));
+    buildComments(await readEntry(zip, "word/comments.xml"), await readEntry(zip, "word/commentsExtended.xml"));
+
+    cur.docDoc = new DOMParser().parseFromString(docXml, "application/xml");
+    if (cur.docDoc.getElementsByTagName("parsererror").length){ status("Could not parse the document XML.", true); return; }
+    cur.body = [...cur.docDoc.documentElement.children].find(c => c.localName === "body");
+    if (!cur.body){ status("No document body found.", true); return; }
+    cur.filename = file.name.replace(/\.docx$/i, "");
+
+    showOutput(render());
+    status("Converted “" + file.name + "”.", "ok");
+  } catch (err){
+    console.error(err);
+    status("Error: " + err.message, true);
+  }
+}
+
+/* wiring */
+const drop = $("drop"), fileInput = $("file");
+drop.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", e => processFile(e.target.files[0]));
+["dragenter","dragover"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if (f) processFile(f); });
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => e.preventDefault());
+
+$("annotate").addEventListener("change", e => { annotate = e.target.checked; if (cur.body) showOutput(render()); });
+
+$("copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(outEl.value); status("Copied to clipboard.", "ok"); }
+  catch { outEl.select(); document.execCommand("copy"); status("Copied to clipboard.", "ok"); }
+});
+$("download").addEventListener("click", () => {
+  const blob = new Blob([outEl.value], { type: "text/markdown" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = (cur.filename || "redline") + ".md";
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
