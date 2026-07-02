@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoReviewer Workbench</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#0f172a; --muted:#64748b;
+    --line:#d7dce3; --accent:#4f46e5; --accent-soft:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  .wrap{max-width:960px; margin:0 auto; padding:32px 20px 60px}
+  header h1{font-size:22px; margin:0 0 4px; letter-spacing:-0.01em}
+  header p{margin:0; color:var(--muted); font-size:13.5px}
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:18px; margin-top:20px;
+  }
+  .ar-tabs{display:flex; gap:8px; margin-top:20px; flex-wrap:wrap}
+  .ar-tab{
+    font:inherit; font-size:13.5px; font-weight:600; padding:8px 14px; border-radius:9px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink); cursor:pointer;
+  }
+  .ar-tab.active{background:var(--accent); border-color:var(--accent); color:#fff}
+  .ar-panels{margin-top:4px}
+  .ar-panel{display:none}
+  .ar-panel.active{display:block}
+  .ar-coming-soon{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:34px 20px; text-align:center; color:var(--muted); margin-top:16px;
+  }
+  .ss-banner{font-size:.9rem; margin-top:24px}
+  .ss-banner button{
+    font:inherit; font-size:13px; font-weight:600; padding:6px 12px; border-radius:8px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink); cursor:pointer;
+  }
+  .ss-panel{display:none; border:1px solid var(--line); border-radius:12px; padding:18px; margin-top:12px; background:var(--panel)}
+  .ss-panel.open{display:block}
+  .ss-branch{display:none; margin-top:12px}
+  .ss-branch.show{display:block}
+  .ss-panel button{
+    font:inherit; font-size:13px; font-weight:600; padding:6px 12px; border-radius:8px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink); cursor:pointer;
+  }
+  .foot{margin-top:26px; font-size:12px; color:var(--muted); text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>AutoReviewer Workbench</h1>
+    <p>Run a full document review, respond to reviewer feedback, or train a reviewer persona &mdash; entirely in your browser. Nothing is uploaded.</p>
+  </header>
+
+  <div id="ar-app"></div>
+
+  <p class="ss-banner">New here? <button id="ss-open" type="button">Set up with StickShift</button></p>
+
+  <div class="ss-panel" id="ss-panel">
+    <p><strong>What is StickShift?</strong> An Excel cockpit that gives your AI assistant a
+       persistent memory and lets it launch local tools like this one. This tool also works on
+       its own.</p>
+    <p><strong>Are you using StickShift?</strong>
+       <button id="ss-yes" type="button">Yes</button> <button id="ss-no" type="button">No</button></p>
+
+    <div class="ss-branch" id="ss-branch-yes">
+      <ol>
+        <li>In StickShift, click <strong>Install HTML Tool</strong> and pick this file - it copies
+            the tool and installs its skill in one step.</li>
+        <li>Or copy the skill and paste it into <strong>Apply Write Envelope</strong>:
+            <button id="ss-copy-skill" type="button">Copy skill</button></li>
+      </ol>
+    </div>
+    <div class="ss-branch" id="ss-branch-no">
+      <p>Use this tool standalone right now: drop a document into one of the flows above. Come
+         back to set up the StickShift integration when you're ready.</p>
+    </div>
+  </div>
+
+  <div class="foot">Offline &middot; no dependencies &middot; no data leaves this page</div>
+</div>
+
+<!-- Identity declaration -->
+<script>
+  const STICKSHIFT_TOOL = { file: "autoreviewer-workbench.html", skillSlug: "autoreviewer-workbench", title: "AutoReviewer Workbench" };
+</script>
+
+<!-- Embedded companion skill (verbatim; see spec-html-tool-compliance.md §5) -->
+<script type="text/markdown" id="stickshift-skill" data-skill-slug="autoreviewer-workbench">
+__STICKSHIFT_SKILL__
+</script>
+
+<!-- Onboarding panel wiring + file://-safe copy (spec-html-tool-compliance.md §9) -->
+<script>
+  function copyText(text){
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
+    } else {
+      legacyCopy(text);
+    }
+  }
+  function legacyCopy(text){
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    try { document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+  function getSkillMarkdown(){
+    return document.getElementById('stickshift-skill').textContent.trim();
+  }
+  document.getElementById('ss-open').onclick  = () => document.getElementById('ss-panel').classList.toggle('open');
+  document.getElementById('ss-yes').onclick   = () => { show('ss-branch-yes'); hide('ss-branch-no'); };
+  document.getElementById('ss-no').onclick    = () => { show('ss-branch-no'); hide('ss-branch-yes'); };
+  document.getElementById('ss-copy-skill').onclick = () => copyText(getSkillMarkdown());
+  function show(id){ document.getElementById(id).classList.add('show'); }
+  function hide(id){ document.getElementById(id).classList.remove('show'); }
+</script>
+
+<!-- Tool bundle (esbuild output, inlined by build/build.js) -->
+<script>
+__BUNDLE_JS__
+</script>
+</body>
+</html>
