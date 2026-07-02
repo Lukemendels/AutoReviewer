@@ -55,3 +55,44 @@ export function resolveRange(sourceMap, mdStart, mdEnd) {
 
   return triples;
 }
+
+// Edit-boundary snapping (spec §5.2): if an edit span's boundary falls inside a synthetic
+// range (e.g. the LLM deleted bold text including the "**"), snap that boundary inward
+// past the synthetic run. Locked ranges are a subset of synthetic (a locked placeholder is
+// always also recorded as synthetic -- see ooxml/export.js's Composer.writeLocked), so a
+// boundary that merely touches the edge of a locked island snaps fully past it too; an
+// edit that still overlaps a locked range in its *interior* after snapping is untouched
+// here and caught by resolveRange's unconditional locked check instead.
+//
+// Returns [start, end); start >= end means the requested span was entirely inside
+// synthetic content ("entirely synthetic", spec §7 G4) -- callers must reject that rather
+// than pass it to resolveRange (which treats an empty range as "nothing to resolve").
+// resolveRange itself is unchanged and stays strict/non-snapping: this function trims the
+// edges, resolveRange resolves (or throws on) what's left.
+function snapStartForward(ranges, pos) {
+  for (const [s, e] of ranges) {
+    if (s > pos) break; // ranges are sorted; no later range can contain pos
+    if (s <= pos && pos < e) return e;
+  }
+  return pos;
+}
+function snapEndBackward(ranges, pos) {
+  for (const [s, e] of ranges) {
+    if (s >= pos) break;
+    if (s < pos && pos <= e) return s;
+  }
+  return pos;
+}
+export function snapBoundary(sourceMap, mdStart, mdEnd) {
+  const synthetic = sourceMap.synthetic || [];
+  let s = mdStart, e = mdEnd;
+  for (;;) {
+    const nextS = snapStartForward(synthetic, s);
+    const nextE = snapEndBackward(synthetic, e);
+    if (nextS === s && nextE === e) break;
+    s = nextS;
+    e = nextE;
+  }
+  if (e < s) e = s;
+  return [s, e];
+}
