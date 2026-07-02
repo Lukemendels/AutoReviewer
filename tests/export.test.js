@@ -149,9 +149,9 @@ describe("comments-threaded.docx", () => {
 });
 
 describe("fields-and-content-controls.docx", () => {
-  it("renders a locked field placeholder using the cached display text", async () => {
+  it("renders a locked field placeholder using the field instruction name", async () => {
     const { markdown } = await exportFixture("fields-and-content-controls.docx");
-    expect(markdown).toContain("⟦field: 3⟧");
+    expect(markdown).toContain("⟦field: PAGE⟧");
   });
 
   it("renders the content control's inner text and locks it", async () => {

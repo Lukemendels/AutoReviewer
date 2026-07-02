@@ -240,7 +240,7 @@ function buildSegments(p, rels, runCounter) {
     else if (ln === "fldSimple") {
       const instr = wAttr(c, "instr") || "";
       const cached = collectRunsTextIndexed(c, runCounter).trim();
-      segs.push({ t: "locked", s: "⟦field: " + (cached || instr || "field") + "⟧" });
+      segs.push({ t: "locked", s: "⟦field: " + (instr.trim() || cached || "field") + "⟧" });
     } else if (ln === "sdt") {
       const content = kid(c, "sdtContent");
       let inner = "";
@@ -259,7 +259,7 @@ function buildSegments(p, rels, runCounter) {
         if (type === "begin") fieldState = { buf: "", instr: "" };
         else if (type === "end") {
           if (fieldState) {
-            const shown = fieldState.buf.trim() || fieldState.instr.trim() || "field";
+            const shown = fieldState.instr.trim() || fieldState.buf.trim() || "field";
             segs.push({ t: "locked", s: "⟦field: " + shown + "⟧" });
           }
           fieldState = null;
