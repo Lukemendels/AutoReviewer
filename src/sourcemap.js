@@ -96,3 +96,33 @@ export function snapBoundary(sourceMap, mdStart, mdEnd) {
   if (e < s) e = s;
   return [s, e];
 }
+
+// Point-anchor resolution for insertions and bare point-comments (spec §4), which anchor a
+// zero-width position rather than a span of pre-existing document text -- snapBoundary's
+// span-trimming semantics aren't well-defined at an exact zero-width point (see M2 plan
+// decision 1), so this is a separate, deliberately narrower resolver:
+//   - throws SourceMapError("locked", ...) if pos sits strictly inside a locked range's
+//     interior (can't insert into the middle of a protected island);
+//   - otherwise returns { bodyPath } for the block whose [mdStart, mdEnd] contains pos
+//     (inclusive of both edges);
+//   - throws SourceMapError("synthetic", ...) if pos falls in the gap between blocks (or
+//     in the header/orphan-comments section, which have no blocks at all) -- this includes
+//     the whole-paragraph-insert case (spec §4), whose injection semantics belong to M3
+//     (paragraph-mark handling, spec §9.1 step 7) and aren't resolvable yet.
+export function resolvePoint(sourceMap, pos) {
+  for (const [ls, le] of sourceMap.locked || []) {
+    if (ls < pos && pos < le) {
+      throw new SourceMapError("locked", `position ${pos} is inside a locked range [${ls},${le})`, [pos, pos]);
+    }
+  }
+  for (const block of sourceMap.blocks || []) {
+    if (block.mdStart <= pos && pos <= block.mdEnd) {
+      return { bodyPath: block.bodyPath };
+    }
+  }
+  throw new SourceMapError(
+    "synthetic",
+    `position ${pos} does not fall within any block (whole-paragraph inserts are not resolvable until M3)`,
+    [pos, pos]
+  );
+}
