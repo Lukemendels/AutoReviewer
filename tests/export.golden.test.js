@@ -64,11 +64,11 @@ describe(`${KNOWN_DIVERGENCE}.docx (documented exception)`, () => {
       annotate: true,
     });
     expect(markdown).not.toBe(golden);
-    expect(markdown).toContain("⟦field: 3⟧");
+    expect(markdown).toContain("⟦field: PAGE⟧");
     expect(markdown).toContain("TSA-2026-0042");
     // Everything outside the field/content-control placeholders is still identical --
     // the divergence is additive, not a wholesale rewrite.
-    expect(markdown).toContain("Page reference: ⟦field: 3⟧ of the source document.");
+    expect(markdown).toContain("Page reference: ⟦field: PAGE⟧ of the source document.");
     expect(golden).toContain("Page reference:  of the source document.");
   });
 });
