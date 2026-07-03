@@ -15,11 +15,18 @@ jobs:
         with:
           node-version: "20"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
       - name: Install dependencies
         run: npm ci
 
       - name: Unit + invariant tests
         run: npm test
+
+      - name: ZIP writer -- independent verification (Python zipfile)
+        run: npm run verify:zip
 
       - name: Build fresh (to a temp path, not the committed html/ file)
         run: node build/build.js /tmp/fresh-autoreviewer-workbench.html
