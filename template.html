@@ -84,6 +84,17 @@
   .ar-row-change ins{background:#dcfce7; text-decoration:none}
   .ar-row-change del{background:#fee2e2; text-decoration:line-through}
   .ar-row-controls{display:flex; gap:8px; margin-top:8px}
+
+  .ar-copy-fallback{
+    margin-top:8px; padding:10px; border:1px solid #fde68a; background:#fffbeb;
+    border-radius:8px; max-width:520px;
+  }
+  .ar-copy-fallback-hint{margin:0 0 8px; font-size:12.5px; color:#92400e}
+  .ar-copy-fallback-text{
+    width:100%; height:80px; resize:vertical; font:12px/1.4 "SF Mono",Menlo,Consolas,monospace;
+    padding:8px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink);
+  }
+  .ar-copy-fallback button{margin-top:8px}
 </style>
 </head>
 <body>
@@ -133,12 +144,15 @@ __STICKSHIFT_SKILL__
 
 <!-- Onboarding panel wiring + file://-safe copy (spec-html-tool-compliance.md §9) -->
 <script>
+  // copyText resolves true/false rather than swallowing the outcome: on a locked-down
+  // file:// origin, a failed execCommand('copy') is otherwise indistinguishable from
+  // success. copyWithFeedback is the shared path every copy button (current and future)
+  // should go through, so that distinction actually reaches the user.
   function copyText(text){
     if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).catch(() => legacyCopy(text));
-    } else {
-      legacyCopy(text);
+      return navigator.clipboard.writeText(text).then(() => true).catch(() => legacyCopy(text));
     }
+    return Promise.resolve(legacyCopy(text));
   }
   function legacyCopy(text){
     const ta = document.createElement('textarea');
@@ -147,8 +161,44 @@ __STICKSHIFT_SKILL__
     ta.style.opacity = '0';
     document.body.appendChild(ta);
     ta.focus(); ta.select();
-    try { document.execCommand('copy'); } catch (e) {}
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
     document.body.removeChild(ta);
+    return ok;
+  }
+  function clearCopyFallback(button){
+    const next = button.nextElementSibling;
+    if (next && next.classList.contains('ar-copy-fallback')) next.remove();
+  }
+  function showCopyFallback(button, text){
+    const box = document.createElement('div');
+    box.className = 'ar-copy-fallback';
+    const hint = document.createElement('p');
+    hint.className = 'ar-copy-fallback-hint';
+    hint.textContent = 'Automatic copy failed. Select the text below and press Ctrl+C (or Cmd+C) to copy manually.';
+    const ta = document.createElement('textarea');
+    ta.className = 'ar-copy-fallback-text';
+    ta.readOnly = true;
+    ta.value = text;
+    const selectBtn = document.createElement('button');
+    selectBtn.type = 'button';
+    selectBtn.textContent = 'Select all';
+    selectBtn.addEventListener('click', () => { ta.focus(); ta.select(); });
+    box.append(hint, ta, selectBtn);
+    button.insertAdjacentElement('afterend', box);
+    ta.focus(); ta.select();
+  }
+  async function copyWithFeedback(button, text){
+    const ok = await copyText(text);
+    clearCopyFallback(button);
+    if (ok) {
+      const original = button.textContent;
+      button.textContent = 'Copied ✓';
+      button.disabled = true;
+      setTimeout(() => { button.textContent = original; button.disabled = false; }, 1500);
+    } else {
+      showCopyFallback(button, text);
+    }
   }
   function getSkillMarkdown(){
     return document.getElementById('stickshift-skill').textContent.trim();
@@ -156,7 +206,7 @@ __STICKSHIFT_SKILL__
   document.getElementById('ss-open').onclick  = () => document.getElementById('ss-panel').classList.toggle('open');
   document.getElementById('ss-yes').onclick   = () => { show('ss-branch-yes'); hide('ss-branch-no'); };
   document.getElementById('ss-no').onclick    = () => { show('ss-branch-no'); hide('ss-branch-yes'); };
-  document.getElementById('ss-copy-skill').onclick = () => copyText(getSkillMarkdown());
+  document.getElementById('ss-copy-skill').onclick = (e) => copyWithFeedback(e.currentTarget, getSkillMarkdown());
   function show(id){ document.getElementById(id).classList.add('show'); }
   function hide(id){ document.getElementById(id).classList.remove('show'); }
 </script>

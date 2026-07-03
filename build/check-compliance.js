@@ -6,7 +6,10 @@ import path from "node:path";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
-const distPath = path.join(root, "dist/autoreviewer-workbench.html");
+// Optional positional artifact path, e.g. "html/autoreviewer-workbench.html" for CI's
+// check against the committed build; defaults to the local dist/ build.
+const outArg = process.argv[2];
+const distPath = outArg ? path.resolve(root, outArg) : path.join(root, "dist/autoreviewer-workbench.html");
 const SIZE_BUDGET_BYTES = 400 * 1024;
 
 const failures = [];
@@ -16,13 +19,13 @@ function check(label, ok) {
 }
 
 if (!existsSync(distPath)) {
-  console.error(`dist artifact not found at ${distPath} -- run "npm run build" first.`);
+  console.error(`artifact not found at ${distPath} -- run "npm run build" (or "npm run build:html") first.`);
   process.exit(1);
 }
 
 const html = readFileSync(distPath, "utf8");
 
-check("dist artifact exists at dist/autoreviewer-workbench.html", true);
+check(`artifact exists at ${path.relative(root, distPath)}`, true);
 
 const byteSize = Buffer.byteLength(html, "utf8");
 check(`size budget < ${SIZE_BUDGET_BYTES / 1024} KB (actual: ${(byteSize / 1024).toFixed(1)} KB)`, byteSize < SIZE_BUDGET_BYTES);
@@ -63,7 +66,7 @@ const identityFile = identityMatch ? identityMatch[1] : null;
 const identitySlug = identityMatch ? identityMatch[2] : null;
 
 check("STICKSHIFT_TOOL.skillSlug matches data-skill-slug", !!identitySlug && identitySlug === skillSlug);
-check("STICKSHIFT_TOOL.file matches dist filename", identityFile === "autoreviewer-workbench.html");
+check("STICKSHIFT_TOOL.file matches the canonical artifact filename", identityFile === "autoreviewer-workbench.html");
 check("STICKSHIFT_TOOL.file matches skill's <HTML_OPEN> tool: line", !!skillToolFile && skillToolFile === identityFile);
 
 // Onboarding panel.

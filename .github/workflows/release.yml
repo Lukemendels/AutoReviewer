@@ -1,0 +1,26 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "m*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # CI already verifies html/autoreviewer-workbench.html is fresh on every merged PR
+      # (see ci.yml's freshness gate), so this just attaches the already-verified,
+      # already-committed file -- no rebuild here.
+      - name: Create GitHub Release with the committed build attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            html/autoreviewer-workbench.html \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

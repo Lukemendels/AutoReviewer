@@ -6,6 +6,9 @@ import path from "node:path";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..");
 const isRelease = process.argv.includes("--release") || process.env.NODE_ENV === "production";
+// Optional positional output path (first non-flag arg), e.g. "html/autoreviewer-workbench.html"
+// for the committed release build; defaults to dist/ for local, gitignored iteration.
+const outArg = process.argv.slice(2).find((a) => !a.startsWith("--"));
 
 function escapeForInlineScript(js) {
   // Prevent an embedded "</script>" from prematurely closing the wrapping <script> tag.
@@ -31,8 +34,8 @@ async function main() {
     .replace("__STICKSHIFT_SKILL__", () => escapeForInlineScript(skillMd))
     .replace("__BUNDLE_JS__", () => escapeForInlineScript(bundleJs));
 
-  mkdirSync(path.join(root, "dist"), { recursive: true });
-  const outPath = path.join(root, "dist/autoreviewer-workbench.html");
+  const outPath = outArg ? path.resolve(root, outArg) : path.join(root, "dist/autoreviewer-workbench.html");
+  mkdirSync(path.dirname(outPath), { recursive: true });
   writeFileSync(outPath, output, "utf8");
 
   const sizeKB = (Buffer.byteLength(output, "utf8") / 1024).toFixed(1);

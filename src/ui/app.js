@@ -142,8 +142,8 @@ function renderValidationResult(container, result, exported) {
       const copyBtn = document.createElement("button");
       copyBtn.type = "button";
       copyBtn.textContent = "Copy repair prompt";
-      copyBtn.addEventListener("click", () => {
-        if (typeof copyText === "function") copyText(result.repairPrompt);
+      copyBtn.addEventListener("click", (e) => {
+        if (typeof copyWithFeedback === "function") copyWithFeedback(e.currentTarget, result.repairPrompt);
       });
       box.appendChild(copyBtn);
     }

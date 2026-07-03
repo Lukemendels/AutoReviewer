@@ -34,8 +34,25 @@ function wordCount(text) {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
+// True if [start,end) overlaps ANY locked range, at all -- checked against the edit's
+// ORIGINAL declared span, before any boundary snapping. This matters: snapBoundary trims a
+// boundary that merely touches the *edge* of a locked run (correct -- see sourcemap.js),
+// but if left unchecked, that same trimming can silently shrink away a small overlap that
+// reaches *into* a locked range's interior (e.g. an edit whose declared span covers 2 of a
+// 13-character locked placeholder), leaving an edit that looks accepted even though the
+// model's own token claimed to touch locked content. Spec §7's G4 is unconditional ("no
+// edit overlaps a locked range") -- it doesn't carve out an exception for overlaps small
+// enough to snap away, so this check runs on the pre-snap span specifically.
+function overlapsLocked(sourceMap, start, end) {
+  for (const [ls, le] of sourceMap.locked || []) {
+    if (start < le && ls < end) return true;
+  }
+  return false;
+}
+
 // Resolves one edit's anchor against the source map. Span edits (del/sub/anchored comment)
-// snap first, then resolve strictly; point edits (ins/bare comment) use resolvePoint
+// are checked against locked ranges on their original span first (see overlapsLocked
+// above), then snap and resolve strictly; point edits (ins/bare comment) use resolvePoint
 // instead, since a zero-width position has no synthetic span to snap around (M2 plan
 // decision 1). Returns { anchor } on success, or { gateFailure } naming the gate: a
 // SourceMapError of kind "locked" is G4 (protection); kind "synthetic" -- meaning the span
@@ -54,6 +71,9 @@ function resolveEditAnchor(edit, sourceMap) {
     }
   }
 
+  if (overlapsLocked(sourceMap, edit.mdStart, edit.mdEnd)) {
+    return { gateFailure: { gate: "G4", message: "edit overlaps a locked range" } };
+  }
   const [snapStart, snapEnd] = snapBoundary(sourceMap, edit.mdStart, edit.mdEnd);
   if (snapStart >= snapEnd) {
     return { gateFailure: { gate: "G4", message: "edit is entirely synthetic (no document text remains after boundary snapping)" } };
