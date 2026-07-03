@@ -88,7 +88,7 @@ class Composer {
 /* ------------------------------------------------------------------ *
  * Comments + threads (ported; state passed explicitly instead of module globals)
  * ------------------------------------------------------------------ */
-function buildCommentsData(commentsXml, extXml, DOMParserImpl) {
+export function buildCommentsData(commentsXml, extXml, DOMParserImpl) {
   const comments = {};
   const childrenMap = {};
   const paraIdToId = {};
