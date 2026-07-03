@@ -21,14 +21,22 @@ jobs:
       - name: Unit + invariant tests
         run: npm test
 
-      - name: Build dist/autoreviewer-workbench.html
-        run: npm run build
+      - name: Build fresh (to a temp path, not the committed html/ file)
+        run: node build/build.js /tmp/fresh-autoreviewer-workbench.html
+
+      - name: Committed html/autoreviewer-workbench.html must match a fresh build from source
+        run: |
+          if ! diff -q html/autoreviewer-workbench.html /tmp/fresh-autoreviewer-workbench.html > /dev/null; then
+            echo "::error::html/autoreviewer-workbench.html is stale relative to source. Run 'npm run build:html' and commit the result."
+            diff html/autoreviewer-workbench.html /tmp/fresh-autoreviewer-workbench.html | head -50
+            exit 1
+          fi
 
       - name: Compliance checklist
-        run: npm run check:compliance
+        run: npm run check:compliance -- html/autoreviewer-workbench.html
 
-      - name: Assert dist artifact is single-file
+      - name: Assert committed build is single-file
         run: |
-          test -f dist/autoreviewer-workbench.html
-          ! grep -qE '(src|href)="https?://' dist/autoreviewer-workbench.html
-          ! grep -q 'fetch(' dist/autoreviewer-workbench.html
+          test -f html/autoreviewer-workbench.html
+          ! grep -qE '(src|href)="https?://' html/autoreviewer-workbench.html
+          ! grep -q 'fetch(' html/autoreviewer-workbench.html

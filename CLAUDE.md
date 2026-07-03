@@ -14,8 +14,10 @@ step order, review conventions) — port the flows, never the code.
 
 ## Non-negotiables
 
-- One deliverable: `dist/autoreviewer-workbench.html`. Fully offline, runs from `file://`,
-  no external `src`/`href`, no `fetch`, no localStorage/sessionStorage.
+- One deliverable: `html/autoreviewer-workbench.html`, committed to the repo and CI-verified
+  fresh against source on every PR (see Commands). `dist/autoreviewer-workbench.html` is a
+  gitignored local build for quick iteration only, not the shipped artifact. Fully offline,
+  runs from `file://`, no external `src`/`href`, no `fetch`, no localStorage/sessionStorage.
 - All document I/O client-side: file picker/drag-drop in, Blob download out.
 - Clipboard: hidden-textarea `execCommand('copy')` fallback is the PRIMARY path
   (async clipboard API fails on `file://`).
@@ -37,6 +39,12 @@ step order, review conventions) — port the flows, never the code.
 ## Commands
 
 - `npm test` — Vitest
-- `npm run build` — bundle + inline into `dist/autoreviewer-workbench.html`
-- `npm run check:compliance` — static checks from compliance standard §11
-(create these scripts in M0 if absent)
+- `npm run build` — bundle + inline into `dist/autoreviewer-workbench.html` (local, gitignored)
+- `npm run build:html` — same, but into the committed `html/autoreviewer-workbench.html`.
+  Rebuild and recommit this file as part of any PR touching `src/`, `template.html`, or
+  `build/` — CI fails the build if it's stale relative to source.
+- `npm run check:compliance [path]` — static checks from compliance standard §11 (defaults
+  to `dist/`; CI passes `html/autoreviewer-workbench.html`)
+- After a milestone's PR merges to `main`, push a tag (e.g. `m3a`) to trigger the release
+  workflow, which attaches the committed `html/autoreviewer-workbench.html` to a GitHub
+  Release named for the tag.
