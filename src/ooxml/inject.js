@@ -324,7 +324,17 @@ function applyOrdinaryEdits(doc, p, edits, revState, commentState) {
     }
   }
 
-  for (const [runIndex, tasks] of tasksByRun) {
+  // Runs are processed highest-runIndex-first (right-to-left across the whole paragraph,
+  // not just within one run -- plan: "in practice this falls out automatically by
+  // processing runs from highest runIndex to lowest"). This isn't just a nicety: locateRun
+  // re-counts every <w:r> from the paragraph's start on each call, and splitting an
+  // earlier (lower-index) run adds extra sibling nodes *before* any later run -- corrupting
+  // that later run's own from-scratch count if it hasn't been located yet. Processing
+  // right-to-left guarantees every run is located while everything to its own left is
+  // still in its pristine, unsplit shape.
+  const runIndices = [...tasksByRun.keys()].sort((a, b) => b - a);
+  for (const runIndex of runIndices) {
+    const tasks = tasksByRun.get(runIndex);
     const originalRun = locateRun(p, runIndex);
     if (!originalRun) throw new Error(`injectEdits: runIndex ${runIndex} not found in paragraph`);
     const rPr = kid(originalRun, "rPr");
