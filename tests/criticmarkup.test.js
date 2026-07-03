@@ -156,6 +156,20 @@ describe("parseEdits: edit descriptors in stripped (== exportedMarkdown) coordin
     expect(edits[0].wholeParagraph).toBe(false);
   });
 
+  it("D1: flags BOTH tokens in a zero-gap run of consecutive whole-paragraph inserts (two new paragraphs sharing one original blank-line gap)", () => {
+    // G2 forces zero raw characters between the two tokens here (the original gap has
+    // only 2 newlines to spend total, one on each outer edge) -- each token's own
+    // "alone on its line" check must treat the other, immediately-adjacent token as
+    // transparent rather than as disqualifying non-blank content.
+    const edits = parseEdits("First para.\n{++First new++}{++Second new++}\nThird para.");
+    expect(edits.map((e) => e.wholeParagraph)).toEqual([true, true]);
+  });
+
+  it("D1: does not flag a token merely adjacent to another token that itself sits on real (non-blank) text", () => {
+    const edits = parseEdits("Intro {++new ++}{--old--} text on the same line.");
+    expect(edits.map((e) => e.wholeParagraph)).toEqual([false, false]);
+  });
+
   it("sub carries both old and new text", () => {
     const edits = parseEdits("The rule {~~shall~>must~~} apply.");
     expect(edits).toEqual([

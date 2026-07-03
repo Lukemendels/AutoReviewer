@@ -21,12 +21,42 @@ import { tokenize } from "./grammar.js";
 // match this real, G2-valid construction; a single-"\n" search does, and still correctly
 // rejects a token that merely shares an internal single-newline (hard-break) sub-line
 // within one paragraph's own content, since real (non-blank) text sits on that line too.
-function isWholeParagraph(markdown, rawStart, rawEnd) {
-  const prevNl = markdown.lastIndexOf("\n", rawStart - 1);
-  const lineStart = prevNl === -1 ? 0 : prevNl + 1;
-  const nextNl = markdown.indexOf("\n", rawEnd);
-  const lineEnd = nextNl === -1 ? markdown.length : nextNl;
-  return /^\s*$/.test(markdown.slice(lineStart, rawStart)) && /^\s*$/.test(markdown.slice(rawEnd, lineEnd));
+//
+// Two (or more) consecutive whole-paragraph tokens sharing ONE original "\n\n" gap need
+// zero raw characters between them for the same G2 reason (that gap only has 2 newlines
+// to spend total, one on each outer edge, none left over between the tokens themselves)
+// -- so the blank-check treats an immediately-adjacent token (rawEnd/rawStart touching,
+// no gap at all) as transparent and walks past it to keep looking for the real line
+// boundary, rather than seeing its raw text and concluding "not blank".
+function isWholeParagraph(markdown, tokens, index) {
+  let pos = tokens[index].rawStart;
+  let i = index;
+  for (;;) {
+    const prevNl = markdown.lastIndexOf("\n", pos - 1);
+    const boundary = prevNl === -1 ? 0 : prevNl + 1;
+    if (/^\s*$/.test(markdown.slice(boundary, pos))) break;
+    if (i > 0 && tokens[i - 1].rawEnd === pos) {
+      pos = tokens[i - 1].rawStart;
+      i--;
+      continue;
+    }
+    return false;
+  }
+
+  pos = tokens[index].rawEnd;
+  i = index;
+  for (;;) {
+    const nextNl = markdown.indexOf("\n", pos);
+    const boundary = nextNl === -1 ? markdown.length : nextNl;
+    if (/^\s*$/.test(markdown.slice(pos, boundary))) break;
+    if (i < tokens.length - 1 && tokens[i + 1].rawStart === pos) {
+      pos = tokens[i + 1].rawEnd;
+      i++;
+      continue;
+    }
+    return false;
+  }
+  return true;
 }
 
 export function parseEdits(markdown, opts) {
@@ -34,7 +64,7 @@ export function parseEdits(markdown, opts) {
   if (!result.ok) {
     throw new Error(`parseEdits: invalid CriticMarkup grammar -- ${result.error.message} (at ${result.error.rawStart})`);
   }
-  return result.tokens.map((t) => {
+  return result.tokens.map((t, index) => {
     if (t.type === "ins") {
       return {
         type: "ins",
@@ -42,7 +72,7 @@ export function parseEdits(markdown, opts) {
         newText: t.text,
         rawStart: t.rawStart,
         rawEnd: t.rawEnd,
-        wholeParagraph: isWholeParagraph(markdown, t.rawStart, t.rawEnd),
+        wholeParagraph: isWholeParagraph(markdown, result.tokens, index),
       };
     }
     if (t.type === "del") {
@@ -53,7 +83,7 @@ export function parseEdits(markdown, opts) {
         oldText: t.text,
         rawStart: t.rawStart,
         rawEnd: t.rawEnd,
-        wholeParagraph: isWholeParagraph(markdown, t.rawStart, t.rawEnd),
+        wholeParagraph: isWholeParagraph(markdown, result.tokens, index),
       };
     }
     if (t.type === "sub") {
