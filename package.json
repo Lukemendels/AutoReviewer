@@ -10,7 +10,8 @@
     "build": "node build/build.js",
     "build:html": "node build/build.js html/autoreviewer-workbench.html",
     "check:compliance": "node build/check-compliance.js",
-    "fixtures:gen": "python3 fixtures/generate.py"
+    "fixtures:gen": "python3 fixtures/generate.py",
+    "verify:zip": "node scripts/roundtrip-fixtures.mjs /tmp/ar-zip-roundtrip && python3 scripts/verify_zip_roundtrip.py fixtures /tmp/ar-zip-roundtrip"
   },
   "devDependencies": {
     "@xmldom/xmldom": "^0.9.10",
