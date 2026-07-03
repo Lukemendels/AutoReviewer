@@ -3,6 +3,32 @@
 // grammar.js's tokenize() for why each token carries both a raw and a stripped position.
 import { tokenize } from "./grammar.js";
 
+// D1 (M3b plan): whole-paragraph detection, applied only to ins/del tokens (spec doesn't
+// define whole-paragraph substitution/comment). A token is whole-paragraph if it is alone
+// on its own raw-text line -- spec §4's own definition ("a line consisting solely of one
+// token") applied literally: everything from the nearest single "\n" (or string start)
+// up to rawStart is blank, and everything from rawEnd to the nearest single "\n" (or
+// string end) is blank.
+//
+// This is a single "\n" boundary, not "\n\n" -- deliberately, even though blocks are
+// always separated by "\n\n" in a pristine export. G2's byte-equality gate forces the
+// only valid raw-text shape for "insert a new paragraph between existing block A and
+// block B" to be A's text + "\n" + the token + "\n" + B's text: the token sits spliced
+// *inside* the original "\n\n" gap, splitting it into two single "\n"s (strip() removes
+// the token, reassembling exactly "\n\n" -- the double-newline never survives intact in
+// the raw response next to the token itself, since adding a fresh "\n\n" alongside the
+// existing one would reconstruct four newlines and fail G2). A "\n\n" search would never
+// match this real, G2-valid construction; a single-"\n" search does, and still correctly
+// rejects a token that merely shares an internal single-newline (hard-break) sub-line
+// within one paragraph's own content, since real (non-blank) text sits on that line too.
+function isWholeParagraph(markdown, rawStart, rawEnd) {
+  const prevNl = markdown.lastIndexOf("\n", rawStart - 1);
+  const lineStart = prevNl === -1 ? 0 : prevNl + 1;
+  const nextNl = markdown.indexOf("\n", rawEnd);
+  const lineEnd = nextNl === -1 ? markdown.length : nextNl;
+  return /^\s*$/.test(markdown.slice(lineStart, rawStart)) && /^\s*$/.test(markdown.slice(rawEnd, lineEnd));
+}
+
 export function parseEdits(markdown, opts) {
   const result = tokenize(markdown, opts);
   if (!result.ok) {
@@ -10,10 +36,25 @@ export function parseEdits(markdown, opts) {
   }
   return result.tokens.map((t) => {
     if (t.type === "ins") {
-      return { type: "ins", mdPos: t.strippedStart, newText: t.text, rawStart: t.rawStart, rawEnd: t.rawEnd };
+      return {
+        type: "ins",
+        mdPos: t.strippedStart,
+        newText: t.text,
+        rawStart: t.rawStart,
+        rawEnd: t.rawEnd,
+        wholeParagraph: isWholeParagraph(markdown, t.rawStart, t.rawEnd),
+      };
     }
     if (t.type === "del") {
-      return { type: "del", mdStart: t.strippedStart, mdEnd: t.strippedEnd, oldText: t.text, rawStart: t.rawStart, rawEnd: t.rawEnd };
+      return {
+        type: "del",
+        mdStart: t.strippedStart,
+        mdEnd: t.strippedEnd,
+        oldText: t.text,
+        rawStart: t.rawStart,
+        rawEnd: t.rawEnd,
+        wholeParagraph: isWholeParagraph(markdown, t.rawStart, t.rawEnd),
+      };
     }
     if (t.type === "sub") {
       return { type: "sub", mdStart: t.strippedStart, mdEnd: t.strippedEnd, oldText: t.oldText, newText: t.newText, rawStart: t.rawStart, rawEnd: t.rawEnd };

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { exportDocx } from "../src/ooxml/export.js";
-import { resolveRange, snapBoundary, SourceMapError } from "../src/sourcemap.js";
+import { resolvePoint, resolveRange, snapBoundary, SourceMapError } from "../src/sourcemap.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixturesDir = path.join(root, "fixtures");
@@ -97,5 +97,80 @@ describe("snapBoundary + resolveRange integration", () => {
     // the whole placeholder rather than partially resolving into it.
     const [s] = snapBoundary(sourceMap, fieldStart + 1, fieldEnd + 1);
     expect(s).toBe(fieldEnd);
+  });
+});
+
+// D2 (M3b plan): resolvePoint's discriminated result. boldSourceMap's single block spans
+// [0,8) with a document-text run at [2,6) ("bold"), synthetic "**" at the edges.
+describe("resolvePoint: discriminated run/paragraphBoundary result (D2)", () => {
+  it("an ordinary in-run point resolves to {kind:'run', runIndex, charOffset}", () => {
+    expect(resolvePoint(boldSourceMap, 4)).toEqual({ kind: "run", bodyPath: [0], runIndex: 0, charOffset: 2 });
+  });
+
+  it("a point at a run's own edge (still inside the block, not whole-paragraph) resolves to charOffset 0 or the run's full length", () => {
+    expect(resolvePoint(boldSourceMap, 2)).toEqual({ kind: "run", bodyPath: [0], runIndex: 0, charOffset: 0 });
+    expect(resolvePoint(boldSourceMap, 6)).toEqual({ kind: "run", bodyPath: [0], runIndex: 0, charOffset: 4 });
+  });
+
+  it("a non-whole-paragraph point that lands in synthetic scaffolding (not inside any run) is rejected as G3 (synthetic)", () => {
+    expect(() => resolvePoint(boldSourceMap, 0)).toThrow(SourceMapError);
+    try {
+      resolvePoint(boldSourceMap, 0);
+    } catch (err) {
+      expect(err.kind).toBe("synthetic");
+    }
+  });
+
+  it("a whole-paragraph point exactly at a no-prefix block's own start resolves to {kind:'paragraphBoundary'}, even though the exact same position also resolves as an ordinary in-run point", () => {
+    // A no-prefix paragraph: the block's own mdStart coincides exactly with its first
+    // run's mdStart (no synthetic heading/list prefix in between) -- the plan's own "why
+    // not position-based" example. Position 0 is simultaneously a valid in-run point
+    // (charOffset 0) and a valid paragraph boundary; opts.wholeParagraph is what
+    // disambiguates (see the D2 comment in sourcemap.js), not geometry alone.
+    const noPrefixMap = {
+      blocks: [{ mdStart: 0, mdEnd: 5, kind: "p", bodyPath: [0], runs: [{ mdStart: 0, mdEnd: 5, runIndex: 0, charOffset: 0 }] }],
+      synthetic: [],
+      locked: [],
+    };
+    expect(resolvePoint(noPrefixMap, 0)).toEqual({ kind: "run", bodyPath: [0], runIndex: 0, charOffset: 0 });
+    expect(resolvePoint(noPrefixMap, 0, { wholeParagraph: true })).toEqual({ kind: "paragraphBoundary", bodyPath: [0], edge: "before" });
+  });
+
+  it("a whole-paragraph point between two adjacent blocks resolves to {edge:'after'} on the earlier block", () => {
+    const twoBlockMap = {
+      blocks: [
+        { mdStart: 0, mdEnd: 5, kind: "p", bodyPath: [0], runs: [{ mdStart: 0, mdEnd: 5, runIndex: 0, charOffset: 0 }] },
+        { mdStart: 7, mdEnd: 12, kind: "p", bodyPath: [1], runs: [{ mdStart: 7, mdEnd: 12, runIndex: 0, charOffset: 0 }] },
+      ],
+      synthetic: [],
+      locked: [],
+    };
+    // Gap is [5,7) (e.g. "\n\n"); a whole-paragraph insertion token spliced into that gap
+    // resolves to a point strictly inside it once the token itself is excised (D1).
+    expect(resolvePoint(twoBlockMap, 6, { wholeParagraph: true })).toEqual({ kind: "paragraphBoundary", bodyPath: [0], edge: "after" });
+    expect(resolvePoint(twoBlockMap, 5, { wholeParagraph: true })).toEqual({ kind: "paragraphBoundary", bodyPath: [0], edge: "after" });
+    expect(resolvePoint(twoBlockMap, 7, { wholeParagraph: true })).toEqual({ kind: "paragraphBoundary", bodyPath: [0], edge: "after" });
+  });
+
+  it("a whole-paragraph point before the first block or after the last resolves with the corresponding edge", () => {
+    expect(resolvePoint(boldSourceMap, 0, { wholeParagraph: true })).toEqual({ kind: "paragraphBoundary", bodyPath: [0], edge: "before" });
+    expect(resolvePoint(boldSourceMap, 8, { wholeParagraph: true })).toEqual({ kind: "paragraphBoundary", bodyPath: [0], edge: "after" });
+  });
+
+  it("still rejects a position strictly inside a locked range's interior, whole-paragraph or not", async () => {
+    const { markdown, sourceMap } = await exportDocx(loadDocx("fields-and-content-controls"), {
+      DOMParserImpl: DOMParser,
+      filename: "fields-and-content-controls",
+    });
+    const fieldStart = markdown.indexOf("⟦field:");
+    const fieldEnd = markdown.indexOf("⟧", fieldStart) + 1;
+    const insidePos = fieldStart + 2;
+    expect(() => resolvePoint(sourceMap, insidePos)).toThrow(SourceMapError);
+    expect(() => resolvePoint(sourceMap, insidePos, { wholeParagraph: true })).toThrow(SourceMapError);
+    try {
+      resolvePoint(sourceMap, insidePos);
+    } catch (err) {
+      expect(err.kind).toBe("locked");
+    }
   });
 });

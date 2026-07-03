@@ -62,18 +62,38 @@ function overlapsLocked(sourceMap, start, end) {
 // "entirely synthetic" per the plan's exact wording.
 function resolveEditAnchor(edit, sourceMap) {
   if (edit.type === "ins" || (edit.type === "comment" && !edit.anchored)) {
-    const pos = edit.type === "ins" ? edit.mdPos : edit.mdPos;
+    const pos = edit.mdPos;
+    // Only ins carries D1's wholeParagraph flag (spec doesn't define whole-paragraph
+    // comment, so bare comments always resolve via the ordinary in-run branch).
+    const wholeParagraph = edit.type === "ins" && !!edit.wholeParagraph;
     try {
-      return { anchor: resolvePoint(sourceMap, pos) };
+      return { anchor: resolvePoint(sourceMap, pos, { wholeParagraph }) };
     } catch (err) {
       if (!(err instanceof SourceMapError)) throw err;
       return { gateFailure: { gate: err.kind === "locked" ? "G4" : "G3", message: err.message } };
     }
   }
 
+  // G4's locked check always runs against the edit's ORIGINAL declared span, whole-paragraph
+  // delete or not (see overlapsLocked's own comment above).
   if (overlapsLocked(sourceMap, edit.mdStart, edit.mdEnd)) {
     return { gateFailure: { gate: "G4", message: "edit overlaps a locked range" } };
   }
+
+  // D3 (M3b plan): whole-paragraph delete bypasses snapBoundary+resolveRange entirely.
+  // For a prefixed block (heading/list), snapBoundary would snap the edit's start forward
+  // past the synthetic "# "/"- " prefix, silently downgrading a whole-paragraph delete into
+  // an ordinary content-only delete and losing the paragraph-mark deletion. When the edit's
+  // raw span exactly equals some block's full [mdStart, mdEnd) (prefix included), resolve
+  // directly to a paragraph-level anchor instead -- if it doesn't exactly match a whole
+  // block span, fall through to the ordinary span path below.
+  if (edit.type === "del" && edit.wholeParagraph) {
+    const block = (sourceMap.blocks || []).find((b) => b.mdStart === edit.mdStart && b.mdEnd === edit.mdEnd);
+    if (block) {
+      return { anchor: { kind: "wholeParagraphDelete", bodyPath: block.bodyPath } };
+    }
+  }
+
   const [snapStart, snapEnd] = snapBoundary(sourceMap, edit.mdStart, edit.mdEnd);
   if (snapStart >= snapEnd) {
     return { gateFailure: { gate: "G4", message: "edit is entirely synthetic (no document text remains after boundary snapping)" } };

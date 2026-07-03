@@ -117,7 +117,10 @@ describe("G3 -- anchor resolution", () => {
     expect(result.gate).toBe("G3");
   });
 
-  it("rejects a whole-paragraph insertion (point sits between blocks, unresolvable until M3)", async () => {
+});
+
+describe("whole-paragraph insertion (M3b: D1+D2 make this resolvable via resolvePoint's paragraphBoundary kind)", () => {
+  it("a whole-paragraph insertion between two existing blocks now resolves successfully", async () => {
     const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
     const response = withEdit(
       exported,
@@ -125,8 +128,20 @@ describe("G3 -- anchor resolution", () => {
       "document.\n{++A whole new paragraph.++}\nThis is the second"
     );
     const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
-    expect(result.ok).toBe(false);
-    expect(result.gate).toBe("G3");
+    expect(result.ok).toBe(true);
+    const ins = result.edits.find((e) => e.type === "ins");
+    expect(ins.wholeParagraph).toBe(true);
+    expect(ins.anchor).toEqual({ kind: "paragraphBoundary", bodyPath: [0], edge: "after" });
+  });
+
+  it("an ordinary (non-whole-paragraph) insertion mid-sentence still resolves to an in-run point, not a paragraph boundary", async () => {
+    const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+    const response = withEdit(exported, "third paragraph", "{++really ++}third paragraph");
+    const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
+    expect(result.ok).toBe(true);
+    const ins = result.edits.find((e) => e.type === "ins");
+    expect(ins.wholeParagraph).toBe(false);
+    expect(ins.anchor.kind).toBe("run");
   });
 });
 
