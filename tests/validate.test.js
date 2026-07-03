@@ -102,6 +102,27 @@ describe("G2 -- fidelity (paraphrase drift)", () => {
     expect(result.ok).toBe(false);
     expect(result.gate).toBe("G2");
   });
+
+  // D7 (M3b plan): the header exemption is content-anchored and fails closed -- a response
+  // that doesn't open with the export's own verbatim header is rejected as a G2-class
+  // fabrication failure, the same way any other undetected drift is.
+  it("D7: fails closed when the response is missing the header entirely", async () => {
+    const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+    const bodyOnly = exported.slice(exported.indexOf("This is the first paragraph"));
+    const result = validate({ responseMarkdown: bodyOnly, exportedMarkdown: exported, sourceMap });
+    expect(result.ok).toBe(false);
+    expect(result.gate).toBe("G2");
+    expect(result.message).toMatch(/header/i);
+  });
+
+  it("D7: fails closed when the header is present but not at the very start of the response", async () => {
+    const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+    const response = "Some preamble the model added.\n" + exported;
+    const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
+    expect(result.ok).toBe(false);
+    expect(result.gate).toBe("G2");
+    expect(result.message).toMatch(/header/i);
+  });
 });
 
 describe("G3 -- anchor resolution", () => {

@@ -120,6 +120,27 @@ fixture (fixtures/comments-word-authored.docx, operator-provided) so the schemas
 copied from XML Word itself wrote rather than reconstructed from memory. This is the
 low-confidence/high-cost zone (repair-prompt-critical), so no schema guessing here.
 
+**D7 — G1 header exemption made content-anchored, not a static raw-position count
+(discovered mid-implementation; RULED).** Problem: "insert a whole new paragraph before
+the very first block" is structurally unreachable under the original skipBefore
+(`blocks[0].mdStart`, a fixed raw-offset count from M2): that boundary includes the
+header/body "\n\n" separator, which is the only newline budget G2's byte-equality
+requirement leaves available for a doc-start whole-paragraph-insert token to split, so no
+raw-text construction can satisfy skipBefore, G2, and D1's "alone on its own line"
+definition simultaneously (verified exhaustively, not just by trial and error). Fix:
+skipBefore is now derived from the export's own header content, found via a
+position-0-only `startsWith` match against the response (never a substring search
+elsewhere) -- ending exactly at the header's own content with trailing separator
+whitespace stripped, so the separator newlines become scannable. A response that doesn't
+open with the verbatim header fails closed as a G2-class fabrication failure. This is a
+tightening, not a weakening: the old rule exempted the first N raw characters from
+opener-scanning regardless of content; the new rule exempts only a verbatim, position-0
+match of the real header and rejects everything else -- it can never be satisfied by
+response content unrelated to the actual header the way a raw count could be. All
+existing M2 tests remain green unmodified; new regression coverage added (not edited) in
+tests/validate.test.js for the fail-closed missing/misplaced-header cases and in
+tests/inject.wholeParagraph.test.js for the doc-start insert this unblocks.
+
 ## The run-location + run-splitting algorithm (per spec §9.1)
 
 ### Locating the target w:p from bodyPath

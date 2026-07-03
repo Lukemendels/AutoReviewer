@@ -120,10 +120,36 @@ export function validate({ responseMarkdown, exportedMarkdown, sourceMap, larges
   // trailing region to exempt -- the far rarer risk of a human-authored comment's text in
   // the "## Unanchored comments" trailer accidentally containing brace sequences isn't
   // addressed here.
+  //
+  // D7 (M3b plan): the exemption boundary is content-anchored to the export's own header
+  // text, not a static raw-position count. It used to be `blocks[0].mdStart`, which
+  // includes the "\n\n" separator between the header and the first block -- that ate into
+  // the *only* newline budget a whole-paragraph-insert-before-the-first-block token has to
+  // work with under G2's byte-equality requirement, making that construction structurally
+  // unreachable (verified: no raw-text shape can satisfy skipBefore, G2, and D1's
+  // "alone on its own line" definition simultaneously when the exempt zone swallows part of
+  // that gap). The fix ends the exemption at the header's own content -- trailing separator
+  // whitespace stripped -- so the header/body separator newlines become scannable, which is
+  // exactly the gap a real whole-paragraph-insert token needs to split. This is a
+  // *tightening*, not a weakening: today the first N raw characters are exempt from
+  // opener-scanning regardless of what they contain; the new rule exempts only a verbatim,
+  // position-0 match of the real header, and fails closed (as a G2-class fabrication
+  // failure, same failure mode as any other undetected drift) if the response doesn't open
+  // with it -- it can never be satisfied by unrelated response content the way a raw count
+  // could be.
   const blocks = sourceMap.blocks || [];
-  const tokenizeOpts = {
-    skipBefore: blocks.length ? blocks[0].mdStart : exported.length,
-  };
+  const rawHeaderPrefix = blocks.length ? exported.slice(0, blocks[0].mdStart) : exported;
+  const headerContent = rawHeaderPrefix.replace(/\s+$/, "");
+  if (!response.startsWith(headerContent)) {
+    return {
+      ok: false,
+      gate: "G2",
+      message: "the response does not open with the exported document's own header (missing or altered header comment lines)",
+      diff: diffWords(response, exported),
+      repairPrompt: buildRepairPrompt(),
+    };
+  }
+  const tokenizeOpts = { skipBefore: headerContent.length };
 
   // G1 -- grammar
   const tokenized = tokenize(response, tokenizeOpts);
