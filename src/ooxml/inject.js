@@ -125,6 +125,12 @@ function setRevisionAttrs(el, { id, author, date }) {
   el.setAttributeNS(NS.w, "w:date", date);
 }
 
+// Allocates the next revision id from the shared counter, bundled with author/date --
+// used by both the ordinary and whole-paragraph edit paths.
+function nextRevFor(revState) {
+  return { id: revState.next++, author: revState.author, date: revState.date };
+}
+
 // Wraps `runEl` (already positioned in the DOM, e.g. a splitRun `core` piece) in a fresh
 // <w:del>, renaming its w:t -> w:delText in place (spec §9.1 step 3). Mutates runEl's own
 // position: replaced in its parent by the new <w:del> wrapper.
@@ -231,7 +237,7 @@ function applyOrdinaryEdits(doc, p, edits, revState, commentState) {
   // but document order is trivial to get here and much friendlier to a human reviewer than
   // the right-to-left order tasks actually execute in below.
   function nextRev() {
-    return { id: revState.next++, author: revState.author, date: revState.date };
+    return nextRevFor(revState);
   }
 
   for (const edit of edits) {
@@ -336,10 +342,156 @@ function applyOrdinaryEdits(doc, p, edits, revState, commentState) {
   }
 }
 
-function applyWholeParagraphEdits() {
-  throw new Error(
-    "injectEdits: whole-paragraph insert/delete is not yet implemented (M3b plan D3/D4/D5, in progress)"
-  );
+/* ------------------------------------------------------------------ *
+ * Paragraph-mark flagging (shared by whole-paragraph insert and delete): ensures pPr/rPr
+ * exist, inserting each at the schema-correct position -- w:rPr must appear before
+ * w:sectPr/w:pPrChange if either exists on that paragraph (CT_PPr's own child order; this
+ * is the concrete mechanism behind the last-paragraph/sectPr known risk, spec §16 --
+ * blindly appending would produce schema-invalid XML on exactly the paragraph most likely
+ * to carry a sectPr, the last one in the body). Within rPr, ins/del comes before any other
+ * formatting properties (CT_ParaRPr's own order), so it's always prepended.
+ * ------------------------------------------------------------------ */
+function ensurePPr(doc, p) {
+  let pPr = kid(p, "pPr");
+  if (!pPr) {
+    pPr = doc.createElementNS(NS.w, "w:pPr");
+    p.insertBefore(pPr, p.firstChild);
+  }
+  return pPr;
+}
+function ensureParaRPr(doc, pPr) {
+  let rPr = kid(pPr, "rPr");
+  if (!rPr) {
+    rPr = doc.createElementNS(NS.w, "w:rPr");
+    const before = kid(pPr, "sectPr") || kid(pPr, "pPrChange");
+    if (before) pPr.insertBefore(rPr, before);
+    else pPr.appendChild(rPr);
+  }
+  return rPr;
+}
+function flagParagraphMark(doc, p, tag, rev) {
+  const pPr = ensurePPr(doc, p);
+  const rPr = ensureParaRPr(doc, pPr);
+  const markEl = doc.createElementNS(NS.w, "w:" + tag);
+  setRevisionAttrs(markEl, rev);
+  rPr.insertBefore(markEl, rPr.firstChild);
+}
+
+const D4_ERROR_MESSAGE =
+  "This paragraph contains existing tracked changes. Accept or reject them in Word first, then re-export and re-run the review.";
+
+/* ------------------------------------------------------------------ *
+ * Whole-paragraph delete (D3/D4): wrap every direct-child w:r (and w:hyperlink's inner
+ * runs) in a fresh <w:del>, then flag the paragraph mark deleted.
+ * ------------------------------------------------------------------ */
+function applyWholeParagraphDelete(doc, p, revState) {
+  for (const c of [...p.children]) {
+    const ln = c.localName;
+    if (ln === "pPr") continue;
+    if (ln === "r") {
+      wrapAsDel(doc, c, nextRevFor(revState));
+    } else if (ln === "hyperlink") {
+      for (const inner of [...c.children]) {
+        if (inner.localName === "r") wrapAsDel(doc, inner, nextRevFor(revState));
+      }
+    } else if (ln === "ins" || ln === "del" || ln === "fldSimple" || ln === "sdt") {
+      // D4: locked content (fldSimple/sdt) can never actually reach here -- its span
+      // would overlap a locked range and G4 rejects it upstream -- but the check stays as
+      // defense in depth. Pre-existing w:ins/w:del is a real, reachable edge case
+      // (deferred by ruling): Word's delete-of-an-insertion semantics are non-trivial, so
+      // this throws a clear, user-actionable error instead of guessing at corruption.
+      throw new Error(D4_ERROR_MESSAGE);
+    }
+    // bookmarkStart/End, commentRangeStart/End, proofErr, etc. left alone.
+  }
+  flagParagraphMark(doc, p, "del", nextRevFor(revState));
+}
+
+/* ------------------------------------------------------------------ *
+ * Whole-paragraph insert (D2/D5): build a fresh <w:p> and insert it as a sibling of the
+ * anchor paragraph.
+ * ------------------------------------------------------------------ */
+const LIST_PREFIX_RE = /^(?: ?- |\d+\.\s+)/;
+
+// Copies the anchor's pPr for style continuity (heading/list style, indent), minus
+// sectPr/pPrChange (those never propagate to a new paragraph) and minus numPr (D5: numPr
+// is NOT unconditionally inherited -- it's copied back only when the inserted text itself
+// has a recognized bullet/numbered prefix AND the anchor is itself a list item; otherwise
+// a plain paragraph merely adjacent to a list must not silently become a list item too).
+function buildWholeParagraphInsertPPr(doc, anchorP, text) {
+  const anchorPPr = kid(anchorP, "pPr");
+  const newPPr = doc.createElementNS(NS.w, "w:pPr");
+  let bodyText = text;
+  if (anchorPPr) {
+    for (const c of anchorPPr.children) {
+      const ln = c.localName;
+      if (ln === "sectPr" || ln === "pPrChange" || ln === "numPr") continue;
+      newPPr.appendChild(c.cloneNode(true));
+    }
+    const anchorNumPr = kid(anchorPPr, "numPr");
+    const m = anchorNumPr ? LIST_PREFIX_RE.exec(text) : null;
+    if (m) {
+      bodyText = text.slice(m[0].length);
+      const numPrClone = anchorNumPr.cloneNode(true);
+      const pStyleInNew = kid(newPPr, "pStyle");
+      newPPr.insertBefore(numPrClone, pStyleInNew ? pStyleInNew.nextSibling : newPPr.firstChild);
+    }
+  }
+  return { pPr: newPPr, bodyText };
+}
+
+function buildWholeParagraphInsertParagraph(doc, anchorP, text, revState) {
+  const { pPr: newPPr, bodyText } = buildWholeParagraphInsertPPr(doc, anchorP, text);
+
+  const rPr = doc.createElementNS(NS.w, "w:rPr");
+  const markIns = doc.createElementNS(NS.w, "w:ins");
+  setRevisionAttrs(markIns, nextRevFor(revState));
+  rPr.appendChild(markIns);
+  newPPr.appendChild(rPr);
+
+  const newP = doc.createElementNS(NS.w, "w:p");
+  newP.appendChild(newPPr);
+
+  const contentIns = doc.createElementNS(NS.w, "w:ins");
+  setRevisionAttrs(contentIns, nextRevFor(revState));
+  if (bodyText) contentIns.appendChild(buildRunWithText(doc, null, bodyText));
+  newP.appendChild(contentIns);
+
+  return newP;
+}
+
+// Groups a paragraph-boundary insert group's edits by (bodyPath, edge) and inserts each
+// group's new paragraphs as siblings of the anchor, in the edits' own left-to-right
+// document order (spec/plan's one explicit exception to right-to-left processing --
+// inserting several new siblings at one point is order-sensitive in a way in-run
+// splitting isn't). A single fixed reference node per group is enough regardless of edge:
+// each subsequent insertBefore(newP, ref) with ref held constant naturally accumulates
+// new paragraphs in call order immediately before ref.
+function applyWholeParagraphInserts(doc, body, bodyPath, edits, revState) {
+  const anchorP = locateParagraph(body, bodyPath);
+  const byEdge = new Map();
+  for (const edit of edits) {
+    const edge = edit.anchor.edge;
+    if (!byEdge.has(edge)) byEdge.set(edge, []);
+    byEdge.get(edge).push(edit);
+  }
+  for (const [edge, group] of byEdge) {
+    const sorted = [...group].sort((a, b) => a.mdPos - b.mdPos);
+    const ref = edge === "before" ? anchorP : anchorP.nextSibling;
+    for (const edit of sorted) {
+      const newP = buildWholeParagraphInsertParagraph(doc, anchorP, edit.newText, revState);
+      anchorP.parentNode.insertBefore(newP, ref);
+    }
+  }
+}
+
+function applyWholeParagraphEdits(doc, body, bodyPath, edits, revState) {
+  const deletes = edits.filter((e) => e.anchor.kind === "wholeParagraphDelete");
+  const inserts = edits.filter((e) => e.anchor.kind === "paragraphBoundary");
+  for (const edit of deletes) {
+    applyWholeParagraphDelete(doc, locateParagraph(body, bodyPath), revState);
+  }
+  if (inserts.length) applyWholeParagraphInserts(doc, body, bodyPath, inserts, revState);
 }
 
 /* ------------------------------------------------------------------ *
@@ -367,7 +519,7 @@ export function injectEdits(documentXmlDoc, acceptedEdits, _sourceMap, opts = {}
     const wholeParagraph = edits.filter((e) => isWholeParagraphAnchor(e.anchor));
     const ordinary = edits.filter((e) => !isWholeParagraphAnchor(e.anchor));
     if (ordinary.length) applyOrdinaryEdits(documentXmlDoc, p, ordinary, revState, commentState);
-    if (wholeParagraph.length) applyWholeParagraphEdits(documentXmlDoc, body, p, bodyPath, wholeParagraph, revState);
+    if (wholeParagraph.length) applyWholeParagraphEdits(documentXmlDoc, body, bodyPath, wholeParagraph, revState);
   }
 
   return { newComments: commentState.newComments };
