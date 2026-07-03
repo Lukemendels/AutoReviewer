@@ -100,3 +100,50 @@ describe("writeZip: guard limits (fake small inputs, not a real 65,536-entry arc
     await expect(writeZip(original, {})).resolves.toBeInstanceOf(ArrayBuffer);
   });
 });
+
+// M3b: mutatedParts can name a part the original archive never had at all -- a document
+// with no pre-existing comments gets a brand-new word/comments.xml the first time a
+// comment is injected (ooxml/comments.js's upsertComments). The original M3a scope only
+// ever replaced entries already present in zip.order; a wholly new part was silently
+// dropped (order.map() never visits a name absent from the original archive).
+describe("writeZip: adding a part the original archive didn't have", () => {
+  it("includes a brand-new entry not present in the original archive", async () => {
+    const original = await unzip(loadFixture("plain-paragraphs.docx"));
+    expect(original.entries["word/comments.xml"]).toBeUndefined();
+
+    const newXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:comments xmlns:w="urn:w"><w:comment w:id="0"/></w:comments>';
+    const rewritten = await writeZip(original, { "word/comments.xml": newXml });
+    const roundTripped = await unzip(rewritten);
+
+    expect(roundTripped.order).toContain("word/comments.xml");
+    expect(roundTripped.order.length).toBe(original.order.length + 1);
+    const bytes = await readEntryBytes(roundTripped, "word/comments.xml");
+    expect(new TextDecoder().decode(bytes)).toBe(newXml);
+  });
+
+  it("leaves every original entry's order and content untouched when adding a new one", async () => {
+    const original = await unzip(loadFixture("plain-paragraphs.docx"));
+    const rewritten = await writeZip(original, { "word/comments.xml": "<w:comments/>" });
+    const roundTripped = await unzip(rewritten);
+
+    expect(roundTripped.order.slice(0, original.order.length)).toEqual(original.order);
+    for (const name of original.order) {
+      const a = await readEntryBytes(original, name);
+      const b = await readEntryBytes(roundTripped, name);
+      expect(b, `entry "${name}" content changed`).toEqual(a);
+    }
+  });
+
+  it("combines adding a new part with mutating an existing one in the same call", async () => {
+    const original = await unzip(loadFixture("plain-paragraphs.docx"));
+    const newDocXml = "<w:document><w:body><w:p/></w:body></w:document>";
+    const rewritten = await writeZip(original, {
+      "word/document.xml": newDocXml,
+      "word/comments.xml": "<w:comments/>",
+    });
+    const roundTripped = await unzip(rewritten);
+
+    expect(new TextDecoder().decode(await readEntryBytes(roundTripped, "word/document.xml"))).toBe(newDocXml);
+    expect(new TextDecoder().decode(await readEntryBytes(roundTripped, "word/comments.xml"))).toBe("<w:comments/>");
+  });
+});
