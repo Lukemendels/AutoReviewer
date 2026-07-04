@@ -1326,6 +1326,7 @@ Proceed with the review content normally once the operator has the tool open.
     }
     return out;
   }
+  var MAX_DIFF_CELLS = 4e6;
   function diffWords(a, b) {
     const A = tokenizeWords(a);
     const B = tokenizeWords(b);
@@ -1337,11 +1338,28 @@ Proceed with the review content normally once the operator has the tool open.
       endA--;
       endB--;
     }
+    const midA = endA - start, midB = endB - start;
+    if (midA * midB > MAX_DIFF_CELLS) return null;
     const segments = [];
     for (let i = 0; i < start; i++) segments.push({ type: "same", text: A[i] });
     segments.push(...lcsDiff(A.slice(start, endA), B.slice(start, endB)));
     for (let i = endA; i < A.length; i++) segments.push({ type: "same", text: A[i] });
     return mergeAdjacent(segments);
+  }
+  function findFirstDivergence(a, b, contextChars = 120) {
+    const minLen = Math.min(a.length, b.length);
+    let offset = 0;
+    while (offset < minLen && a[offset] === b[offset]) offset++;
+    const contextStart = Math.max(0, offset - contextChars);
+    return {
+      offset,
+      before: a.slice(contextStart, offset),
+      afterA: a.slice(offset, offset + contextChars),
+      afterB: b.slice(offset, offset + contextChars),
+      truncatedBefore: contextStart > 0,
+      truncatedAfterA: offset + contextChars < a.length,
+      truncatedAfterB: offset + contextChars < b.length
+    };
   }
 
   // src/validate.js
@@ -1405,7 +1423,11 @@ Proceed with the review content normally once the operator has the tool open.
         ok: false,
         gate: "G2",
         message: "the response does not open with the exported document's own header (missing or altered header comment lines)",
-        diff: diffWords(response, exported),
+        // Cheap (O(n)) diagnostic only -- never an eager full diff (see the G2 fidelity
+        // check below for why: on a real document, a full diffWords() call is only safe to
+        // run on demand, not unconditionally on every failure).
+        firstDivergence: findFirstDivergence(response, exported),
+        diffInputs: { a: response, b: exported },
         repairPrompt: buildRepairPrompt()
       };
     }
@@ -1431,7 +1453,8 @@ Proceed with the review content normally once the operator has the tool open.
         ok: false,
         gate: "G2",
         message: "the response's underlying text does not byte-match the exported document outside CriticMarkup tokens",
-        diff: diffWords(strippedResponse, exported),
+        firstDivergence: findFirstDivergence(strippedResponse, exported),
+        diffInputs: { a: strippedResponse, b: exported },
         repairPrompt: buildRepairPrompt()
       };
     }
@@ -1571,10 +1594,19 @@ Proceed with the review content normally once the operator has the tool open.
       del.textContent = edit.oldText;
       el.appendChild(del);
     } else if (edit.type === "sub") {
-      for (const seg of diffWords(edit.oldText, edit.newText)) {
-        const node = seg.type === "same" ? doc.createElement("span") : doc.createElement(seg.type === "del" ? "del" : "ins");
-        node.textContent = seg.text;
-        el.appendChild(node);
+      const segs = diffWords(edit.oldText, edit.newText);
+      if (segs) {
+        for (const seg of segs) {
+          const node = seg.type === "same" ? doc.createElement("span") : doc.createElement(seg.type === "del" ? "del" : "ins");
+          node.textContent = seg.text;
+          el.appendChild(node);
+        }
+      } else {
+        const del = doc.createElement("del");
+        del.textContent = edit.oldText;
+        const ins = doc.createElement("ins");
+        ins.textContent = edit.newText;
+        el.append(del, ins);
       }
     } else {
       const span = doc.createElement("span");
@@ -2399,6 +2431,9 @@ Proceed with the review content normally once the operator has the tool open.
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes.buffer;
   }
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
   function renderDiff(container, segments) {
     container.innerHTML = "";
     container.className = "ar-diff";
@@ -2507,9 +2542,31 @@ Proceed with the review content normally once the operator has the tool open.
       title.innerHTML = `<strong>${result.gate} failed:</strong> ${result.message}`;
       box.appendChild(title);
       if (result.gate === "G2") {
-        const diffEl = document.createElement("div");
-        renderDiff(diffEl, result.diff);
-        box.appendChild(diffEl);
+        const fd = result.firstDivergence;
+        if (fd) {
+          const fdEl = document.createElement("div");
+          fdEl.className = "ar-first-divergence";
+          fdEl.innerHTML = `<p>First divergence at offset ${fd.offset}:</p><pre>${fd.truncatedBefore ? "\u2026" : ""}${escapeHtml(fd.before)}<mark>${escapeHtml(fd.afterA)}</mark>${fd.truncatedAfterA ? "\u2026" : ""}
+vs.
+${fd.truncatedBefore ? "\u2026" : ""}${escapeHtml(fd.before)}<mark>${escapeHtml(fd.afterB)}</mark>${fd.truncatedAfterB ? "\u2026" : ""}</pre>`;
+          box.appendChild(fdEl);
+        }
+        if (result.diffInputs) {
+          const showDiffBtn = document.createElement("button");
+          showDiffBtn.type = "button";
+          showDiffBtn.textContent = "Show full diff";
+          showDiffBtn.addEventListener("click", () => {
+            const segments = diffWords(result.diffInputs.a, result.diffInputs.b);
+            const diffEl = document.createElement("div");
+            if (segments) {
+              renderDiff(diffEl, segments);
+            } else {
+              diffEl.textContent = "The divergence is too large/scattered to diff in full -- see the first-divergence context above.";
+            }
+            box.replaceChild(diffEl, showDiffBtn);
+          });
+          box.appendChild(showDiffBtn);
+        }
         const copyBtn = document.createElement("button");
         copyBtn.type = "button";
         copyBtn.textContent = "Copy repair prompt";

@@ -89,8 +89,12 @@ describe("G2 -- fidelity (paraphrase drift)", () => {
     const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
     expect(result.ok).toBe(false);
     expect(result.gate).toBe("G2");
-    expect(result.diff).toBeTruthy();
-    expect(result.diff.some((seg) => seg.type !== "same")).toBe(true);
+    // Cheap first-divergence diagnostics, not an eager full diff (perf: see validate.js's
+    // G2 comment and tests/validate.perf.test.js) -- the UI computes the full word-level
+    // diff lazily, on demand, from diffInputs.
+    expect(result.firstDivergence).toBeTruthy();
+    expect(result.firstDivergence.offset).toBeGreaterThanOrEqual(0);
+    expect(result.diffInputs).toEqual({ a: expect.any(String), b: exported });
     expect(typeof result.repairPrompt).toBe("string");
     expect(result.repairPrompt.length).toBeGreaterThan(0);
   });

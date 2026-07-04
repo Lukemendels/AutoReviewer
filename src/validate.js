@@ -4,7 +4,7 @@ import { tokenize } from "./criticmarkup/grammar.js";
 import { strip } from "./criticmarkup/strip.js";
 import { parseEdits } from "./criticmarkup/parse.js";
 import { snapBoundary, resolveRange, resolvePoint, SourceMapError } from "./sourcemap.js";
-import { diffWords } from "./ui/diff.js";
+import { findFirstDivergence } from "./ui/diff.js";
 
 function normalizeNewlines(s) {
   return s.replace(/\r\n/g, "\n");
@@ -145,7 +145,11 @@ export function validate({ responseMarkdown, exportedMarkdown, sourceMap, larges
       ok: false,
       gate: "G2",
       message: "the response does not open with the exported document's own header (missing or altered header comment lines)",
-      diff: diffWords(response, exported),
+      // Cheap (O(n)) diagnostic only -- never an eager full diff (see the G2 fidelity
+      // check below for why: on a real document, a full diffWords() call is only safe to
+      // run on demand, not unconditionally on every failure).
+      firstDivergence: findFirstDivergence(response, exported),
+      diffInputs: { a: response, b: exported },
       repairPrompt: buildRepairPrompt(),
     };
   }
@@ -171,11 +175,22 @@ export function validate({ responseMarkdown, exportedMarkdown, sourceMap, larges
   // G2 -- fidelity (the fabrication gate)
   const strippedResponse = strip(response, tokenizeOpts);
   if (strippedResponse !== exported) {
+    // Deliberately NOT an eager diffWords() call here: a full word-level diff is an
+    // O(n*m) LCS computation, and on a real document a G2 failure can have drift
+    // scattered across many separate points rather than one localized paraphrase --
+    // prefix/suffix trimming alone can't shrink that down, leaving a divergent window
+    // spanning nearly the whole document. Measured on a real ~65K-character export with
+    // scattered drift: ~13s and ~2.1GB for a single diffWords() call, which would OOM a
+    // retry loop (the roundtrip script, the property fuzz suite) and could hang a browser
+    // tab on a real 50-page document. findFirstDivergence is O(n) and safe unconditionally;
+    // the full diff (still capped -- see diff.js) is computed lazily, on demand, only when
+    // a human actually asks to see it (the ratification UI's failure view).
     return {
       ok: false,
       gate: "G2",
       message: "the response's underlying text does not byte-match the exported document outside CriticMarkup tokens",
-      diff: diffWords(strippedResponse, exported),
+      firstDivergence: findFirstDivergence(strippedResponse, exported),
+      diffInputs: { a: strippedResponse, b: exported },
       repairPrompt: buildRepairPrompt(),
     };
   }

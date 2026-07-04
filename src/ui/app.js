@@ -12,6 +12,7 @@ import { parseXml } from "../ooxml/parse.js";
 import { injectEdits } from "../ooxml/inject.js";
 import { upsertComments } from "../ooxml/comments.js";
 import { serializePart } from "../ooxml/serialize.js";
+import { diffWords } from "./diff.js";
 
 const FLOWS = [
   { id: "run-review", label: "Run Review" },
@@ -69,6 +70,10 @@ function base64ToArrayBuffer(b64) {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes.buffer;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function renderDiff(container, segments) {
@@ -205,9 +210,39 @@ function renderValidationResult(container, result, exported, injectCtx) {
     box.appendChild(title);
 
     if (result.gate === "G2") {
-      const diffEl = document.createElement("div");
-      renderDiff(diffEl, result.diff);
-      box.appendChild(diffEl);
+      // Cheap, always-safe: show first-divergence context immediately (validate.js never
+      // computes a full diff eagerly -- see its G2 comment for why). The full word-level
+      // diff is computed lazily, on demand, only if the human clicks the button -- and
+      // even then diffWords is capped, falling back to this same context view if the
+      // divergence turns out to be too large/scattered to diff safely.
+      const fd = result.firstDivergence;
+      if (fd) {
+        const fdEl = document.createElement("div");
+        fdEl.className = "ar-first-divergence";
+        fdEl.innerHTML =
+          `<p>First divergence at offset ${fd.offset}:</p>` +
+          `<pre>${fd.truncatedBefore ? "…" : ""}${escapeHtml(fd.before)}<mark>${escapeHtml(fd.afterA)}</mark>${fd.truncatedAfterA ? "…" : ""}\n` +
+          `vs.\n` +
+          `${fd.truncatedBefore ? "…" : ""}${escapeHtml(fd.before)}<mark>${escapeHtml(fd.afterB)}</mark>${fd.truncatedAfterB ? "…" : ""}</pre>`;
+        box.appendChild(fdEl);
+      }
+
+      if (result.diffInputs) {
+        const showDiffBtn = document.createElement("button");
+        showDiffBtn.type = "button";
+        showDiffBtn.textContent = "Show full diff";
+        showDiffBtn.addEventListener("click", () => {
+          const segments = diffWords(result.diffInputs.a, result.diffInputs.b);
+          const diffEl = document.createElement("div");
+          if (segments) {
+            renderDiff(diffEl, segments);
+          } else {
+            diffEl.textContent = "The divergence is too large/scattered to diff in full -- see the first-divergence context above.";
+          }
+          box.replaceChild(diffEl, showDiffBtn);
+        });
+        box.appendChild(showDiffBtn);
+      }
 
       const copyBtn = document.createElement("button");
       copyBtn.type = "button";

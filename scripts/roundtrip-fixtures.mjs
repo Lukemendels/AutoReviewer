@@ -6,11 +6,7 @@
 //
 // Deterministic by default (AR_FUZZ_SEED, same convention as the Vitest property suites)
 // so a CI failure reproduces exactly from its own log line. Reuses buildValidResponse
-// (tests/helpers/randomEdits.js) rather than a bespoke response builder: it already knows
-// how to construct a response that only ever targets real document-text runs, safely, for
-// any fixture's source map -- including tracked-changes.docx/comments-threaded.docx, whose
-// pre-existing tracked changes/comments render as synthetic markup outside
-// sourceMap.blocks[].runs and so are never touched by it either.
+// (tests/helpers/randomEdits.js) rather than a bespoke response builder.
 import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -35,6 +31,44 @@ mkdirSync(outDir, { recursive: true });
 const seed = Number(process.env.AR_FUZZ_SEED) || 42;
 const rng = mulberry32(seed);
 
+// Fixtures whose PRISTINE export already contains CriticMarkup-shaped synthetic text
+// (pre-existing tracked changes and/or comments render as {++...++}/{--...--}/{~~...~~}/
+// {>>...<<} in the exported markdown -- see fixtures/generate.py's tracked_changes(),
+// comments_threaded(), and stressor()) are structurally incompatible with
+// buildValidResponse, for reasons that go deeper than token *placement* (an earlier
+// version of this script assumed a placement/adjacency issue and tried a retry-with-
+// fallback strategy; investigating that assumption is what turned up the real mechanisms
+// below, each confirmed directly against the actual export.js/validate.js behavior):
+//
+// - tracked-changes.docx / stressor.docx: buildValidResponse constructs a "response" by
+//   splicing new tokens into the pristine EXPORTED markdown, which still contains the
+//   pre-existing tokens verbatim. Re-tokenizing that text treats those pre-existing
+//   tokens as if they were newly-proposed edits too, and strip()'s "accepted"
+//   interpretation of them (ins -> "", del -> its old text, sub -> its old text) does NOT
+//   match what the pristine markdown itself shows at that position (the raw, un-stripped
+//   token syntax) -- so even echoing the pristine markdown completely unedited already
+//   fails G2 (confirmed: tokenize(pristineMarkdown) fails immediately for stressor.docx
+//   once ANY edit is spliced in elsewhere, because the stripped/original coordinate
+//   spaces diverge downstream of every pre-existing token; tracked-changes.docx fails G2
+//   outright on every attempt for the same underlying reason). This is the identical,
+//   already-understood limitation tests/helpers/randomEdits.js's own CLEAN_FIXTURES list
+//   was built to exclude for M2's property-fuzz suite -- not new to M3b.
+// - comments-threaded.docx: additionally exposes a genuine, separate export.js defect
+//   found while investigating this: its pristine export contains a REPLY comment whose
+//   thread gets rendered *inside* its parent's {==highlight==} span (confirmed:
+//   tokenize() of the untouched, zero-edit pristine export already fails G1 nesting at a
+//   fixed offset). serializeSegsTracked tracks only one open highlight span at a time
+//   (`let openId = null`), so a second, overlapping comment range's thread is emitted
+//   inline mid-span instead of after it, producing a `{==...{>>...<<}...==}` nesting.
+//   That's a pre-existing rendering defect independent of any edit buildValidResponse
+//   could construct -- not something a response-construction strategy can route around.
+//
+// These are excluded from the "must produce a real injected edit" requirement below with
+// zero injected edits (still exercising the round-trip machinery, just unmutated) rather
+// than silently warned past, since the reason is understood and documented, not a
+// transient/occasional draw.
+const STRUCTURALLY_INCOMPATIBLE_FIXTURES = new Set(["tracked-changes.docx", "comments-threaded.docx", "stressor.docx"]);
+
 const fixtures = readdirSync(fixturesDir).filter((f) => f.endsWith(".docx"));
 const manifest = {};
 
@@ -44,22 +78,30 @@ for (const name of fixtures) {
   const zip = await unzip(bytes);
 
   const { markdown, sourceMap } = await exportDocx(bytes, { DOMParserImpl: DOMParser, filename: name });
-  // A handful of retries with fresh draws: a fixture with PRE-EXISTING comments (their own
-  // {>>...<<} already present in the exported markdown as synthetic text) can occasionally
-  // have buildValidResponse's randomly-placed new comment token land close enough to
-  // collide at the grammar level (G1 nesting) -- not a content bug, just an occasional
-  // antagonistic draw. Falling back to zero injected edits for this fixture (still
-  // exercising the round-trip machinery, just without new edits) beats a hard crash.
+
   let result = { ok: true, edits: [] };
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const candidateResponse = buildValidResponse(rng, markdown, sourceMap);
-    const candidateResult = validate({ responseMarkdown: candidateResponse, exportedMarkdown: markdown, sourceMap });
-    if (candidateResult.ok) {
-      result = candidateResult;
-      break;
+  if (!STRUCTURALLY_INCOMPATIBLE_FIXTURES.has(name)) {
+    // A handful of retries with fresh draws is defensive-only: every fixture actually
+    // exercised here has passed on the first attempt in practice. If a fixture that's
+    // NOT in the exclusion list above ever fails to produce a real edit set, that's a
+    // genuine regression (in buildValidResponse, validate, or the fixture itself) and
+    // must fail the build loudly, not get silently skipped.
+    let found = false;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const candidateResponse = buildValidResponse(rng, markdown, sourceMap);
+      const candidateResult = validate({ responseMarkdown: candidateResponse, exportedMarkdown: markdown, sourceMap });
+      if (candidateResult.ok && candidateResult.edits.length) {
+        result = candidateResult;
+        found = true;
+        break;
+      }
     }
-    if (attempt === 4) {
-      console.warn(`roundtrip-fixtures: ${name} -- no valid random response after 5 attempts, proceeding with zero injected edits`);
+    if (!found) {
+      throw new Error(
+        `roundtrip-fixtures: ${name} produced no valid random response with at least one edit after 5 attempts ` +
+          `(seed=${seed}). This fixture is not in STRUCTURALLY_INCOMPATIBLE_FIXTURES, so this is a regression -- ` +
+          `investigate rather than silencing it.`
+      );
     }
   }
 

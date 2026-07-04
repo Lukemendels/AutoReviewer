@@ -39,6 +39,21 @@ function mergeAdjacent(segments) {
   return out;
 }
 
+// Bounds the O(n*m) LCS DP table's worst-case size regardless of overall document length.
+// Chosen from measurement (see tests/diff.test.js's cap tests): at this cell count, the DP
+// still completes in well under 100ms and under 50MB -- a real document-wide G2 failure
+// with drift scattered across many separate points (not one localized paraphrase) can
+// leave a divergent middle window spanning nearly the whole document after prefix/suffix
+// trimming, which without this cap turns into a multi-second, multi-GB computation (see
+// the M3b plan's lessons section for the measured repro on fixtures/stressor.docx: a
+// window of ~16,000 x 16,000 tokens took ~13s and ~2.1GB for a SINGLE diffWords call).
+export const MAX_DIFF_CELLS = 4_000_000;
+
+// Past MAX_DIFF_CELLS, returns null rather than attempting the full diff -- callers must
+// fall back to findFirstDivergence() for a cheap, safe alternative (this is what "on
+// demand" full-diff UI affordances should do: try diffWords, and if null, show the
+// first-divergence context instead, so a user can never accidentally trigger the
+// worst-case cost just by asking to see a diff).
 export function diffWords(a, b) {
   const A = tokenizeWords(a);
   const B = tokenizeWords(b);
@@ -50,10 +65,36 @@ export function diffWords(a, b) {
   let endA = A.length, endB = B.length;
   while (endA > start && endB > start && A[endA - 1] === B[endB - 1]) { endA--; endB--; }
 
+  const midA = endA - start, midB = endB - start;
+  if (midA * midB > MAX_DIFF_CELLS) return null;
+
   const segments = [];
   for (let i = 0; i < start; i++) segments.push({ type: "same", text: A[i] });
   segments.push(...lcsDiff(A.slice(start, endA), B.slice(start, endB)));
   for (let i = endA; i < A.length; i++) segments.push({ type: "same", text: A[i] });
 
   return mergeAdjacent(segments);
+}
+
+// Cheap (O(min(n,m)), no O(n*m) computation ever) first-point-of-difference finder: scans
+// forward for the first character where the two strings diverge and returns that offset
+// plus a small context excerpt on each side. This is what G2 failures should report by
+// default -- diffing the whole document is comparatively expensive and, per spec, only
+// needed for the human-facing "show me exactly what changed" view, not for the gate
+// decision itself (which only needs to know THAT and roughly WHERE they diverge).
+export function findFirstDivergence(a, b, contextChars = 120) {
+  const minLen = Math.min(a.length, b.length);
+  let offset = 0;
+  while (offset < minLen && a[offset] === b[offset]) offset++;
+
+  const contextStart = Math.max(0, offset - contextChars);
+  return {
+    offset,
+    before: a.slice(contextStart, offset),
+    afterA: a.slice(offset, offset + contextChars),
+    afterB: b.slice(offset, offset + contextChars),
+    truncatedBefore: contextStart > 0,
+    truncatedAfterA: offset + contextChars < a.length,
+    truncatedAfterB: offset + contextChars < b.length,
+  };
 }
