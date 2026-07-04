@@ -120,6 +120,27 @@ fixture (fixtures/comments-word-authored.docx, operator-provided) so the schemas
 copied from XML Word itself wrote rather than reconstructed from memory. This is the
 low-confidence/high-cost zone (repair-prompt-critical), so no schema guessing here.
 
+**D7 — G1 header exemption made content-anchored, not a static raw-position count
+(discovered mid-implementation; RULED).** Problem: "insert a whole new paragraph before
+the very first block" is structurally unreachable under the original skipBefore
+(`blocks[0].mdStart`, a fixed raw-offset count from M2): that boundary includes the
+header/body "\n\n" separator, which is the only newline budget G2's byte-equality
+requirement leaves available for a doc-start whole-paragraph-insert token to split, so no
+raw-text construction can satisfy skipBefore, G2, and D1's "alone on its own line"
+definition simultaneously (verified exhaustively, not just by trial and error). Fix:
+skipBefore is now derived from the export's own header content, found via a
+position-0-only `startsWith` match against the response (never a substring search
+elsewhere) -- ending exactly at the header's own content with trailing separator
+whitespace stripped, so the separator newlines become scannable. A response that doesn't
+open with the verbatim header fails closed as a G2-class fabrication failure. This is a
+tightening, not a weakening: the old rule exempted the first N raw characters from
+opener-scanning regardless of content; the new rule exempts only a verbatim, position-0
+match of the real header and rejects everything else -- it can never be satisfied by
+response content unrelated to the actual header the way a raw count could be. All
+existing M2 tests remain green unmodified; new regression coverage added (not edited) in
+tests/validate.test.js for the fail-closed missing/misplaced-header cases and in
+tests/inject.wholeParagraph.test.js for the doc-start insert this unblocks.
+
 ## The run-location + run-splitting algorithm (per spec §9.1)
 
 ### Locating the target w:p from bodyPath
@@ -331,3 +352,62 @@ are constructed as CriticMarkup responses against the existing exported markdown
 current fixtures (plain-paragraphs, headings-and-lists, tables), which is where these
 constructs live. (fixtures/comments-word-authored.docx arrives with the D6 follow-up,
 not this milestone.)
+
+## Lessons learned (added post-merge, from code review on PR #14)
+
+Three separate bugs this milestone shared one shape: two features that were each
+correct in isolation, verified by their own tests, produced wrong behavior only when
+composed. None of the three was caught by unit tests of either feature alone — each
+needed a test that exercised both features' interaction on a realistic input.
+
+- **D3 (whole-paragraph delete × snapBoundary's prefix-skipping).**
+  snapBoundary (built for ordinary content edits) snaps an edit's start forward past a
+  block's synthetic "# "/"- " prefix — correct for a content-only delete, since the
+  prefix isn't real document text. Composed with a whole-paragraph delete, the same
+  snap silently downgraded the operation to a content-only delete, dropping the
+  paragraph-mark deletion that was the entire point. Fix: whole-paragraph delete
+  bypasses snapBoundary+resolveRange entirely when the edit's raw span exactly matches
+  a block's full span (see D3 above).
+
+- **D7 (G1's header exemption × G2's byte-equality requirement).**
+  The header exemption (skip G1 grammar checks before `blocks[0].mdStart`) and G2's
+  byte-equality requirement were each correct on their own, but their composition made
+  "insert a whole new paragraph before the very first block" structurally unreachable:
+  the only newline budget available to split was the header/body separator, and no
+  raw-text construction could satisfy skipBefore, G2, and D1's "alone on its own line"
+  rule simultaneously. Fix: made the exemption content-anchored instead of a static
+  raw-offset count (see D7 above).
+
+- **This PR (diffWords's prefix/suffix trim × documents with pre-existing
+  CriticMarkup-shaped text).**
+  Prefix/suffix trimming in diffWords is correct and cheap when drift is localized to
+  one point — the common case. Composed with a document whose pristine export already
+  contains CriticMarkup-shaped synthetic text scattered throughout (pre-existing
+  tracked changes/comments, re-tokenized as if newly proposed), trimming can't shrink
+  the divergent window at all: the whole document is technically "divergent" from the
+  first pre-existing token onward, defeating the optimization it depends on and leaving
+  close to the full O(n·m) LCS computation on a real ~65K-character document (measured:
+  ~13s / ~2.1GB for one diffWords() call). Fix: validate() no longer computes a diff
+  eagerly on G2 failure at all — it returns a cheap O(min(n,m)) first-divergence offset
+  and context excerpt; the full diff is computed lazily, only by the ratification UI's
+  failure view, on demand, and is itself hard-capped (returns null past a safe cell
+  count rather than attempting the full DP). Retry loops (roundtrip script, property
+  suite) never pay diff cost on failed attempts, since they never ask for the diff at
+  all.
+
+The same root cause investigation also surfaced (not a composition bug, but adjacent):
+`scripts/roundtrip-fixtures.mjs`'s retry-and-silently-fall-back-to-zero-edits strategy
+was masking two distinct real problems for three fixtures (tracked-changes.docx,
+stressor.docx, comments-threaded.docx) rather than exercising injection against them —
+see the exclusion-set comment in that script for the two underlying mechanisms
+(re-tokenization of pre-existing CriticMarkup-shaped text, and a genuine
+`serializeSegsTracked` single-open-span bug on overlapping comment ranges in
+comments-threaded.docx's own pristine export). The script now fails loudly instead of
+warning if any fixture outside that documented, understood exclusion set produces zero
+edits.
+
+Takeaway for future milestones: when two features each pass their own tests, add a
+test (or fixture) that combines them under realistic, not synthetic, conditions before
+calling either "done" — especially where one feature is an optimization whose
+assumptions (localized drift, small input, no adjacent pre-existing state) the other
+feature's inputs can silently violate.

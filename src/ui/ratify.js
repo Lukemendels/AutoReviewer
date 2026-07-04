@@ -85,10 +85,22 @@ function buildChangeEl(doc, edit) {
     del.textContent = edit.oldText;
     el.appendChild(del);
   } else if (edit.type === "sub") {
-    for (const seg of diffWords(edit.oldText, edit.newText)) {
-      const node = seg.type === "same" ? doc.createElement("span") : doc.createElement(seg.type === "del" ? "del" : "ins");
-      node.textContent = seg.text;
-      el.appendChild(node);
+    // diffWords is capped (src/ui/diff.js) and returns null past that cap -- a per-edit
+    // sub's old/new text is normally tiny, but G5's "oversized deletion" check only warns,
+    // it doesn't block, so a legitimately huge substitution could still reach here.
+    const segs = diffWords(edit.oldText, edit.newText);
+    if (segs) {
+      for (const seg of segs) {
+        const node = seg.type === "same" ? doc.createElement("span") : doc.createElement(seg.type === "del" ? "del" : "ins");
+        node.textContent = seg.text;
+        el.appendChild(node);
+      }
+    } else {
+      const del = doc.createElement("del");
+      del.textContent = edit.oldText;
+      const ins = doc.createElement("ins");
+      ins.textContent = edit.newText;
+      el.append(del, ins);
     }
   } else {
     const span = doc.createElement("span");

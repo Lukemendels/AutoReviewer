@@ -89,8 +89,12 @@ describe("G2 -- fidelity (paraphrase drift)", () => {
     const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
     expect(result.ok).toBe(false);
     expect(result.gate).toBe("G2");
-    expect(result.diff).toBeTruthy();
-    expect(result.diff.some((seg) => seg.type !== "same")).toBe(true);
+    // Cheap first-divergence diagnostics, not an eager full diff (perf: see validate.js's
+    // G2 comment and tests/validate.perf.test.js) -- the UI computes the full word-level
+    // diff lazily, on demand, from diffInputs.
+    expect(result.firstDivergence).toBeTruthy();
+    expect(result.firstDivergence.offset).toBeGreaterThanOrEqual(0);
+    expect(result.diffInputs).toEqual({ a: expect.any(String), b: exported });
     expect(typeof result.repairPrompt).toBe("string");
     expect(result.repairPrompt.length).toBeGreaterThan(0);
   });
@@ -101,6 +105,27 @@ describe("G2 -- fidelity (paraphrase drift)", () => {
     const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
     expect(result.ok).toBe(false);
     expect(result.gate).toBe("G2");
+  });
+
+  // D7 (M3b plan): the header exemption is content-anchored and fails closed -- a response
+  // that doesn't open with the export's own verbatim header is rejected as a G2-class
+  // fabrication failure, the same way any other undetected drift is.
+  it("D7: fails closed when the response is missing the header entirely", async () => {
+    const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+    const bodyOnly = exported.slice(exported.indexOf("This is the first paragraph"));
+    const result = validate({ responseMarkdown: bodyOnly, exportedMarkdown: exported, sourceMap });
+    expect(result.ok).toBe(false);
+    expect(result.gate).toBe("G2");
+    expect(result.message).toMatch(/header/i);
+  });
+
+  it("D7: fails closed when the header is present but not at the very start of the response", async () => {
+    const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+    const response = "Some preamble the model added.\n" + exported;
+    const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
+    expect(result.ok).toBe(false);
+    expect(result.gate).toBe("G2");
+    expect(result.message).toMatch(/header/i);
   });
 });
 
@@ -117,7 +142,10 @@ describe("G3 -- anchor resolution", () => {
     expect(result.gate).toBe("G3");
   });
 
-  it("rejects a whole-paragraph insertion (point sits between blocks, unresolvable until M3)", async () => {
+});
+
+describe("whole-paragraph insertion (M3b: D1+D2 make this resolvable via resolvePoint's paragraphBoundary kind)", () => {
+  it("a whole-paragraph insertion between two existing blocks now resolves successfully", async () => {
     const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
     const response = withEdit(
       exported,
@@ -125,8 +153,20 @@ describe("G3 -- anchor resolution", () => {
       "document.\n{++A whole new paragraph.++}\nThis is the second"
     );
     const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
-    expect(result.ok).toBe(false);
-    expect(result.gate).toBe("G3");
+    expect(result.ok).toBe(true);
+    const ins = result.edits.find((e) => e.type === "ins");
+    expect(ins.wholeParagraph).toBe(true);
+    expect(ins.anchor).toEqual({ kind: "paragraphBoundary", bodyPath: [0], edge: "after" });
+  });
+
+  it("an ordinary (non-whole-paragraph) insertion mid-sentence still resolves to an in-run point, not a paragraph boundary", async () => {
+    const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+    const response = withEdit(exported, "third paragraph", "{++really ++}third paragraph");
+    const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
+    expect(result.ok).toBe(true);
+    const ins = result.edits.find((e) => e.type === "ins");
+    expect(ins.wholeParagraph).toBe(false);
+    expect(ins.anchor.kind).toBe("run");
   });
 });
 

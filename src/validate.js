@@ -4,7 +4,7 @@ import { tokenize } from "./criticmarkup/grammar.js";
 import { strip } from "./criticmarkup/strip.js";
 import { parseEdits } from "./criticmarkup/parse.js";
 import { snapBoundary, resolveRange, resolvePoint, SourceMapError } from "./sourcemap.js";
-import { diffWords } from "./ui/diff.js";
+import { findFirstDivergence } from "./ui/diff.js";
 
 function normalizeNewlines(s) {
   return s.replace(/\r\n/g, "\n");
@@ -62,18 +62,38 @@ function overlapsLocked(sourceMap, start, end) {
 // "entirely synthetic" per the plan's exact wording.
 function resolveEditAnchor(edit, sourceMap) {
   if (edit.type === "ins" || (edit.type === "comment" && !edit.anchored)) {
-    const pos = edit.type === "ins" ? edit.mdPos : edit.mdPos;
+    const pos = edit.mdPos;
+    // Only ins carries D1's wholeParagraph flag (spec doesn't define whole-paragraph
+    // comment, so bare comments always resolve via the ordinary in-run branch).
+    const wholeParagraph = edit.type === "ins" && !!edit.wholeParagraph;
     try {
-      return { anchor: resolvePoint(sourceMap, pos) };
+      return { anchor: resolvePoint(sourceMap, pos, { wholeParagraph }) };
     } catch (err) {
       if (!(err instanceof SourceMapError)) throw err;
       return { gateFailure: { gate: err.kind === "locked" ? "G4" : "G3", message: err.message } };
     }
   }
 
+  // G4's locked check always runs against the edit's ORIGINAL declared span, whole-paragraph
+  // delete or not (see overlapsLocked's own comment above).
   if (overlapsLocked(sourceMap, edit.mdStart, edit.mdEnd)) {
     return { gateFailure: { gate: "G4", message: "edit overlaps a locked range" } };
   }
+
+  // D3 (M3b plan): whole-paragraph delete bypasses snapBoundary+resolveRange entirely.
+  // For a prefixed block (heading/list), snapBoundary would snap the edit's start forward
+  // past the synthetic "# "/"- " prefix, silently downgrading a whole-paragraph delete into
+  // an ordinary content-only delete and losing the paragraph-mark deletion. When the edit's
+  // raw span exactly equals some block's full [mdStart, mdEnd) (prefix included), resolve
+  // directly to a paragraph-level anchor instead -- if it doesn't exactly match a whole
+  // block span, fall through to the ordinary span path below.
+  if (edit.type === "del" && edit.wholeParagraph) {
+    const block = (sourceMap.blocks || []).find((b) => b.mdStart === edit.mdStart && b.mdEnd === edit.mdEnd);
+    if (block) {
+      return { anchor: { kind: "wholeParagraphDelete", bodyPath: block.bodyPath } };
+    }
+  }
+
   const [snapStart, snapEnd] = snapBoundary(sourceMap, edit.mdStart, edit.mdEnd);
   if (snapStart >= snapEnd) {
     return { gateFailure: { gate: "G4", message: "edit is entirely synthetic (no document text remains after boundary snapping)" } };
@@ -100,10 +120,40 @@ export function validate({ responseMarkdown, exportedMarkdown, sourceMap, larges
   // trailing region to exempt -- the far rarer risk of a human-authored comment's text in
   // the "## Unanchored comments" trailer accidentally containing brace sequences isn't
   // addressed here.
+  //
+  // D7 (M3b plan): the exemption boundary is content-anchored to the export's own header
+  // text, not a static raw-position count. It used to be `blocks[0].mdStart`, which
+  // includes the "\n\n" separator between the header and the first block -- that ate into
+  // the *only* newline budget a whole-paragraph-insert-before-the-first-block token has to
+  // work with under G2's byte-equality requirement, making that construction structurally
+  // unreachable (verified: no raw-text shape can satisfy skipBefore, G2, and D1's
+  // "alone on its own line" definition simultaneously when the exempt zone swallows part of
+  // that gap). The fix ends the exemption at the header's own content -- trailing separator
+  // whitespace stripped -- so the header/body separator newlines become scannable, which is
+  // exactly the gap a real whole-paragraph-insert token needs to split. This is a
+  // *tightening*, not a weakening: today the first N raw characters are exempt from
+  // opener-scanning regardless of what they contain; the new rule exempts only a verbatim,
+  // position-0 match of the real header, and fails closed (as a G2-class fabrication
+  // failure, same failure mode as any other undetected drift) if the response doesn't open
+  // with it -- it can never be satisfied by unrelated response content the way a raw count
+  // could be.
   const blocks = sourceMap.blocks || [];
-  const tokenizeOpts = {
-    skipBefore: blocks.length ? blocks[0].mdStart : exported.length,
-  };
+  const rawHeaderPrefix = blocks.length ? exported.slice(0, blocks[0].mdStart) : exported;
+  const headerContent = rawHeaderPrefix.replace(/\s+$/, "");
+  if (!response.startsWith(headerContent)) {
+    return {
+      ok: false,
+      gate: "G2",
+      message: "the response does not open with the exported document's own header (missing or altered header comment lines)",
+      // Cheap (O(n)) diagnostic only -- never an eager full diff (see the G2 fidelity
+      // check below for why: on a real document, a full diffWords() call is only safe to
+      // run on demand, not unconditionally on every failure).
+      firstDivergence: findFirstDivergence(response, exported),
+      diffInputs: { a: response, b: exported },
+      repairPrompt: buildRepairPrompt(),
+    };
+  }
+  const tokenizeOpts = { skipBefore: headerContent.length };
 
   // G1 -- grammar
   const tokenized = tokenize(response, tokenizeOpts);
@@ -125,11 +175,22 @@ export function validate({ responseMarkdown, exportedMarkdown, sourceMap, larges
   // G2 -- fidelity (the fabrication gate)
   const strippedResponse = strip(response, tokenizeOpts);
   if (strippedResponse !== exported) {
+    // Deliberately NOT an eager diffWords() call here: a full word-level diff is an
+    // O(n*m) LCS computation, and on a real document a G2 failure can have drift
+    // scattered across many separate points rather than one localized paraphrase --
+    // prefix/suffix trimming alone can't shrink that down, leaving a divergent window
+    // spanning nearly the whole document. Measured on a real ~65K-character export with
+    // scattered drift: ~13s and ~2.1GB for a single diffWords() call, which would OOM a
+    // retry loop (the roundtrip script, the property fuzz suite) and could hang a browser
+    // tab on a real 50-page document. findFirstDivergence is O(n) and safe unconditionally;
+    // the full diff (still capped -- see diff.js) is computed lazily, on demand, only when
+    // a human actually asks to see it (the ratification UI's failure view).
     return {
       ok: false,
       gate: "G2",
       message: "the response's underlying text does not byte-match the exported document outside CriticMarkup tokens",
-      diff: diffWords(strippedResponse, exported),
+      firstDivergence: findFirstDivergence(strippedResponse, exported),
+      diffInputs: { a: strippedResponse, b: exported },
       repairPrompt: buildRepairPrompt(),
     };
   }

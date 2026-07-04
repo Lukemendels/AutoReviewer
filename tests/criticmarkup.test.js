@@ -139,9 +139,35 @@ describe("parseEdits: edit descriptors in stripped (== exportedMarkdown) coordin
   it("returns one descriptor per token, in document order, with the right shape", () => {
     const edits = parseEdits("AAA{--BBB--}CCC{++DDD++}EEE");
     expect(edits).toEqual([
-      { type: "del", mdStart: 3, mdEnd: 6, oldText: "BBB", rawStart: 3, rawEnd: 12 },
-      { type: "ins", mdPos: 9, newText: "DDD", rawStart: 15, rawEnd: 24 },
+      { type: "del", mdStart: 3, mdEnd: 6, oldText: "BBB", rawStart: 3, rawEnd: 12, wholeParagraph: false },
+      { type: "ins", mdPos: 9, newText: "DDD", rawStart: 15, rawEnd: 24, wholeParagraph: false },
     ]);
+  });
+
+  it("D1: flags an ins/del token as wholeParagraph when it alone fills its line between blank-line block boundaries", () => {
+    const edits = parseEdits("First para.\n\n{++A whole new paragraph.++}\n\nThird para.");
+    expect(edits).toEqual([
+      { type: "ins", mdPos: 13, newText: "A whole new paragraph.", rawStart: 13, rawEnd: 41, wholeParagraph: true },
+    ]);
+  });
+
+  it("D1: does not flag an ins/del token that shares its line with other text", () => {
+    const edits = parseEdits("Intro {++new ++}text on the same line.");
+    expect(edits[0].wholeParagraph).toBe(false);
+  });
+
+  it("D1: flags BOTH tokens in a zero-gap run of consecutive whole-paragraph inserts (two new paragraphs sharing one original blank-line gap)", () => {
+    // G2 forces zero raw characters between the two tokens here (the original gap has
+    // only 2 newlines to spend total, one on each outer edge) -- each token's own
+    // "alone on its line" check must treat the other, immediately-adjacent token as
+    // transparent rather than as disqualifying non-blank content.
+    const edits = parseEdits("First para.\n{++First new++}{++Second new++}\nThird para.");
+    expect(edits.map((e) => e.wholeParagraph)).toEqual([true, true]);
+  });
+
+  it("D1: does not flag a token merely adjacent to another token that itself sits on real (non-blank) text", () => {
+    const edits = parseEdits("Intro {++new ++}{--old--} text on the same line.");
+    expect(edits.map((e) => e.wholeParagraph)).toEqual([false, false]);
   });
 
   it("sub carries both old and new text", () => {

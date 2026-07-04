@@ -100,29 +100,68 @@ export function snapBoundary(sourceMap, mdStart, mdEnd) {
 // Point-anchor resolution for insertions and bare point-comments (spec §4), which anchor a
 // zero-width position rather than a span of pre-existing document text -- snapBoundary's
 // span-trimming semantics aren't well-defined at an exact zero-width point (see M2 plan
-// decision 1), so this is a separate, deliberately narrower resolver:
-//   - throws SourceMapError("locked", ...) if pos sits strictly inside a locked range's
-//     interior (can't insert into the middle of a protected island);
-//   - otherwise returns { bodyPath } for the block whose [mdStart, mdEnd] contains pos
-//     (inclusive of both edges);
-//   - throws SourceMapError("synthetic", ...) if pos falls in the gap between blocks (or
-//     in the header/orphan-comments section, which have no blocks at all) -- this includes
-//     the whole-paragraph-insert case (spec §4), whose injection semantics belong to M3
-//     (paragraph-mark handling, spec §9.1 step 7) and aren't resolvable yet.
-export function resolvePoint(sourceMap, pos) {
+// decision 1), so this is a separate, deliberately narrower resolver.
+//
+// M3b plan D2: the return shape is discriminated by `kind`:
+//   - { kind: "run", bodyPath, runIndex, charOffset } -- an ordinary in-run point: pos
+//     falls within (inclusive of both edges) some document-text run.
+//   - { kind: "paragraphBoundary", bodyPath, edge: "before"|"after" } -- a whole-paragraph
+//     point: pos sits at/within the gap between two blocks (or before the first/after the
+//     last), matched against the exact block boundary rather than in-run geometry.
+// Position alone can't disambiguate the two in every case (e.g. inserting at the very
+// start of a no-prefix paragraph's first run == inserting a new paragraph immediately
+// before it -- same md offset, structurally different DOM operations), so the caller
+// passes opts.wholeParagraph (from criticmarkup/parse.js's D1 raw-token-shape flag) to
+// pick the branch; this function does not infer it from pos.
+//
+// Throws SourceMapError("locked", ...) if pos sits strictly inside a locked range's
+// interior (can't insert into the middle of a protected island) -- checked before either
+// branch, since it applies regardless of wholeParagraph. Throws SourceMapError("synthetic",
+// ...) if no run (ordinary case) or no aligned boundary (whole-paragraph case) covers pos.
+export function resolvePoint(sourceMap, pos, opts = {}) {
+  const wholeParagraph = !!opts.wholeParagraph;
+  const blocks = sourceMap.blocks || [];
+
   for (const [ls, le] of sourceMap.locked || []) {
     if (ls < pos && pos < le) {
       throw new SourceMapError("locked", `position ${pos} is inside a locked range [${ls},${le})`, [pos, pos]);
     }
   }
-  for (const block of sourceMap.blocks || []) {
-    if (block.mdStart <= pos && pos <= block.mdEnd) {
-      return { bodyPath: block.bodyPath };
+
+  if (wholeParagraph) {
+    if (!blocks.length) {
+      throw new SourceMapError("synthetic", `position ${pos} does not align with a paragraph boundary (document has no blocks)`, [pos, pos]);
+    }
+    if (pos <= blocks[0].mdStart) {
+      return { kind: "paragraphBoundary", bodyPath: blocks[0].bodyPath, edge: "before" };
+    }
+    if (pos >= blocks[blocks.length - 1].mdEnd) {
+      return { kind: "paragraphBoundary", bodyPath: blocks[blocks.length - 1].bodyPath, edge: "after" };
+    }
+    for (let i = 0; i < blocks.length - 1; i++) {
+      const a = blocks[i], b = blocks[i + 1];
+      if (pos >= a.mdEnd && pos <= b.mdStart) {
+        return { kind: "paragraphBoundary", bodyPath: a.bodyPath, edge: "after" };
+      }
+    }
+    throw new SourceMapError(
+      "synthetic",
+      `position ${pos} does not align with any paragraph boundary for a whole-paragraph insert`,
+      [pos, pos]
+    );
+  }
+
+  for (const block of blocks) {
+    if (pos < block.mdStart || pos > block.mdEnd) continue;
+    for (const run of block.runs || []) {
+      if (run.mdStart <= pos && pos <= run.mdEnd) {
+        return { kind: "run", bodyPath: block.bodyPath, runIndex: run.runIndex, charOffset: run.charOffset + (pos - run.mdStart) };
+      }
     }
   }
   throw new SourceMapError(
     "synthetic",
-    `position ${pos} does not fall within any block (whole-paragraph inserts are not resolvable until M3)`,
+    `position ${pos} does not fall within any document-text run`,
     [pos, pos]
   );
 }

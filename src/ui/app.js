@@ -6,6 +6,13 @@ import { buildAuditRecord } from "../audit.js";
 import { saveSession } from "../session.js";
 import { createRatificationState, renderRatificationUI } from "./ratify.js";
 import { DEMO_DOCX_BASE64 } from "./demo-doc.js";
+import { unzip, readEntry } from "../zip/reader.js";
+import { writeZip } from "../zip/writer.js";
+import { parseXml } from "../ooxml/parse.js";
+import { injectEdits } from "../ooxml/inject.js";
+import { upsertComments } from "../ooxml/comments.js";
+import { serializePart } from "../ooxml/serialize.js";
+import { diffWords } from "./diff.js";
 
 const FLOWS = [
   { id: "run-review", label: "Run Review" },
@@ -65,6 +72,10 @@ function base64ToArrayBuffer(b64) {
   return bytes.buffer;
 }
 
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 function renderDiff(container, segments) {
   container.innerHTML = "";
   container.className = "ar-diff";
@@ -75,9 +86,61 @@ function renderDiff(container, segments) {
   }
 }
 
+// Pure core of the Inject flow (spec §9's write-back): re-unzip the ORIGINAL docx bytes
+// (bodyPath/runIndex are stable, deterministic offsets into that same original structure
+// the source map was built from -- M3b plan's wiring note) rather than reusing anything
+// already parsed, inject accepted edits, upsert any newly-created comments, and re-zip.
+// Kept separate from the DOM-triggering download step below so it's independently
+// testable without a browser Blob/URL implementation. DOMParserImpl/XMLSerializerImpl are
+// optional, defaulting to the browser globals (matching every other ooxml/* module) --
+// tests pass @xmldom/xmldom explicitly, since happy-dom's DOMParser doesn't reliably
+// parse a real, namespace-heavy document.xml (verified: it silently drops the entire body).
+export async function buildReviewedDocx({
+  docxBytes,
+  acceptedEdits,
+  sourceMap,
+  author,
+  date,
+  DOMParserImpl,
+  XMLSerializerImpl,
+}) {
+  const zip = await unzip(docxBytes);
+  const docDoc = parseXml(await readEntry(zip, "word/document.xml"), DOMParserImpl);
+  const { newComments } = injectEdits(docDoc, acceptedEdits, sourceMap, { author, date });
+  const mutatedParts = { "word/document.xml": serializePart(docDoc, XMLSerializerImpl) };
+
+  if (newComments.length) {
+    const existingParts = {
+      commentsXml: await readEntry(zip, "word/comments.xml"),
+      commentsExtendedXml: await readEntry(zip, "word/commentsExtended.xml"),
+      relsXml: await readEntry(zip, "word/_rels/document.xml.rels"),
+      contentTypesXml: await readEntry(zip, "[Content_Types].xml"),
+    };
+    const updated = upsertComments(existingParts, newComments, { DOMParserImpl, XMLSerializerImpl });
+    mutatedParts["word/comments.xml"] = updated.commentsXml;
+    mutatedParts["word/commentsExtended.xml"] = updated.commentsExtendedXml;
+    mutatedParts["word/_rels/document.xml.rels"] = updated.relsXml;
+    mutatedParts["[Content_Types].xml"] = updated.contentTypesXml;
+  }
+
+  return writeZip(zip, mutatedParts);
+}
+
+function downloadBlob(bytes, filename) {
+  const blob = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // The Run Review flow's file-picker/persona/prompt wiring is M4's job (spec §6). This
-// panel demonstrates the part M2 actually builds -- paste a response, run G1-G5, ratify --
-// against an embedded demo document so it's usable standalone right now.
+// panel demonstrates the part M2/M3b actually build -- paste a response, run G1-G5,
+// ratify, inject -- against an embedded demo document so it's usable standalone right now.
 function renderRunReviewPanel(panel) {
   panel.innerHTML = `
     <p class="ar-hint">
@@ -90,6 +153,10 @@ function renderRunReviewPanel(panel) {
       <label for="ar-response">Response</label>
       <textarea id="ar-response" class="ar-response" spellcheck="false"></textarea>
     </div>
+    <div class="ar-field">
+      <label for="ar-author">Author (tracked-change attribution)</label>
+      <input type="text" id="ar-author" class="ar-author" value="AutoReviewer — Demo Persona" />
+    </div>
     <div class="ar-controls">
       <button type="button" id="ar-validate" class="ar-primary">Validate</button>
       <span id="ar-export-status" class="ar-hint"></span>
@@ -98,15 +165,18 @@ function renderRunReviewPanel(panel) {
   `;
 
   const responseEl = panel.querySelector("#ar-response");
+  const authorEl = panel.querySelector("#ar-author");
   const statusEl = panel.querySelector("#ar-export-status");
   const resultsEl = panel.querySelector("#ar-results");
   const validateBtn = panel.querySelector("#ar-validate");
 
   let exported = null; // { markdown, sourceMap }
+  let docxBytes = null;
   validateBtn.disabled = true;
   statusEl.textContent = "Loading demo document...";
 
-  exportDocx(base64ToArrayBuffer(DEMO_DOCX_BASE64), { filename: "plain-paragraphs" })
+  docxBytes = base64ToArrayBuffer(DEMO_DOCX_BASE64);
+  exportDocx(docxBytes, { filename: "plain-paragraphs" })
     .then((result) => {
       exported = result;
       responseEl.value = result.markdown;
@@ -120,11 +190,16 @@ function renderRunReviewPanel(panel) {
   validateBtn.addEventListener("click", () => {
     if (!exported) return;
     const result = validate({ responseMarkdown: responseEl.value, exportedMarkdown: exported.markdown, sourceMap: exported.sourceMap });
-    renderValidationResult(resultsEl, result, exported);
+    renderValidationResult(resultsEl, result, exported, {
+      docxBytes,
+      filename: "plain-paragraphs",
+      getAuthor: () => authorEl.value.trim() || "AutoReviewer",
+      statusEl,
+    });
   });
 }
 
-function renderValidationResult(container, result, exported) {
+function renderValidationResult(container, result, exported, injectCtx) {
   container.innerHTML = "";
 
   if (!result.ok) {
@@ -135,9 +210,39 @@ function renderValidationResult(container, result, exported) {
     box.appendChild(title);
 
     if (result.gate === "G2") {
-      const diffEl = document.createElement("div");
-      renderDiff(diffEl, result.diff);
-      box.appendChild(diffEl);
+      // Cheap, always-safe: show first-divergence context immediately (validate.js never
+      // computes a full diff eagerly -- see its G2 comment for why). The full word-level
+      // diff is computed lazily, on demand, only if the human clicks the button -- and
+      // even then diffWords is capped, falling back to this same context view if the
+      // divergence turns out to be too large/scattered to diff safely.
+      const fd = result.firstDivergence;
+      if (fd) {
+        const fdEl = document.createElement("div");
+        fdEl.className = "ar-first-divergence";
+        fdEl.innerHTML =
+          `<p>First divergence at offset ${fd.offset}:</p>` +
+          `<pre>${fd.truncatedBefore ? "…" : ""}${escapeHtml(fd.before)}<mark>${escapeHtml(fd.afterA)}</mark>${fd.truncatedAfterA ? "…" : ""}\n` +
+          `vs.\n` +
+          `${fd.truncatedBefore ? "…" : ""}${escapeHtml(fd.before)}<mark>${escapeHtml(fd.afterB)}</mark>${fd.truncatedAfterB ? "…" : ""}</pre>`;
+        box.appendChild(fdEl);
+      }
+
+      if (result.diffInputs) {
+        const showDiffBtn = document.createElement("button");
+        showDiffBtn.type = "button";
+        showDiffBtn.textContent = "Show full diff";
+        showDiffBtn.addEventListener("click", () => {
+          const segments = diffWords(result.diffInputs.a, result.diffInputs.b);
+          const diffEl = document.createElement("div");
+          if (segments) {
+            renderDiff(diffEl, segments);
+          } else {
+            diffEl.textContent = "The divergence is too large/scattered to diff in full -- see the first-divergence context above.";
+          }
+          box.replaceChild(diffEl, showDiffBtn);
+        });
+        box.appendChild(showDiffBtn);
+      }
 
       const copyBtn = document.createElement("button");
       copyBtn.type = "button";
@@ -172,6 +277,35 @@ function renderValidationResult(container, result, exported) {
   container.appendChild(ratifyContainer);
   const state = createRatificationState(result.edits);
   renderRatificationUI(ratifyContainer, state, { sourceText: exported.markdown });
+
+  // ratify.js renders the Inject button itself (data-action="inject") but deliberately
+  // leaves it unwired -- injection is business logic the caller owns. Per the plan's
+  // wiring section: on click, re-unzip -> injectEdits -> upsertComments (if new comments)
+  // -> writeZip -> Blob download named "{original name} — reviewed.docx".
+  const injectBtn = ratifyContainer.querySelector('[data-action="inject"]');
+  if (injectBtn && injectCtx) {
+    injectBtn.addEventListener("click", async () => {
+      injectBtn.disabled = true;
+      injectCtx.statusEl.textContent = "Injecting accepted edits...";
+      try {
+        const acceptedEdits = state.acceptedEdits();
+        const rewritten = await buildReviewedDocx({
+          docxBytes: injectCtx.docxBytes,
+          acceptedEdits,
+          sourceMap: exported.sourceMap,
+          author: injectCtx.getAuthor(),
+          date: new Date().toISOString(),
+        });
+        const downloadName = `${injectCtx.filename} — reviewed.docx`;
+        downloadBlob(rewritten, downloadName);
+        injectCtx.statusEl.textContent = `Injected ${acceptedEdits.length} accepted edit(s) and downloaded "${downloadName}".`;
+      } catch (err) {
+        injectCtx.statusEl.textContent = `Injection failed: ${err.message}`;
+      } finally {
+        injectBtn.disabled = false;
+      }
+    });
+  }
 }
 
 function init() {

@@ -29,7 +29,7 @@ jobs:
         run: npm run verify:zip
 
       - name: Build fresh (to a temp path, not the committed html/ file)
-        run: node build/build.js /tmp/fresh-autoreviewer-workbench.html
+        run: node build/build.js --release /tmp/fresh-autoreviewer-workbench.html
 
       - name: Committed html/autoreviewer-workbench.html must match a fresh build from source
         run: |

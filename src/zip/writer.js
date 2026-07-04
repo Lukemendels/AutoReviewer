@@ -42,7 +42,15 @@ function localDataStart(zip, name) {
 }
 
 export async function writeZip(zip, mutatedParts = {}) {
-  const order = zip.order || Object.keys(zip.entries);
+  // mutatedParts can name a part that isn't in the original archive at all (M3b: a
+  // document with no pre-existing comments gets a brand-new word/comments.xml the first
+  // time a comment is injected) -- appended after every original entry, in mutatedParts'
+  // own key order. Every such entry is necessarily `mutated: true` (there's no original
+  // meta to fall back to), which the rest of this function already treats as "never read
+  // item.meta" throughout, so no new branching is needed below.
+  const existingOrder = zip.order || Object.keys(zip.entries);
+  const newNames = Object.keys(mutatedParts).filter((name) => !zip.entries[name]);
+  const order = [...existingOrder, ...newNames];
   if (order.length > MAX_ENTRIES) {
     throw new Error(`writeZip: ${order.length} entries exceeds the ${MAX_ENTRIES}-entry limit (no ZIP64 support)`);
   }
