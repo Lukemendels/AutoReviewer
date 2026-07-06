@@ -21,13 +21,15 @@
 // concatenating raw run text with no rendering step in between, so the comparison is
 // exactly "does the accepted document contain the text the edits describe," independent
 // computations (real DOM mutation vs. string-splicing on run-local text) than either.
-import { DOMParser } from "@xmldom/xmldom";
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { beforeAll, describe, expect, it } from "vitest";
 import { loadDocxBytes, loadDocumentXmlDom } from "./helpers/docx.js";
 import { CLEAN_FIXTURES, mulberry32, pick, buildValidResponse } from "./helpers/randomEdits.js";
 import { exportDocx } from "../src/ooxml/export.js";
 import { validate } from "../src/validate.js";
 import { injectEdits, locateParagraph } from "../src/ooxml/inject.js";
+import { serializePart } from "../src/ooxml/serialize.js";
+import { parseXml } from "../src/ooxml/parse.js";
 
 async function exportFixture(name) {
   return exportDocx(loadDocxBytes(name), { DOMParserImpl: DOMParser, filename: name });
@@ -228,9 +230,23 @@ describe("accept-all equivalence", () => {
 
       const { body } = await loadDocumentXmlDom(fixtureName);
       injectEdits(body.ownerDocument, trackedEdits, sourceMap, { author: "AutoReviewer — Test", date: "2026-01-01T00:00:00Z" });
+
+      // Serialized-bytes invariant: every assertion above only ever exercised the in-memory
+      // DOM injectEdits mutated directly -- never the actual bytes a real .docx's
+      // word/document.xml would contain. Serialize the just-injected document, re-parse it
+      // with a fresh DOMParser (mirroring what Word does: read bytes, build its own DOM),
+      // apply the same acceptAll to the reparsed tree, and require the same extracted text
+      // -- closing the DOM-vs-bytes gap for free on every iteration this suite already runs.
+      const serializedXml = serializePart(body.ownerDocument, XMLSerializer);
+      const reparsedDoc = parseXml(serializedXml, DOMParser);
+      const reparsedBody = [...reparsedDoc.documentElement.children].find((c) => c.localName === "body");
+      acceptAll(reparsedBody);
+      const bytesActualText = extractPlainText(reparsedBody);
+
       acceptAll(body);
       const actualText = extractPlainText(body);
 
+      expect(bytesActualText, `${ctx} (serialize -> re-parse -> accept-all diverged from the in-memory accept-all)`).toBe(actualText);
       expect(actualText, `${ctx}\nresponse=${JSON.stringify(response)}`).toBe(expectedText);
     }
   });
