@@ -1,10 +1,11 @@
 // Whole-paragraph insert/delete mechanics (spec §9.1 step 7, §4; M3b plan D3/D4/D5).
 // Written and red before applyWholeParagraphEdits has a real implementation.
 import { describe, expect, it } from "vitest";
-import { DOMParser } from "@xmldom/xmldom";
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { loadDocumentXmlDom, exportFixture } from "./helpers/docx.js";
 import { validate } from "../src/validate.js";
 import { injectEdits, locateParagraph, locateRun } from "../src/ooxml/inject.js";
+import { serializePart } from "../src/ooxml/serialize.js";
 import { NS, kid, kids, wAttr, parseXml } from "../src/ooxml/parse.js";
 
 function runText(el) {
@@ -286,5 +287,174 @@ describe("whole-paragraph delete: D4 scope cut (pre-existing tracked changes)", 
     expect(() => injectEdits(docDoc, [fakeEdit], { blocks: [] }, AUTHOR_OPTS)).toThrow(
       /existing tracked changes.*Accept or reject them in Word first/s
     );
+  });
+});
+
+// Unwraps every w:ins/w:del throughout the whole tree -- same primitive as
+// tests/inject.acceptAll.test.js, duplicated locally rather than shared: two small,
+// stable functions, not worth coupling two test files over.
+function acceptAll(node) {
+  for (const child of [...node.children]) {
+    if (child.localName === "del") {
+      node.removeChild(child);
+    } else if (child.localName === "ins") {
+      const ref = child.nextSibling;
+      const innerNodes = [...child.children];
+      for (const inner of innerNodes) node.insertBefore(inner, ref);
+      node.removeChild(child);
+      for (const inner of innerNodes) acceptAll(inner);
+    } else {
+      acceptAll(child);
+    }
+  }
+}
+function extractPlainText(el) {
+  let s = "";
+  for (const c of el.children) {
+    if (c.localName === "t" || c.localName === "delText") s += c.textContent;
+    else s += extractPlainText(c);
+  }
+  return s;
+}
+
+// Regression coverage for the M3b hotfix: a D1 whole-paragraph insert combined with
+// ordinary (run-anchored) edits on OTHER paragraphs used to crash injectEdits, and a
+// whole-paragraph insert combined with a whole-paragraph DELETE elsewhere used to
+// silently mutate the WRONG paragraph (worse than a crash -- no error, wrong output).
+// Root cause: injectEdits grouped accepted edits by bodyPath and processed one group's
+// mutation -- including a structural whole-paragraph insert, which adds a new sibling --
+// before resolving the NEXT group's bodyPath. bodyPath is a positional index fixed at
+// export/validate time; once an earlier group's insert shifted every later sibling's
+// index by one, a later group's fresh, lazy `locateParagraph(body, bodyPath)` walked to
+// the wrong paragraph. Never reachable by the property-fuzz suite, since
+// randomEditForRun (tests/helpers/randomEdits.js) never emits a D1 own-line
+// whole-paragraph token shape -- only found during a manual hand-run.
+describe("regression: whole-paragraph ops combined with edits on other paragraphs (hotfix)", () => {
+  const AUTHOR = "AutoReviewer — Test";
+
+  // Builds the exact failing response from the hotfix brief: a D1 top-of-document insert,
+  // plus a del, a sub, and a bare (unanchored) point comment on the three original
+  // paragraphs -- all four edits land in DIFFERENT bodyPath groups, which is exactly the
+  // shape that triggered the bug.
+  function buildRepro(markdown, sourceMap) {
+    const headerContent = markdown.slice(0, sourceMap.blocks[0].mdStart).replace(/\s+$/, "");
+    return (
+      headerContent +
+      "\n{++This is an inserted test paragraph at the top of the document.++}\n" +
+      "This is the first paragraph of a{-- plain--} document.\n\n" +
+      "This is the second paragraph, with {~~nothing~>something~~} tracked.\n\n" +
+      "A third paragraph exists so table/list neighbors in later fixtures have a plain-paragraph baseline to compare against.{>>Test comment: example reviewer note.<<}\n"
+    );
+  }
+  const EXPECTED_ACCEPTED_PARAGRAPHS = [
+    "This is an inserted test paragraph at the top of the document.",
+    "This is the first paragraph of a document.",
+    "This is the second paragraph, with something tracked.",
+    "A third paragraph exists so table/list neighbors in later fixtures have a plain-paragraph baseline to compare against.",
+  ];
+
+  it("injects a D1 top-of-document insert together with a del, a sub, and a bare comment on later paragraphs", async () => {
+    const { exported, body } = await setup("plain-paragraphs");
+    const { markdown, sourceMap } = exported;
+    const response = buildRepro(markdown, sourceMap);
+
+    const result = validate({ responseMarkdown: response, exportedMarkdown: markdown, sourceMap });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result.counts).toEqual({ ins: 1, del: 1, sub: 1, comment: 1 });
+
+    expect(() => injectEdits(body.ownerDocument, result.edits, sourceMap, { author: AUTHOR, date: "2026-01-01T00:00:00Z" })).not.toThrow();
+
+    // Word-semantics assertions a string-equality oracle can't see: the new paragraph's
+    // OWN mark must be flagged inserted (a real new <w:p>, not a run-level artifact), and
+    // no w:t anywhere may carry a literal newline character.
+    const paragraphs = [...body.children].filter((c) => c.localName === "p");
+    const newP = paragraphs[0];
+    expect(paragraphs.length).toBe(4);
+    expect(extractPlainText(newP)).toBe("This is an inserted test paragraph at the top of the document.");
+    const pPr = kid(newP, "pPr");
+    const rPr = pPr && kid(pPr, "rPr");
+    const markIns = rPr && kid(rPr, "ins");
+    expect(markIns, "the new paragraph's own mark must be flagged inserted").toBeTruthy();
+
+    for (const t of [...body.getElementsByTagName("*")].filter((el) => el.localName === "t")) {
+      expect(t.textContent, `w:t "${t.textContent}" must not contain a literal newline`).not.toContain("\n");
+    }
+
+    // Serialize -> re-parse (mirrors what Word reads off disk) -> accept-all -> extract.
+    const serialized = serializePart(body.ownerDocument, XMLSerializer);
+    const reparsedDoc = parseXml(serialized, DOMParser);
+    const reparsedBody = [...reparsedDoc.documentElement.children].find((c) => c.localName === "body");
+    acceptAll(reparsedBody);
+    const acceptedParagraphs = [...reparsedBody.children].filter((c) => c.localName === "p").map(extractPlainText);
+    expect(acceptedParagraphs).toEqual(EXPECTED_ACCEPTED_PARAGRAPHS);
+  });
+
+  it("reject-one: rejecting the comment leaves the ins/del/sub intact and the comment absent from the output", async () => {
+    const { exported, body } = await setup("plain-paragraphs");
+    const { markdown, sourceMap } = exported;
+    const response = buildRepro(markdown, sourceMap);
+
+    const result = validate({ responseMarkdown: response, exportedMarkdown: markdown, sourceMap });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+
+    const accepted = result.edits.filter((e) => e.type !== "comment");
+    expect(accepted.length).toBe(3);
+    const { newComments } = injectEdits(body.ownerDocument, accepted, sourceMap, { author: AUTHOR, date: "2026-01-01T00:00:00Z" });
+    expect(newComments).toEqual([]);
+
+    const serialized = serializePart(body.ownerDocument, XMLSerializer);
+    expect(serialized).not.toContain("commentReference");
+    expect(serialized).not.toContain("commentRangeStart");
+
+    const reparsedDoc = parseXml(serialized, DOMParser);
+    const reparsedBody = [...reparsedDoc.documentElement.children].find((c) => c.localName === "body");
+    acceptAll(reparsedBody);
+    const acceptedParagraphs = [...reparsedBody.children].filter((c) => c.localName === "p").map(extractPlainText);
+    expect(acceptedParagraphs).toEqual(EXPECTED_ACCEPTED_PARAGRAPHS);
+  });
+
+  // The wholeParagraphDelete path's own instance of the same bug class -- discovered while
+  // fixing this hotfix, verified against pre-fix inject.js to silently delete the WRONG
+  // paragraph ("This is the second paragraph..." instead of the intended third paragraph)
+  // rather than crashing, since applyWholeParagraphDelete never removes its target node
+  // from the tree (it wraps content in place), so a stale/wrong lookup here doesn't throw
+  // -- it just corrupts silently. Whole-paragraph insert-before-block-0 shifts every later
+  // sibling's index by one; the whole-paragraph delete targets bodyPath [2] (the third,
+  // originally-last paragraph) and must still land there.
+  it("whole-paragraph insert at the top + whole-paragraph delete of a later paragraph both land on the correct paragraph", async () => {
+    const { exported, body } = await setup("plain-paragraphs");
+    const { markdown, sourceMap } = exported;
+    const headerContent = markdown.slice(0, sourceMap.blocks[0].mdStart).replace(/\s+$/, "");
+    const response =
+      headerContent +
+      "\n{++New top paragraph.++}\n" +
+      "This is the first paragraph of a plain document.\n\n" +
+      "This is the second paragraph, with nothing tracked.\n\n" +
+      "{--A third paragraph exists so table/list neighbors in later fixtures have a plain-paragraph baseline to compare against.--}\n";
+
+    const result = validate({ responseMarkdown: response, exportedMarkdown: markdown, sourceMap });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(result.edits.map((e) => e.anchor)).toEqual([
+      { kind: "paragraphBoundary", bodyPath: [0], edge: "before" },
+      { kind: "wholeParagraphDelete", bodyPath: [2] },
+    ]);
+
+    injectEdits(body.ownerDocument, result.edits, sourceMap, { author: AUTHOR, date: "2026-01-01T00:00:00Z" });
+
+    const paragraphs = [...body.children].filter((c) => c.localName === "p");
+    expect(paragraphs.length).toBe(4);
+    expect(extractPlainText(paragraphs[0])).toBe("New top paragraph.");
+    expect(extractPlainText(paragraphs[1])).toBe("This is the first paragraph of a plain document.");
+    expect(extractPlainText(paragraphs[2])).toBe("This is the second paragraph, with nothing tracked.");
+    expect(
+      extractPlainText(paragraphs[3]),
+      "the whole-paragraph delete must land on the ORIGINAL third paragraph, not the second"
+    ).toBe("A third paragraph exists so table/list neighbors in later fixtures have a plain-paragraph baseline to compare against.");
+
+    const delRun = [...paragraphs[3].children].find((c) => c.localName === "del");
+    expect(delRun, "the third paragraph's run must be wrapped in w:del").toBeTruthy();
+    const secondPPr = kid(paragraphs[2], "pPr");
+    const secondMarkDel = secondPPr && kid(secondPPr, "rPr") && kid(kid(secondPPr, "rPr"), "del");
+    expect(secondMarkDel, "the second paragraph must NOT be the one marked deleted").toBeFalsy();
   });
 });

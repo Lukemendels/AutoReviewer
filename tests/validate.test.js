@@ -80,6 +80,43 @@ describe("G1 -- grammar", () => {
     expect(result.ok).toBe(false);
     expect(result.gate).toBe("G1");
   });
+
+  // Hotfix regression: a newline embedded in an insertion's own content passes tokenize/
+  // strip/anchor-resolution untouched (none of them care what characters a token's content
+  // holds), but injectEdits puts the whole string into one w:t verbatim -- the newline
+  // lands as a literal character Word renders as a stray space, not a line break or a new
+  // paragraph. Only the D1 whole-paragraph shape (token alone on its own line) is a
+  // sanctioned way to add a new paragraph.
+  it("rejects a newline embedded inside a mid-paragraph insertion's own text", async () => {
+    const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+    const response = withEdit(exported, "third paragraph", "{++really\nreally ++}third paragraph");
+    const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
+    expect(result.ok).toBe(false);
+    expect(result.gate).toBe("G1");
+    expect(result.message).toMatch(/newline/i);
+    expect(result.message, "repair message must teach the D1 shape by example").toMatch(/alone on its own line/i);
+    expect(result.message).toContain("{++New paragraph text.++}");
+  });
+
+  it("rejects a newline embedded inside a substitution's new text", async () => {
+    const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+    const response = withEdit(exported, "first", "{~~first~>ini\ntial~~}");
+    const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
+    expect(result.ok).toBe(false);
+    expect(result.gate).toBe("G1");
+    expect(result.message).toMatch(/newline/i);
+  });
+
+  it("does NOT reject a real D1 whole-paragraph insert, whose own token content has no embedded newline", async () => {
+    const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+    const response = withEdit(
+      exported,
+      "document.\n\nThis is the second",
+      "document.\n{++A whole new paragraph.++}\nThis is the second"
+    );
+    const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+  });
 });
 
 describe("G2 -- fidelity (paraphrase drift)", () => {

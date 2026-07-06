@@ -477,8 +477,7 @@ function buildWholeParagraphInsertParagraph(doc, anchorP, text, revState) {
 // splitting isn't). A single fixed reference node per group is enough regardless of edge:
 // each subsequent insertBefore(newP, ref) with ref held constant naturally accumulates
 // new paragraphs in call order immediately before ref.
-function applyWholeParagraphInserts(doc, body, bodyPath, edits, revState) {
-  const anchorP = locateParagraph(body, bodyPath);
+function applyWholeParagraphInserts(doc, anchorP, edits, revState) {
   const byEdge = new Map();
   for (const edit of edits) {
     const edge = edit.anchor.edge;
@@ -495,13 +494,13 @@ function applyWholeParagraphInserts(doc, body, bodyPath, edits, revState) {
   }
 }
 
-function applyWholeParagraphEdits(doc, body, bodyPath, edits, revState) {
+function applyWholeParagraphEdits(doc, anchorP, edits, revState) {
   const deletes = edits.filter((e) => e.anchor.kind === "wholeParagraphDelete");
   const inserts = edits.filter((e) => e.anchor.kind === "paragraphBoundary");
   for (const edit of deletes) {
-    applyWholeParagraphDelete(doc, locateParagraph(body, bodyPath), revState);
+    applyWholeParagraphDelete(doc, anchorP, revState);
   }
-  if (inserts.length) applyWholeParagraphInserts(doc, body, bodyPath, inserts, revState);
+  if (inserts.length) applyWholeParagraphInserts(doc, anchorP, inserts, revState);
 }
 
 /* ------------------------------------------------------------------ *
@@ -524,12 +523,27 @@ export function injectEdits(documentXmlDoc, acceptedEdits, _sourceMap, opts = {}
     byBodyPath.get(key).edits.push(edit);
   }
 
-  for (const { bodyPath, edits } of byBodyPath.values()) {
-    const p = locateParagraph(body, bodyPath);
+  // Resolve every group's target paragraph element UP FRONT, all against the same
+  // pristine (pre-mutation) body -- before any group's mutation runs. bodyPath is a
+  // positional index into body.children as they existed in the ORIGINAL document (baked
+  // in at export/validate time); a whole-paragraph INSERT is the one operation here that
+  // actually changes body's child count, so resolving a later group's bodyPath lazily,
+  // after an earlier group has already inserted a new sibling, silently walks to the
+  // wrong paragraph (an off-by-one down the whole rest of the body) instead of throwing --
+  // it only surfaces as a crash downstream in splitRun once that wrong paragraph's own
+  // run text doesn't cover the resolved-elsewhere charOffset. Capturing the real DOM node
+  // reference per group here, once, makes every later step operate on the right paragraph
+  // regardless of how many groups before it inserted new siblings: a live node reference
+  // stays valid no matter how its OWN siblings change (whole-paragraph delete doesn't
+  // remove the node either -- see applyWholeParagraphDelete -- so this is safe even when a
+  // group mixes an in-place delete with other groups' inserts).
+  const groups = [...byBodyPath.values()].map(({ bodyPath, edits }) => ({ p: locateParagraph(body, bodyPath), edits }));
+
+  for (const { p, edits } of groups) {
     const wholeParagraph = edits.filter((e) => isWholeParagraphAnchor(e.anchor));
     const ordinary = edits.filter((e) => !isWholeParagraphAnchor(e.anchor));
     if (ordinary.length) applyOrdinaryEdits(documentXmlDoc, p, ordinary, revState, commentState);
-    if (wholeParagraph.length) applyWholeParagraphEdits(documentXmlDoc, body, bodyPath, wholeParagraph, revState);
+    if (wholeParagraph.length) applyWholeParagraphEdits(documentXmlDoc, p, wholeParagraph, revState);
   }
 
   return { newComments: commentState.newComments };

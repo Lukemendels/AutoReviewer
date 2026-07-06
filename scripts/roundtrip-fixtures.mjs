@@ -168,12 +168,35 @@ function renderFixtureSection(name, markdown, sourceMap, response, result) {
     ""
   );
 
+  // A D1 whole-paragraph INSERT anchors to the gap BETWEEN two blocks (or before the
+  // first/after the last), never inside one -- blockIndexForEdit's containment check can
+  // never resolve one to a real block index (by design: that's exactly how resolvePoint
+  // tells a paragraphBoundary point apart from an ordinary in-run one). A whole-paragraph
+  // DELETE is the opposite case: its declared span IS a block's own full [mdStart,mdEnd),
+  // so blockIndexForEdit already resolves it correctly and it flows through the normal
+  // per-block path below unchanged.
   const blocks = sourceMap.blocks || [];
+  const wholeParagraphInserts = result.edits.filter(
+    (e) => e.anchor && !Array.isArray(e.anchor) && e.anchor.kind === "paragraphBoundary"
+  );
   const byBlock = new Map();
   for (const edit of result.edits) {
+    if (wholeParagraphInserts.includes(edit)) continue;
     const idx = blockIndexForEdit(blocks, edit);
     if (!byBlock.has(idx)) byBlock.set(idx, []);
     byBlock.get(idx).push(edit);
+  }
+
+  for (const edit of wholeParagraphInserts.sort((a, b) => a.rawStart - b.rawStart)) {
+    lines.push(
+      `### Whole-paragraph insert (${edit.anchor.edge} paragraph \`${JSON.stringify(edit.anchor.bodyPath)}\`)`,
+      "",
+      "Proposed edit(s) in context:",
+      `- \`${tokenInContext(response, edit)}\``,
+      "",
+      `Expected after Accept All: a NEW paragraph containing "${edit.newText}"`,
+      ""
+    );
   }
 
   for (const idx of [...byBlock.keys()].sort((a, b) => a - b)) {

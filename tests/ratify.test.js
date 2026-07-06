@@ -97,6 +97,24 @@ describe("renderRatificationUI: DOM smoke test", () => {
     expect(state.rows[0].decision).toBe("reject");
   });
 
+  it("gives visible feedback on the current decision: a data attribute on the row and a class on the active button", () => {
+    const state = createRatificationState(domEdits);
+    const container = document.createElement("div");
+    renderRatificationUI(container, state, { sourceText });
+
+    const rowEl = container.querySelector('[data-row-id="0"]');
+    const acceptBtn = rowEl.querySelector('[data-action="accept"]');
+    const rejectBtn = rowEl.querySelector('[data-action="reject"]');
+    expect(rowEl.dataset.decision).toBe("accept");
+    expect(acceptBtn.classList.contains("is-selected")).toBe(true);
+    expect(rejectBtn.classList.contains("is-selected")).toBe(false);
+
+    rejectBtn.dispatchEvent(new Event("click", { bubbles: true }));
+    expect(rowEl.dataset.decision).toBe("reject");
+    expect(rejectBtn.classList.contains("is-selected")).toBe(true);
+    expect(acceptBtn.classList.contains("is-selected")).toBe(false);
+  });
+
   it("Inject stays disabled until every row is marked reviewed, then re-enables reactively", () => {
     const state = createRatificationState(domEdits);
     const container = document.createElement("div");

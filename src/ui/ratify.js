@@ -147,6 +147,17 @@ function buildRowEl(doc, state, row, sourceText) {
   controls.append(acceptBtn, rejectBtn);
   el.appendChild(controls);
 
+  // Visible feedback for the current decision (issue: Accept/Reject worked but gave no
+  // on-screen indication of which one was selected) -- a data attribute for the row's own
+  // style, plus a class on whichever button matches, re-synced on every state change.
+  function syncDecision() {
+    el.dataset.decision = row.decision;
+    acceptBtn.classList.toggle("is-selected", row.decision === "accept");
+    rejectBtn.classList.toggle("is-selected", row.decision === "reject");
+  }
+  syncDecision();
+  state.onChange(syncDecision);
+
   return el;
 }
 
