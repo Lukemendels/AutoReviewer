@@ -387,7 +387,9 @@ function flagParagraphMark(doc, p, tag, rev) {
   rPr.insertBefore(markEl, rPr.firstChild);
 }
 
-const D4_ERROR_MESSAGE =
+// Exported so load.js's preflight check (issue #16) can surface the same wording at
+// upload time instead of waiting for this same condition to surface deep in injection.
+export const D4_ERROR_MESSAGE =
   "This paragraph contains existing tracked changes. Accept or reject them in Word first, then re-export and re-run the review.";
 
 /* ------------------------------------------------------------------ *
