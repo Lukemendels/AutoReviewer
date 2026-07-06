@@ -48,3 +48,9 @@ step order, review conventions) — port the flows, never the code.
 - After a milestone's PR merges to `main`, push a tag (e.g. `m3a`) to trigger the release
   workflow, which attaches the committed `html/autoreviewer-workbench.html` to a GitHub
   Release named for the tag.
+
+## Delivery constraints
+
+- Luke's work network blocks GitHub Actions artifact downloads and release assets (Azure
+  blob storage domains). All human-facing deliverables must be reachable via
+  raw.githubusercontent.com off a committed ref. CI artifacts are CI-internal only.
