@@ -69,8 +69,151 @@ const rng = mulberry32(seed);
 // transient/occasional draw.
 const STRUCTURALLY_INCOMPATIBLE_FIXTURES = new Set(["tracked-changes.docx", "comments-threaded.docx", "stressor.docx"]);
 
+const AUTHOR = "AutoReviewer — CI roundtrip";
+
+/* ------------------------------------------------------------------ *
+ * EXPECTED.md -- the human-verification oracle (pre-Phase-2 hardening).
+ *
+ * A human checking a round-tripped .docx in real Word was given only "check that
+ * Accept All reads cleanly," with no record of what was actually proposed --
+ * and correctly flagged healthy, character-level fuzz edits as corruption (see
+ * the PR this shipped in). This computes, from the SAME data injectEdits itself
+ * consumes (validate()'s resolved edit list + the winning response markdown) --
+ * never by re-extracting from the written-out .docx -- what a human should see:
+ * the raw tokens in context, and the accepted-view text they produce. Computing
+ * it from the injected document instead would let the oracle and the system
+ * under test share a failure mode (the golden-dataset principle).
+ * ------------------------------------------------------------------ */
+
+// Which block (paragraph) an edit anchors to, by md offset -- ins/bare-comment use a
+// zero-width point (mdPos); del/sub/anchored-comment use their span's start (mdStart).
+// randomEditForRun anchors every edit entirely inside one run, so this never straddles a
+// block boundary.
+function editAnchorPos(edit) {
+  if (edit.type === "ins" || (edit.type === "comment" && !edit.anchored)) return edit.mdPos;
+  return edit.mdStart;
+}
+
+function blockIndexForEdit(blocks, edit) {
+  const pos = editAnchorPos(edit);
+  for (let i = 0; i < blocks.length; i++) {
+    if (pos >= blocks[i].mdStart && pos <= blocks[i].mdEnd) return i;
+  }
+  return -1;
+}
+
+// Applies the accepted-view of a paragraph's text-changing edits (ins/del/sub) to that
+// paragraph's own original markdown slice -- descending by position so each splice only
+// affects text to its own left already spliced, exactly buildValidResponse's own ordering
+// discipline, applied to acceptance instead of raw-token insertion.
+function acceptedParagraphText(markdown, block, edits) {
+  const textEdits = edits.filter((e) => e.type === "ins" || e.type === "del" || e.type === "sub");
+  const sorted = [...textEdits].sort((a, b) => editAnchorPos(b) - editAnchorPos(a));
+  let text = markdown.slice(block.mdStart, block.mdEnd);
+  for (const edit of sorted) {
+    if (edit.type === "ins") {
+      const local = edit.mdPos - block.mdStart;
+      text = text.slice(0, local) + edit.newText + text.slice(local);
+    } else {
+      const s = edit.mdStart - block.mdStart;
+      const e = edit.mdEnd - block.mdStart;
+      const replacement = edit.type === "sub" ? edit.newText : "";
+      text = text.slice(0, s) + replacement + text.slice(e);
+    }
+  }
+  return text;
+}
+
+// The raw CriticMarkup token plus ~15 chars of surrounding text on each side, taken
+// directly from the winning response (outside the token, response == exportedMarkdown
+// byte-for-byte per G2, so this doubles as "surrounding exported markdown").
+const CONTEXT_CHARS = 15;
+function tokenInContext(response, edit) {
+  const before = response.slice(Math.max(0, edit.rawStart - CONTEXT_CHARS), edit.rawStart);
+  const raw = response.slice(edit.rawStart, edit.rawEnd);
+  const after = response.slice(edit.rawEnd, edit.rawEnd + CONTEXT_CHARS);
+  return `${before}${raw}${after}`;
+}
+
+// Word's Review pane has no "substitution" revision type -- inject.js emits a sub as one
+// w:del (old text) + one w:ins (new text), see ooxml/inject.js's applyOrdinaryEdits. The
+// counts a human checks on-screen must reflect that, not validate()'s own gate-level
+// per-token counts.
+function reviewPaneCounts(counts) {
+  return {
+    insertions: counts.ins + counts.sub,
+    deletions: counts.del + counts.sub,
+    comments: counts.comment,
+  };
+}
+
+function renderFixtureSection(name, markdown, sourceMap, response, result) {
+  const lines = [`## ${name}`, ""];
+  if (!result.edits.length) {
+    lines.push(
+      "No edits were injected into this fixture (either structurally excluded from " +
+        "random-edit generation -- see this script's STRUCTURALLY_INCOMPATIBLE_FIXTURES -- " +
+        "or it legitimately drew zero valid edits this run).",
+      "",
+      "**Expected: opens clean in Word -- zero revisions, zero comments present.**",
+      ""
+    );
+    return lines.join("\n");
+  }
+
+  const { insertions, deletions, comments } = reviewPaneCounts(result.counts);
+  lines.push(
+    `**Expected Review pane counts:** ${insertions} insertion(s), ${deletions} deletion(s), ${comments} comment(s).`,
+    `**Author:** \`${AUTHOR}\``,
+    ""
+  );
+
+  const blocks = sourceMap.blocks || [];
+  const byBlock = new Map();
+  for (const edit of result.edits) {
+    const idx = blockIndexForEdit(blocks, edit);
+    if (!byBlock.has(idx)) byBlock.set(idx, []);
+    byBlock.get(idx).push(edit);
+  }
+
+  for (const idx of [...byBlock.keys()].sort((a, b) => a - b)) {
+    const block = blocks[idx];
+    const edits = byBlock.get(idx).sort((a, b) => a.rawStart - b.rawStart);
+    lines.push(`### Paragraph \`${JSON.stringify(block.bodyPath)}\` (block #${idx})`, "", "Proposed edit(s) in context:");
+    for (const edit of edits) {
+      lines.push(`- \`${tokenInContext(response, edit)}\``);
+      if (edit.type === "comment") lines.push(`  - Comment text: "${edit.commentText}"`);
+    }
+    const hasTextChange = edits.some((e) => e.type === "ins" || e.type === "del" || e.type === "sub");
+    if (hasTextChange) {
+      const accepted = acceptedParagraphText(markdown, block, edits);
+      lines.push("", `Expected after Accept All: "${accepted}"`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function renderExpectedMd(seed, sections) {
+  const preamble = [
+    "# Verification Oracle -- Expected Post-Accept-All State",
+    "",
+    `Generated by \`scripts/roundtrip-fixtures.mjs\` (seed=${seed}).`,
+    "",
+    "**This is the sheet, not a suggestion.** The check is \"does the reviewed document " +
+      "match the tables below,\" never \"does the accepted text read cleanly.\" Edits are " +
+      "generated at the *character* level by a fuzz generator " +
+      "(`tests/helpers/randomEdits.js`), so accepted text is frequently not natural " +
+      "English -- e.g. a substitution landing mid-word. That is expected and correct; " +
+      "compare byte-for-byte against this sheet, not by eye for readability.",
+  ].join("\n");
+  const chunks = [preamble, ...sections].map((c) => c.replace(/\s+$/, ""));
+  return chunks.join("\n\n---\n\n") + "\n";
+}
+
 const fixtures = readdirSync(fixturesDir).filter((f) => f.endsWith(".docx"));
 const manifest = {};
+const expectedSections = [];
 
 for (const name of fixtures) {
   const buf = readFileSync(path.join(fixturesDir, name));
@@ -80,6 +223,7 @@ for (const name of fixtures) {
   const { markdown, sourceMap } = await exportDocx(bytes, { DOMParserImpl: DOMParser, filename: name });
 
   let result = { ok: true, edits: [] };
+  let response = markdown;
   if (!STRUCTURALLY_INCOMPATIBLE_FIXTURES.has(name)) {
     // A handful of retries with fresh draws is defensive-only: every fixture actually
     // exercised here has passed on the first attempt in practice. If a fixture that's
@@ -92,6 +236,7 @@ for (const name of fixtures) {
       const candidateResult = validate({ responseMarkdown: candidateResponse, exportedMarkdown: markdown, sourceMap });
       if (candidateResult.ok && candidateResult.edits.length) {
         result = candidateResult;
+        response = candidateResponse;
         found = true;
         break;
       }
@@ -105,11 +250,13 @@ for (const name of fixtures) {
     }
   }
 
+  expectedSections.push(renderFixtureSection(name, markdown, sourceMap, response, result));
+
   const mutatedParts = {};
   if (result.edits.length) {
     const docDoc = parseXml(await readEntry(zip, "word/document.xml"), DOMParser);
     const { newComments } = injectEdits(docDoc, result.edits, sourceMap, {
-      author: "AutoReviewer — CI roundtrip",
+      author: AUTHOR,
       date: "2026-01-01T00:00:00Z",
     });
     mutatedParts["word/document.xml"] = serializePart(docDoc, XMLSerializer);
@@ -135,6 +282,7 @@ for (const name of fixtures) {
 }
 
 writeFileSync(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2));
+writeFileSync(path.join(outDir, "EXPECTED.md"), renderExpectedMd(seed, expectedSections));
 
 const mutatedCount = Object.values(manifest).filter((m) => m.mutatedParts.length).length;
 console.log(`Round-tripped ${fixtures.length} fixture(s) (${mutatedCount} with real injected edits, seed=${seed}) into ${outDir}`);

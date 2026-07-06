@@ -28,6 +28,14 @@ jobs:
       - name: ZIP writer -- independent verification (Python zipfile)
         run: npm run verify:zip
 
+      - name: Upload human-verification package (round-tripped .docx + EXPECTED.md oracle)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: word-verification-package
+          path: /tmp/ar-zip-roundtrip
+          if-no-files-found: error
+
       - name: Build fresh (to a temp path, not the committed html/ file)
         run: node build/build.js --release /tmp/fresh-autoreviewer-workbench.html
 
