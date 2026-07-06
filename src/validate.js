@@ -172,6 +172,30 @@ export function validate({ responseMarkdown, exportedMarkdown, sourceMap, larges
     }
   }
 
+  // G1 -- a newline embedded in an insertion's own new text passes every other gate
+  // (tokenize/strip/anchor-resolution don't care what characters a token's content holds)
+  // but injectEdits' buildRunWithText puts the ENTIRE string into one w:t verbatim, with
+  // no line-break handling -- the newline lands as a literal character inside w:t, which
+  // Word renders as a stray space, not a line break or a new paragraph. The only sanctioned
+  // way to add a new paragraph is the D1 whole-paragraph shape (the token alone on its own
+  // line, spec §4) -- inject.js builds that as a real, separate <w:p>. A newline stuffed
+  // inside an ordinary token's own content is always a mistake, never a valid construction,
+  // so this blocks outright rather than warning (G5 is for informational counts only).
+  for (const t of tokenized.tokens) {
+    const newText = t.type === "ins" ? t.text : t.type === "sub" ? t.newText : null;
+    if (newText != null && newText.includes("\n")) {
+      return {
+        ok: false,
+        gate: "G1",
+        message:
+          "an insertion's new text contains a newline character. To insert a whole paragraph, put the " +
+          "token alone on its own line: {++New paragraph text.++} between the existing paragraphs -- do " +
+          "not put newline characters inside a mid-paragraph insertion.",
+        detail: { rawStart: t.rawStart },
+      };
+    }
+  }
+
   // G2 -- fidelity (the fabrication gate)
   const strippedResponse = strip(response, tokenizeOpts);
   if (strippedResponse !== exported) {

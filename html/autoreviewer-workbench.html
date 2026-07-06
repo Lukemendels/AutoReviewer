@@ -84,6 +84,8 @@
   .ar-row-change ins{background:#dcfce7; text-decoration:none}
   .ar-row-change del{background:#fee2e2; text-decoration:line-through}
   .ar-row-controls{display:flex; gap:8px; margin-top:8px}
+  .ar-row-controls button.is-selected{background:var(--accent); border-color:var(--accent); color:#fff}
+  .ar-row[data-decision="reject"]{opacity:.55; border-style:dashed}
 
   .ar-copy-fallback{
     margin-top:8px; padding:10px; border:1px solid #fde68a; background:#fffbeb;
@@ -1447,6 +1449,17 @@ Proceed with the review content normally once the operator has the tool open.
         };
       }
     }
+    for (const t of tokenized.tokens) {
+      const newText = t.type === "ins" ? t.text : t.type === "sub" ? t.newText : null;
+      if (newText != null && newText.includes("\n")) {
+        return {
+          ok: false,
+          gate: "G1",
+          message: "an insertion's new text contains a newline character. To insert a whole paragraph, put the token alone on its own line: {++New paragraph text.++} between the existing paragraphs -- do not put newline characters inside a mid-paragraph insertion.",
+          detail: { rawStart: t.rawStart }
+        };
+      }
+    }
     const strippedResponse = strip(response, tokenizeOpts);
     if (strippedResponse !== exported) {
       return {
@@ -1647,6 +1660,13 @@ Proceed with the review content normally once the operator has the tool open.
     rejectBtn.addEventListener("click", () => state.setDecision(row.id, "reject"));
     controls.append(acceptBtn, rejectBtn);
     el.appendChild(controls);
+    function syncDecision() {
+      el.dataset.decision = row.decision;
+      acceptBtn.classList.toggle("is-selected", row.decision === "accept");
+      rejectBtn.classList.toggle("is-selected", row.decision === "reject");
+    }
+    syncDecision();
+    state.onChange(syncDecision);
     return el;
   }
   function observeForReview(doc, rowEls, state) {
@@ -2189,8 +2209,7 @@ Proceed with the review content normally once the operator has the tool open.
     newP.appendChild(contentIns);
     return newP;
   }
-  function applyWholeParagraphInserts(doc, body, bodyPath, edits, revState) {
-    const anchorP = locateParagraph(body, bodyPath);
+  function applyWholeParagraphInserts(doc, anchorP, edits, revState) {
     const byEdge = /* @__PURE__ */ new Map();
     for (const edit of edits) {
       const edge = edit.anchor.edge;
@@ -2206,13 +2225,13 @@ Proceed with the review content normally once the operator has the tool open.
       }
     }
   }
-  function applyWholeParagraphEdits(doc, body, bodyPath, edits, revState) {
+  function applyWholeParagraphEdits(doc, anchorP, edits, revState) {
     const deletes = edits.filter((e) => e.anchor.kind === "wholeParagraphDelete");
     const inserts = edits.filter((e) => e.anchor.kind === "paragraphBoundary");
     for (const edit of deletes) {
-      applyWholeParagraphDelete(doc, locateParagraph(body, bodyPath), revState);
+      applyWholeParagraphDelete(doc, anchorP, revState);
     }
-    if (inserts.length) applyWholeParagraphInserts(doc, body, bodyPath, inserts, revState);
+    if (inserts.length) applyWholeParagraphInserts(doc, anchorP, inserts, revState);
   }
   function injectEdits(documentXmlDoc, acceptedEdits, _sourceMap, opts = {}) {
     const author = opts.author || "AutoReviewer";
@@ -2228,12 +2247,12 @@ Proceed with the review content normally once the operator has the tool open.
       if (!byBodyPath.has(key)) byBodyPath.set(key, { bodyPath, edits: [] });
       byBodyPath.get(key).edits.push(edit);
     }
-    for (const { bodyPath, edits } of byBodyPath.values()) {
-      const p = locateParagraph(body, bodyPath);
+    const groups = [...byBodyPath.values()].map(({ bodyPath, edits }) => ({ p: locateParagraph(body, bodyPath), edits }));
+    for (const { p, edits } of groups) {
       const wholeParagraph = edits.filter((e) => isWholeParagraphAnchor(e.anchor));
       const ordinary = edits.filter((e) => !isWholeParagraphAnchor(e.anchor));
       if (ordinary.length) applyOrdinaryEdits(documentXmlDoc, p, ordinary, revState, commentState);
-      if (wholeParagraph.length) applyWholeParagraphEdits(documentXmlDoc, body, bodyPath, wholeParagraph, revState);
+      if (wholeParagraph.length) applyWholeParagraphEdits(documentXmlDoc, p, wholeParagraph, revState);
     }
     return { newComments: commentState.newComments };
   }
