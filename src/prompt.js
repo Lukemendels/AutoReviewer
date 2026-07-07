@@ -94,6 +94,10 @@ function buildCriticMarkupRulesSection() {
 }
 
 function buildHardConstraintsSection(persona, exportedMarkdown) {
+  // FABLE-REVIEW (M4 milestone): re-emits the export's 3 header lines here in addition to
+  // the verbatim [DOCUMENT] embedding below -- §4 single-source vs Issue #10, two conformant
+  // readings. Deferred ruling; see docs/plans/m4-scope-notes.md -> "Deferred to Fable".
+  // Do not "resolve" this ad hoc.
   const headerLines = exportedMarkdown.split("\n").slice(0, 3).join("\n");
   const lines = [
     "[HARD CONSTRAINTS]",
