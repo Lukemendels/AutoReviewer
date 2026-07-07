@@ -74,3 +74,23 @@ item 2 is resolved (see below); item 1 (header echo) is the sole remaining open 
    the audit anchor mirrors the ratify row, plus a `source.sha256 === sourceMap.docHash`
    consistency guard). Option (b) — deferring to M4c's `resolveEdits` split — was therefore
    unnecessary. Left here for provenance so it isn't reopened.
+
+## M4c step 2 (chunk.js) — decisions surfaced and settled
+
+1. **D1 — chunk-mode `promptVersion` is distinct from single-doc.** Confirmed: single-doc
+   `PROMPT_TEMPLATE_VERSION` in `prompt.js` stays `"m4a-2026.07-1"`, unchanged; chunk-mode
+   prompts get their own version string (e.g. `"m4c-chunk-2026.07-1"`) once a chunk-mode
+   prompt template exists, so audit provenance records which template actually ran. **Not
+   yet implemented** — see decision 2 below; `prompt.js` has no chunk-mode template yet, so
+   there is nowhere for this version string to live in code this session. Whoever adds the
+   chunk preamble/per-chunk prompt builder should apply this ruling then, not re-litigate it.
+
+2. **Session wiring scope — chunk.js + validate.js callers only, no UI this session.**
+   `chunk.js` (splitting by top-level heading, offset translation, two-phase composition via
+   `validateText`/`resolveEdits`) and its equivalence fuzz oracle (`tests/chunk.test.js`) are
+   done. `ui/app.js`, `ui/state.js` (the actual multi-paste chunk-mode flow), and `prompt.js`
+   (a chunk-mode prompt builder/preamble, and decision 1's version string) are explicitly
+   **deferred** — chosen to keep this session's two commits (validate.js split, then
+   chunk.js) focused and independently reviewable rather than also redesigning the paste
+   flow's state machine in the same pass. `chunk.js` is fully usable by that future work;
+   nothing about it needs to change to be wired in.
