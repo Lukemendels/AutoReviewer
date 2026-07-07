@@ -1060,14 +1060,345 @@ Comment conventions: ${persona.commentConventions}`;
     };
   }
 
+  // src/repair.js
+  function contextAround(text, rawStart, pad = 80) {
+    const start = Math.max(0, rawStart - pad);
+    const end = Math.min(text.length, rawStart + pad);
+    return (start > 0 ? "\u2026" : "") + text.slice(start, end) + (end < text.length ? "\u2026" : "");
+  }
+  function composeG1(failure, responseText) {
+    const snippet = contextAround(responseText, failure.detail.rawStart);
+    return `${failure.message}
+Near: "${snippet}"
+A CriticMarkup token must open and close inside ONE paragraph/block, and an insertion's own new text must never contain a newline character. Split a multi-paragraph change into one token per block, e.g.:
+  ...end of paragraph one.{--...--}
+  {--Paragraph two...--}
+and use the whole-paragraph insert shape -- the {++...++} token ALONE on its own line -- instead of a newline character inside a token's own text.`;
+  }
+  function composeG2(failure) {
+    const fd = failure.firstDivergence;
+    return `${failure.message}
+Your response diverges at offset ${fd.offset}.
+You wrote:    "${fd.afterA}"
+Expected:     "${fd.afterB}"
+Everything outside your own CriticMarkup tokens must be returned byte-for-byte -- including the document's three leading header comment lines and its final trailing newline. Re-emit the full response with that exact text restored; to make an intentional wording change, wrap it in a token instead, e.g. {~~old~>new~~}.`;
+  }
+  function composeG3(failure, responseText) {
+    const snippet = contextAround(responseText, failure.detail.rawStart);
+    return `${failure.message}
+Near: "${snippet}"
+The edit's span falls on markdown the exporter invented (a heading "# ", a bullet "- ", or emphasis "**"), not on real document text. Move the token so it wraps only the actual words, e.g. {~~old~>new~~} inside the heading text, not around the "# " prefix.`;
+  }
+  function composeG4(failure, responseText) {
+    const snippet = contextAround(responseText, failure.detail.rawStart);
+    return `${failure.message}
+Near: "${snippet}"
+This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \u2026] placeholder), which must never be edited, moved, or commented on. Remove that token, or re-scope it to text outside the locked range.`;
+  }
+  var RESTART_BLOCK = "You've hit the same issue twice. Rather than patch again, start clean: re-copy the full prompt below and paste a fresh response -- partial fixes tend to compound structural mistakes.\n\n---\n";
+  function composeRepair(failure, responseText, attemptCount) {
+    let body;
+    switch (failure.gate) {
+      case "G1":
+        body = composeG1(failure, responseText);
+        break;
+      case "G2":
+        body = composeG2(failure, responseText);
+        break;
+      case "G3":
+        body = composeG3(failure, responseText);
+        break;
+      case "G4":
+        body = composeG4(failure, responseText);
+        break;
+      default:
+        body = failure.message;
+    }
+    return attemptCount >= 2 ? RESTART_BLOCK + body : body;
+  }
+
   // src/audit.js
-  async function buildAuditRecord(_details) {
-    throw new Error("audit: not yet implemented (M3/M4)");
+  var APP_VERSION = "0.1.0";
+  function toBytes(input) {
+    return typeof input === "string" ? new TextEncoder().encode(input) : input;
+  }
+  async function sha256Hex(digestImpl, input) {
+    const digest = await digestImpl(toBytes(input));
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  async function sha256Tag(digestImpl, input) {
+    return "sha256-" + await sha256Hex(digestImpl, input);
+  }
+  function excerpt(edit, pad = 60) {
+    const text = edit.type === "ins" ? edit.newText : edit.type === "del" ? edit.oldText : edit.type === "sub" ? `${edit.oldText} -> ${edit.newText}` : edit.commentText;
+    return text.length > pad ? text.slice(0, pad) + "\u2026" : text;
+  }
+  async function buildAuditRecord(details, { digestImpl = (data) => crypto.subtle.digest("SHA-256", data) } = {}) {
+    const { promptVersion, timestamps, filename, docxBytes, outputBytes, response, sourceMap, persona, validationAttempts, rows, author } = details;
+    const sourceSha = await sha256Tag(digestImpl, docxBytes);
+    if (sourceSha !== sourceMap.docHash) {
+      throw new Error(
+        `audit: source.sha256 (${sourceSha}) does not match sourceMap.docHash (${sourceMap.docHash}) -- both hash the same original docx bytes and must agree`
+      );
+    }
+    const personaRecord = persona ? { name: persona.name, sha256: await sha256Tag(digestImpl, persona.raw) } : { name: "Default Persona (built-in)" };
+    const edits = rows.map((row) => ({
+      id: `e${row.id}`,
+      type: row.edit.type,
+      excerpt: excerpt(row.edit),
+      decision: row.decision,
+      resolvedAnchor: row.edit.anchor
+    }));
+    const counts = { ins: 0, del: 0, sub: 0, comment: 0 };
+    for (const row of rows) if (row.decision === "accept") counts[row.edit.type]++;
+    return {
+      schemaVersion: 1,
+      appVersion: APP_VERSION,
+      promptVersion,
+      timestamps,
+      source: { filename, sha256: sourceSha },
+      output: { sha256: await sha256Tag(digestImpl, outputBytes) },
+      response: { sha256: await sha256Tag(digestImpl, response) },
+      persona: personaRecord,
+      validationAttempts,
+      edits,
+      injection: { author, counts }
+    };
+  }
+
+  // src/ui/state.js
+  var STATES = Object.freeze({
+    EMPTY: "EMPTY",
+    DOC_LOADED: "DOC_LOADED",
+    PROMPT_READY: "PROMPT_READY",
+    AWAITING_RESPONSE: "AWAITING_RESPONSE",
+    VALIDATING: "VALIDATING",
+    VALIDATION_FAILED: "VALIDATION_FAILED",
+    RATIFYING: "RATIFYING",
+    INJECTED: "INJECTED"
+  });
+  function createAppState() {
+    let state = STATES.EMPTY;
+    const context = {
+      docxBytes: null,
+      filename: null,
+      exported: null,
+      // { markdown, sourceMap, comments, counts }
+      persona: null,
+      // null while default persona is in effect
+      promptText: null,
+      promptVersion: null,
+      tokenEstimate: null,
+      documentWordCount: null,
+      overThreshold: null,
+      response: null,
+      validation: null,
+      repairAttempts: {},
+      // gate -> count, for M4b's "advise restarting after 2" rule
+      validationAttempts: [],
+      // M4b: audit's log -- { ts, result: "ok" | gate, offset? }, in order
+      timestamps: { loaded: null, injected: null }
+      // M4b: audit's provenance timestamps
+    };
+    const listeners = [];
+    function notify() {
+      for (const fn of listeners) fn();
+    }
+    function set(next, patch) {
+      state = next;
+      Object.assign(context, patch);
+      notify();
+    }
+    function illegal(action) {
+      throw new Error(`state.js: cannot ${action} from state ${state}`);
+    }
+    return {
+      onChange(fn) {
+        listeners.push(fn);
+      },
+      get state() {
+        return state;
+      },
+      get context() {
+        return context;
+      },
+      // EMPTY -> DOC_LOADED. Loading a second document mid-review is out of scope for M4a;
+      // reset() first (a fresh page load also starts at EMPTY).
+      loadDocument({ docxBytes, filename, exported }) {
+        if (state !== STATES.EMPTY) illegal("loadDocument");
+        set(STATES.DOC_LOADED, {
+          docxBytes,
+          filename,
+          exported,
+          persona: null,
+          promptText: null,
+          promptVersion: null,
+          tokenEstimate: null,
+          documentWordCount: null,
+          overThreshold: null,
+          response: null,
+          validation: null,
+          repairAttempts: {},
+          validationAttempts: [],
+          timestamps: { loaded: (/* @__PURE__ */ new Date()).toISOString(), injected: null }
+        });
+      },
+      // Legal from any state >= DOC_LOADED; always regenerates the prompt and lands back on
+      // PROMPT_READY, discarding any in-flight response/validation.
+      loadPersona(persona) {
+        if (state === STATES.EMPTY) illegal("loadPersona");
+        set(STATES.PROMPT_READY, { persona, response: null, validation: null, repairAttempts: {} });
+      },
+      // DOC_LOADED or PROMPT_READY (e.g. re-generated after a persona swap) -> PROMPT_READY.
+      setPrompt({ text, tokenEstimate, promptVersion, documentWordCount, overThreshold }) {
+        if (state !== STATES.DOC_LOADED && state !== STATES.PROMPT_READY) illegal("setPrompt");
+        set(STATES.PROMPT_READY, { promptText: text, tokenEstimate, promptVersion, documentWordCount, overThreshold });
+      },
+      // PROMPT_READY -> AWAITING_RESPONSE: the human has copied the prompt and is off to
+      // paste it into DHSChat.
+      copyPrompt() {
+        if (state !== STATES.PROMPT_READY) illegal("copyPrompt");
+        set(STATES.AWAITING_RESPONSE, {});
+      },
+      // AWAITING_RESPONSE -> VALIDATING: the human pasted a reply back in.
+      submitResponse(responseText) {
+        if (state !== STATES.AWAITING_RESPONSE) illegal("submitResponse");
+        set(STATES.VALIDATING, { response: responseText });
+      },
+      // VALIDATING -> RATIFYING on a passing validate() result. Appends to the audit's
+      // validationAttempts log (M4b).
+      validationPassed(result) {
+        if (state !== STATES.VALIDATING) illegal("validationPassed");
+        const validationAttempts = [...context.validationAttempts, { ts: (/* @__PURE__ */ new Date()).toISOString(), result: "ok" }];
+        set(STATES.RATIFYING, { validation: result, validationAttempts });
+      },
+      // VALIDATING -> VALIDATION_FAILED on a blocking gate failure. Bumps the per-gate
+      // repair-attempt counter (M4b's composeRepair reads this for the "restart advice
+      // after 2" rule) and appends to the audit's validationAttempts log.
+      validationFailed(result) {
+        if (state !== STATES.VALIDATING) illegal("validationFailed");
+        const repairAttempts = { ...context.repairAttempts };
+        repairAttempts[result.gate] = (repairAttempts[result.gate] || 0) + 1;
+        const validationAttempts = [
+          ...context.validationAttempts,
+          { ts: (/* @__PURE__ */ new Date()).toISOString(), result: result.gate, offset: result.firstDivergence?.offset }
+        ];
+        set(STATES.VALIDATION_FAILED, { validation: result, repairAttempts, validationAttempts });
+      },
+      // VALIDATION_FAILED -> AWAITING_RESPONSE: ready for the next repair paste.
+      acknowledgeFailure() {
+        if (state !== STATES.VALIDATION_FAILED) illegal("acknowledgeFailure");
+        set(STATES.AWAITING_RESPONSE, {});
+      },
+      // RATIFYING -> INJECTED. Stamps the audit's `injected` timestamp (M4b).
+      inject() {
+        if (state !== STATES.RATIFYING) illegal("inject");
+        set(STATES.INJECTED, { timestamps: { ...context.timestamps, injected: (/* @__PURE__ */ new Date()).toISOString() } });
+      },
+      // Back to EMPTY, e.g. "start a new review."
+      reset() {
+        set(STATES.EMPTY, {
+          docxBytes: null,
+          filename: null,
+          exported: null,
+          persona: null,
+          promptText: null,
+          promptVersion: null,
+          tokenEstimate: null,
+          documentWordCount: null,
+          overThreshold: null,
+          response: null,
+          validation: null,
+          repairAttempts: {},
+          validationAttempts: [],
+          timestamps: { loaded: null, injected: null }
+        });
+      },
+      // EMPTY -> {state}: restores a previously-saved session wholesale (M4b's Resume flow,
+      // session.js's loadSession). Legal only from a fresh page, guarded exactly like
+      // loadDocument, since hydrating over an in-progress review would silently discard it.
+      hydrate({ state: restoredState, context: restoredContext }) {
+        if (state !== STATES.EMPTY) illegal("hydrate");
+        set(restoredState, restoredContext);
+      }
+    };
   }
 
   // src/session.js
-  function saveSession(_state) {
-    throw new Error("session: not yet implemented (M4)");
+  var SESSION_SCHEMA_VERSION = 1;
+  var STATE_ORDER = Object.values(STATES);
+  function atLeast(state, floor) {
+    return STATE_ORDER.indexOf(state) >= STATE_ORDER.indexOf(floor);
+  }
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunkSize = 32768;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+  }
+  function base64ToArrayBuffer(b64) {
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  }
+  function saveSession({ state, context, decisions = [] }) {
+    return {
+      schemaVersion: SESSION_SCHEMA_VERSION,
+      state,
+      filename: context.filename,
+      docxBase64: context.docxBytes ? arrayBufferToBase64(context.docxBytes) : null,
+      exported: context.exported,
+      personaRef: context.persona ? { name: context.persona.name, raw: context.persona.raw } : null,
+      promptVersion: context.promptVersion,
+      response: context.response,
+      decisions,
+      savedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  function loadSession(saved) {
+    const persona = saved.personaRef ? parsePersona(saved.personaRef.raw, { filename: saved.personaRef.name }) : null;
+    const context = {
+      docxBytes: saved.docxBase64 ? base64ToArrayBuffer(saved.docxBase64) : null,
+      filename: saved.filename,
+      exported: saved.exported,
+      persona,
+      promptText: null,
+      promptVersion: saved.promptVersion,
+      tokenEstimate: null,
+      documentWordCount: null,
+      overThreshold: null,
+      response: saved.response,
+      validation: null,
+      repairAttempts: {},
+      validationAttempts: [],
+      timestamps: { loaded: null, injected: null },
+      pendingDecisions: saved.decisions || []
+    };
+    if (atLeast(saved.state, STATES.PROMPT_READY)) {
+      const built = buildPrompt({ persona, exportedMarkdown: saved.exported.markdown, filename: saved.filename });
+      context.promptText = built.text;
+      context.tokenEstimate = built.tokenEstimate;
+      context.documentWordCount = built.documentWordCount;
+      context.overThreshold = built.overThreshold;
+    }
+    if (atLeast(saved.state, STATES.RATIFYING) && saved.response != null) {
+      const result = validate({
+        responseMarkdown: saved.response,
+        exportedMarkdown: saved.exported.markdown,
+        sourceMap: saved.exported.sourceMap
+      });
+      if (!result.ok) {
+        throw new Error(
+          `session: re-validating the saved response on load produced a failing result (gate ${result.gate}) though the saved state (${saved.state}) implies it had passed -- export/validate should be deterministic; something upstream isn't.`
+        );
+      }
+      context.validation = result;
+    }
+    return { state: saved.state, context };
   }
 
   // src/ui/ratify.js
@@ -1264,141 +1595,6 @@ Comment conventions: ${persona.commentConventions}`;
     syncInjectEnabled();
     state.onChange(syncInjectEnabled);
     observeForReview(doc, rowEls, state);
-  }
-
-  // src/ui/state.js
-  var STATES = Object.freeze({
-    EMPTY: "EMPTY",
-    DOC_LOADED: "DOC_LOADED",
-    PROMPT_READY: "PROMPT_READY",
-    AWAITING_RESPONSE: "AWAITING_RESPONSE",
-    VALIDATING: "VALIDATING",
-    VALIDATION_FAILED: "VALIDATION_FAILED",
-    RATIFYING: "RATIFYING",
-    INJECTED: "INJECTED"
-  });
-  function createAppState() {
-    let state = STATES.EMPTY;
-    const context = {
-      docxBytes: null,
-      filename: null,
-      exported: null,
-      // { markdown, sourceMap, comments, counts }
-      persona: null,
-      // null while default persona is in effect
-      promptText: null,
-      promptVersion: null,
-      tokenEstimate: null,
-      documentWordCount: null,
-      overThreshold: null,
-      response: null,
-      validation: null,
-      repairAttempts: {}
-      // gate -> count, for M4b's "advise restarting after 2" rule
-    };
-    const listeners = [];
-    function notify() {
-      for (const fn of listeners) fn();
-    }
-    function set(next, patch) {
-      state = next;
-      Object.assign(context, patch);
-      notify();
-    }
-    function illegal(action) {
-      throw new Error(`state.js: cannot ${action} from state ${state}`);
-    }
-    return {
-      onChange(fn) {
-        listeners.push(fn);
-      },
-      get state() {
-        return state;
-      },
-      get context() {
-        return context;
-      },
-      // EMPTY -> DOC_LOADED. Loading a second document mid-review is out of scope for M4a;
-      // reset() first (a fresh page load also starts at EMPTY).
-      loadDocument({ docxBytes, filename, exported }) {
-        if (state !== STATES.EMPTY) illegal("loadDocument");
-        set(STATES.DOC_LOADED, {
-          docxBytes,
-          filename,
-          exported,
-          persona: null,
-          promptText: null,
-          promptVersion: null,
-          tokenEstimate: null,
-          documentWordCount: null,
-          overThreshold: null,
-          response: null,
-          validation: null,
-          repairAttempts: {}
-        });
-      },
-      // Legal from any state >= DOC_LOADED; always regenerates the prompt and lands back on
-      // PROMPT_READY, discarding any in-flight response/validation.
-      loadPersona(persona) {
-        if (state === STATES.EMPTY) illegal("loadPersona");
-        set(STATES.PROMPT_READY, { persona, response: null, validation: null, repairAttempts: {} });
-      },
-      // DOC_LOADED or PROMPT_READY (e.g. re-generated after a persona swap) -> PROMPT_READY.
-      setPrompt({ text, tokenEstimate, promptVersion, documentWordCount, overThreshold }) {
-        if (state !== STATES.DOC_LOADED && state !== STATES.PROMPT_READY) illegal("setPrompt");
-        set(STATES.PROMPT_READY, { promptText: text, tokenEstimate, promptVersion, documentWordCount, overThreshold });
-      },
-      // PROMPT_READY -> AWAITING_RESPONSE: the human has copied the prompt and is off to
-      // paste it into DHSChat.
-      copyPrompt() {
-        if (state !== STATES.PROMPT_READY) illegal("copyPrompt");
-        set(STATES.AWAITING_RESPONSE, {});
-      },
-      // AWAITING_RESPONSE -> VALIDATING: the human pasted a reply back in.
-      submitResponse(responseText) {
-        if (state !== STATES.AWAITING_RESPONSE) illegal("submitResponse");
-        set(STATES.VALIDATING, { response: responseText });
-      },
-      // VALIDATING -> RATIFYING on a passing validate() result.
-      validationPassed(result) {
-        if (state !== STATES.VALIDATING) illegal("validationPassed");
-        set(STATES.RATIFYING, { validation: result });
-      },
-      // VALIDATING -> VALIDATION_FAILED on a blocking gate failure. Bumps the per-gate
-      // repair-attempt counter (M4b's composeRepair reads this for the "restart advice
-      // after 2" rule).
-      validationFailed(result) {
-        if (state !== STATES.VALIDATING) illegal("validationFailed");
-        const repairAttempts = { ...context.repairAttempts };
-        repairAttempts[result.gate] = (repairAttempts[result.gate] || 0) + 1;
-        set(STATES.VALIDATION_FAILED, { validation: result, repairAttempts });
-      },
-      // VALIDATION_FAILED -> AWAITING_RESPONSE: ready for the next repair paste.
-      acknowledgeFailure() {
-        if (state !== STATES.VALIDATION_FAILED) illegal("acknowledgeFailure");
-        set(STATES.AWAITING_RESPONSE, {});
-      },
-      // RATIFYING -> INJECTED.
-      inject() {
-        if (state !== STATES.RATIFYING) illegal("inject");
-        set(STATES.INJECTED, {});
-      },
-      // Back to EMPTY, e.g. "start a new review."
-      reset() {
-        set(STATES.EMPTY, {
-          docxBytes: null,
-          filename: null,
-          exported: null,
-          persona: null,
-          promptText: null,
-          promptVersion: null,
-          tokenEstimate: null,
-          response: null,
-          validation: null,
-          repairAttempts: {}
-        });
-      }
-    };
   }
 
   // src/zip/reader.js
@@ -2059,7 +2255,7 @@ Comment conventions: ${persona.commentConventions}`;
     final.writeSynthetic("\n");
     return { markdown: final.out, blocks: final.blocks, synthetic: final.synthetic, locked: final.locked, comments: ctx.comments, counts: ctx.counts };
   }
-  async function sha256Hex(arrayBuffer) {
+  async function sha256Hex2(arrayBuffer) {
     const digest = await crypto.subtle.digest("SHA-256", arrayBuffer);
     return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
@@ -2078,7 +2274,7 @@ Comment conventions: ${persona.commentConventions}`;
     const body = [...docDoc.documentElement.children].find((c) => c.localName === "body");
     if (!body) throw new Error("no document body found");
     const result = render({ body, rels, comments, childrenMap, docDoc, filename }, annotate);
-    const docHash = "sha256-" + await sha256Hex(docxBytes);
+    const docHash = "sha256-" + await sha256Hex2(docxBytes);
     return {
       markdown: result.markdown,
       sourceMap: { docHash, blocks: result.blocks, synthetic: result.synthetic, locked: result.locked },
@@ -2886,7 +3082,6 @@ Comment conventions: ${persona.commentConventions}`;
     { id: "respond-review", label: "Respond to Review" },
     { id: "train-persona", label: "Train Persona" }
   ];
-  var NOT_YET_WIRED = { buildAuditRecord, saveSession };
   function renderShell(root) {
     const nav = document.createElement("nav");
     nav.className = "ar-tabs";
@@ -2922,7 +3117,7 @@ Comment conventions: ${persona.commentConventions}`;
       panel.classList.toggle("active", panel.dataset.flow === flowId);
     }
   }
-  function base64ToArrayBuffer(b64) {
+  function base64ToArrayBuffer2(b64) {
     const binary = atob(b64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -2979,18 +3174,65 @@ Comment conventions: ${persona.commentConventions}`;
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }
+  function downloadJson(obj, filename) {
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
   function renderRunReviewPanel(panel) {
     const appState = createAppState();
     let loadError = null;
+    let currentRatifyState = null;
+    function currentDecisions() {
+      if (!currentRatifyState) return [];
+      return currentRatifyState.rows.map((r) => ({ id: r.id, decision: r.decision, reviewed: r.reviewed }));
+    }
+    function handleDownloadSession() {
+      const ctx = appState.context;
+      const saved = saveSession({ state: appState.state, context: ctx, decisions: currentDecisions() });
+      downloadJson(saved, `${ctx.filename} \u2014 session.json`);
+    }
+    async function handleResumeFiles(files) {
+      const file = files[0];
+      if (!file) return;
+      if (!/\.json$/i.test(file.name)) {
+        loadError = `"${file.name}" is not a session .json file.`;
+        render2();
+        return;
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(await readFileAsText(file));
+      } catch (err) {
+        loadError = `Could not parse "${file.name}" as a session file: ${err.message}`;
+        render2();
+        return;
+      }
+      try {
+        const { state, context } = loadSession(parsed);
+        appState.hydrate({ state, context });
+      } catch (err) {
+        loadError = `Could not resume session: ${err.message}`;
+        render2();
+      }
+    }
     function render2() {
       panel.innerHTML = "";
       const state = appState.state;
       const ctx = appState.context;
       if (state === STATES.EMPTY) {
+        currentRatifyState = null;
         renderLoadStep(panel);
         return;
       }
       renderPersonaControls(panel, ctx);
+      renderSessionBar(panel);
       if (state === STATES.DOC_LOADED || state === STATES.PROMPT_READY) {
         renderPromptStep(panel, ctx);
       } else if (state === STATES.AWAITING_RESPONSE || state === STATES.VALIDATION_FAILED) {
@@ -3032,7 +3274,7 @@ Comment conventions: ${persona.commentConventions}`;
       regeneratePrompt(null);
     }
     async function handleTryDemo() {
-      const bytes = base64ToArrayBuffer(DEMO_DOCX_BASE64);
+      const bytes = base64ToArrayBuffer2(DEMO_DOCX_BASE64);
       const result = await loadDocxFromBytes(bytes, { originalFilename: "plain-paragraphs.docx" });
       if (!result.ok) {
         loadError = result.message;
@@ -3065,12 +3307,29 @@ Comment conventions: ${persona.commentConventions}`;
       <input type="file" id="ar-doc-input" accept=".docx" style="display:none" />
       <p id="ar-load-status" class="ar-hint">${loadError ? escapeHtml(loadError) : ""}</p>
       <p class="ar-hint">No document handy? <button type="button" id="ar-try-demo" class="ar-link">Try the demo</button> instead.</p>
+      <p class="ar-hint">Resuming a review? <button type="button" id="ar-resume-session" class="ar-link">Resume session</button>
+      from a saved session <code>.json</code>.</p>
+      <input type="file" id="ar-resume-input" accept=".json" style="display:none" />
     `;
       container.appendChild(wrap);
       const dz = wrap.querySelector("#ar-dropzone");
       const input = wrap.querySelector("#ar-doc-input");
       attachDropZone(dz, input, { onFiles: handleDocFiles });
       wrap.querySelector("#ar-try-demo").addEventListener("click", handleTryDemo);
+      const resumeInput = wrap.querySelector("#ar-resume-input");
+      wrap.querySelector("#ar-resume-session").addEventListener("click", () => resumeInput.click());
+      resumeInput.addEventListener("change", () => {
+        const files = resumeInput.files ? [...resumeInput.files] : [];
+        if (files.length) handleResumeFiles(files);
+        resumeInput.value = "";
+      });
+    }
+    function renderSessionBar(container) {
+      const wrap = document.createElement("div");
+      wrap.className = "ar-session-bar";
+      wrap.innerHTML = `<button type="button" id="ar-download-session" class="ar-link">Download session</button>`;
+      container.appendChild(wrap);
+      wrap.querySelector("#ar-download-session").addEventListener("click", handleDownloadSession);
     }
     function renderPersonaControls(container, ctx) {
       const wrap = document.createElement("div");
@@ -3146,7 +3405,7 @@ Comment conventions: ${persona.commentConventions}`;
       wrap.className = "ar-response-step";
       container.appendChild(wrap);
       if (ctx.validation && !ctx.validation.ok) {
-        wrap.appendChild(buildGateFailureEl(ctx.validation));
+        wrap.appendChild(buildGateFailureEl(ctx.validation, ctx));
       }
       const fieldWrap = document.createElement("div");
       fieldWrap.innerHTML = `
@@ -3193,7 +3452,7 @@ Comment conventions: ${persona.commentConventions}`;
         setTimeout(() => runEnvelope(responseEl.value), 0);
       });
     }
-    function buildGateFailureEl(result) {
+    function buildGateFailureEl(result, ctx) {
       const box = document.createElement("div");
       box.className = "ar-gate-failure";
       const title = document.createElement("p");
@@ -3224,15 +3483,21 @@ ${fd.truncatedBefore ? "\u2026" : ""}${escapeHtml(fd.before)}<mark>${escapeHtml(
         });
         box.appendChild(showDiffBtn);
       }
-      if (result.repairPrompt) {
-        const copyBtn = document.createElement("button");
-        copyBtn.type = "button";
-        copyBtn.textContent = "Copy repair prompt";
-        copyBtn.addEventListener("click", (e) => {
-          if (typeof copyWithFeedback === "function") copyWithFeedback(e.currentTarget, result.repairPrompt);
-        });
-        box.appendChild(copyBtn);
-      }
+      const attemptCount = ctx.repairAttempts[result.gate] || 0;
+      const repairText = composeRepair(result, ctx.response, attemptCount);
+      const repairEl = document.createElement("div");
+      repairEl.className = "ar-repair";
+      const repairPre = document.createElement("pre");
+      repairPre.textContent = repairText;
+      repairEl.appendChild(repairPre);
+      const copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.textContent = "Copy repair prompt";
+      copyBtn.addEventListener("click", (e) => {
+        if (typeof copyWithFeedback === "function") copyWithFeedback(e.currentTarget, repairText);
+      });
+      repairEl.appendChild(copyBtn);
+      box.appendChild(repairEl);
       return box;
     }
     function renderRatifyStep(container, ctx) {
@@ -3265,6 +3530,13 @@ ${fd.truncatedBefore ? "\u2026" : ""}${escapeHtml(fd.before)}<mark>${escapeHtml(
       const ratifyContainer = document.createElement("div");
       wrap.appendChild(ratifyContainer);
       const state = createRatificationState(ctx.validation.edits);
+      currentRatifyState = state;
+      if (ctx.pendingDecisions && ctx.pendingDecisions.length) {
+        for (const d of ctx.pendingDecisions) {
+          state.setDecision(d.id, d.decision);
+          if (d.reviewed) state.markReviewed(d.id);
+        }
+      }
       renderRatificationUI(ratifyContainer, state, { sourceText: ctx.exported.markdown });
       const statusEl = document.createElement("p");
       statusEl.className = "ar-hint";
@@ -3274,21 +3546,41 @@ ${fd.truncatedBefore ? "\u2026" : ""}${escapeHtml(fd.before)}<mark>${escapeHtml(
         injectBtn.addEventListener("click", async () => {
           injectBtn.disabled = true;
           statusEl.textContent = "Injecting accepted edits...";
+          const author = authorEl.value.trim() || "AutoReviewer";
+          let rewritten;
           try {
             const acceptedEdits = state.acceptedEdits();
-            const rewritten = await buildReviewedDocx({
+            rewritten = await buildReviewedDocx({
               docxBytes: ctx.docxBytes,
               acceptedEdits,
               sourceMap: ctx.exported.sourceMap,
-              author: authorEl.value.trim() || "AutoReviewer",
+              author,
               date: (/* @__PURE__ */ new Date()).toISOString()
             });
-            const downloadName = `${ctx.filename} \u2014 reviewed.docx`;
-            downloadBlob(rewritten, downloadName);
+            downloadBlob(rewritten, `${ctx.filename} \u2014 reviewed.docx`);
             appState.inject();
           } catch (err) {
             statusEl.textContent = `Injection failed: ${err.message}`;
             injectBtn.disabled = false;
+            return;
+          }
+          try {
+            const auditRecord = await buildAuditRecord({
+              promptVersion: ctx.promptVersion,
+              timestamps: ctx.timestamps,
+              filename: ctx.filename,
+              docxBytes: ctx.docxBytes,
+              outputBytes: rewritten,
+              response: ctx.response,
+              sourceMap: ctx.exported.sourceMap,
+              persona: ctx.persona,
+              validationAttempts: ctx.validationAttempts,
+              rows: state.rows,
+              author
+            });
+            downloadJson(auditRecord, `${ctx.filename} \u2014 review-audit.json`);
+          } catch (err) {
+            statusEl.textContent = `Reviewed document downloaded, but the audit sidecar failed to build: ${err.message}`;
           }
         });
       }
