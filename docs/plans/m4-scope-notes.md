@@ -45,3 +45,28 @@ recorded here so M4 planning reads them from the repo rather than from memory.
    flow, or implement drag-and-drop as part of M4's file-input work. Undecided which;
    flagging so M4 planning makes the call explicitly rather than shipping the
    mismatch forward again.
+
+## Deferred to Fable (M4 milestone review)
+
+Open design questions surfaced during per-PR (Opus) review, to be ruled on in the single
+Fable pass after M4c merges. Each is non-blocking for its phase; listed here so Fable gets
+a checklist rather than a scavenger hunt across three PR threads.
+
+1. **Header echo — §4 single-source vs Issue #10** (M4a, PR #21 — `prompt.js`,
+   `buildHardConstraintsSection`). The export's first three header lines are re-emitted
+   (indented) inside `[HARD CONSTRAINTS]` in addition to the verbatim `[DOCUMENT]`
+   embedding, so the header appears twice. §4's "no section re-renders any part of it"
+   reads absolute; but Issue #10 requires naming the exact lines, and the doc's own Issue
+   #10 example achieves that *without* reproducing them. Two conformant readings; PR #21
+   shipped the reproduce-it one. No drift risk (runtime-derived from the same source).
+   Ruling needed: does single-source dominate (→ describe, don't reproduce; drop the
+   `headerLines` derivation) or does the literal-echo aid to G2 justify the exception
+   (→ keep, confirm empirically in the hand-run)? In-code flag at the site.
+
+2. **Audit `resolvedAnchor` sourcing** (M4b — `audit.js` / spec §12). Spec §12 requires
+   resolved anchors per edit. `validate()` resolves anchors in G3/G4 but doesn't currently
+   return them, and capturing them must not touch the frozen `validate.js`. Options: (a)
+   capture from the resolution pass at inject time (small app-layer change, no validate.js
+   edit); (b) defer to M4c, where `resolveEdits` is split out and already returns the
+   triples, and ship M4b without the field. May be pulled forward and decided before M4b
+   starts; recorded here so it isn't lost.
