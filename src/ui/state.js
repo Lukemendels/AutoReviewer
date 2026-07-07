@@ -130,7 +130,12 @@ export function createAppState() {
       repairAttempts[result.gate] = (repairAttempts[result.gate] || 0) + 1;
       const validationAttempts = [
         ...context.validationAttempts,
-        { ts: new Date().toISOString(), result: result.gate, offset: result.firstDivergence?.offset },
+        {
+          ts: new Date().toISOString(),
+          result: result.gate,
+          offset: result.firstDivergence?.offset, // G2: divergence offset into the document
+          rawStart: result.detail?.rawStart, // G1/G3/G4: offset into the raw response
+        },
       ];
       set(STATES.VALIDATION_FAILED, { validation: result, repairAttempts, validationAttempts });
     },

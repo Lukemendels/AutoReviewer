@@ -1281,7 +1281,14 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
         repairAttempts[result.gate] = (repairAttempts[result.gate] || 0) + 1;
         const validationAttempts = [
           ...context.validationAttempts,
-          { ts: (/* @__PURE__ */ new Date()).toISOString(), result: result.gate, offset: result.firstDivergence?.offset }
+          {
+            ts: (/* @__PURE__ */ new Date()).toISOString(),
+            result: result.gate,
+            offset: result.firstDivergence?.offset,
+            // G2: divergence offset into the document
+            rawStart: result.detail?.rawStart
+            // G1/G3/G4: offset into the raw response
+          }
         ];
         set(STATES.VALIDATION_FAILED, { validation: result, repairAttempts, validationAttempts });
       },

@@ -142,6 +142,20 @@ describe("createAppState: validationAttempts log (M4b, audit provenance)", () =>
     expect(s.context.validationAttempts[1].offset).toBeUndefined();
   });
 
+  it("records rawStart (not offset) on a non-G2 gate failure", () => {
+    const s = loadedState();
+    s.setPrompt({ text: "p", tokenEstimate: 1, promptVersion: "v1" });
+    s.copyPrompt();
+
+    s.submitResponse("bad response");
+    // G1/G3/G4 carry detail.rawStart (offset into the raw response), not firstDivergence.
+    s.validationFailed({ ok: false, gate: "G3", message: "anchor on synthetic markdown", detail: { rawStart: 17 } });
+    const entry = s.context.validationAttempts[0];
+    expect(entry.result).toBe("G3");
+    expect(entry.rawStart).toBe(17);
+    expect(entry.offset).toBeUndefined();
+  });
+
   it("starts empty on a fresh document load", () => {
     const s = loadedState();
     expect(s.context.validationAttempts).toEqual([]);
