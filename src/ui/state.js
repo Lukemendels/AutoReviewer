@@ -37,6 +37,8 @@ export function createAppState() {
     response: null,
     validation: null,
     repairAttempts: {}, // gate -> count, for M4b's "advise restarting after 2" rule
+    validationAttempts: [], // M4b: audit's log -- { ts, result: "ok" | gate, offset? }, in order
+    timestamps: { loaded: null, injected: null }, // M4b: audit's provenance timestamps
   };
   const listeners = [];
 
@@ -80,6 +82,8 @@ export function createAppState() {
         response: null,
         validation: null,
         repairAttempts: {},
+        validationAttempts: [],
+        timestamps: { loaded: new Date().toISOString(), injected: null },
       });
     },
 
@@ -109,20 +113,26 @@ export function createAppState() {
       set(STATES.VALIDATING, { response: responseText });
     },
 
-    // VALIDATING -> RATIFYING on a passing validate() result.
+    // VALIDATING -> RATIFYING on a passing validate() result. Appends to the audit's
+    // validationAttempts log (M4b).
     validationPassed(result) {
       if (state !== STATES.VALIDATING) illegal("validationPassed");
-      set(STATES.RATIFYING, { validation: result });
+      const validationAttempts = [...context.validationAttempts, { ts: new Date().toISOString(), result: "ok" }];
+      set(STATES.RATIFYING, { validation: result, validationAttempts });
     },
 
     // VALIDATING -> VALIDATION_FAILED on a blocking gate failure. Bumps the per-gate
     // repair-attempt counter (M4b's composeRepair reads this for the "restart advice
-    // after 2" rule).
+    // after 2" rule) and appends to the audit's validationAttempts log.
     validationFailed(result) {
       if (state !== STATES.VALIDATING) illegal("validationFailed");
       const repairAttempts = { ...context.repairAttempts };
       repairAttempts[result.gate] = (repairAttempts[result.gate] || 0) + 1;
-      set(STATES.VALIDATION_FAILED, { validation: result, repairAttempts });
+      const validationAttempts = [
+        ...context.validationAttempts,
+        { ts: new Date().toISOString(), result: result.gate, offset: result.firstDivergence?.offset },
+      ];
+      set(STATES.VALIDATION_FAILED, { validation: result, repairAttempts, validationAttempts });
     },
 
     // VALIDATION_FAILED -> AWAITING_RESPONSE: ready for the next repair paste.
@@ -131,10 +141,10 @@ export function createAppState() {
       set(STATES.AWAITING_RESPONSE, {});
     },
 
-    // RATIFYING -> INJECTED.
+    // RATIFYING -> INJECTED. Stamps the audit's `injected` timestamp (M4b).
     inject() {
       if (state !== STATES.RATIFYING) illegal("inject");
-      set(STATES.INJECTED, {});
+      set(STATES.INJECTED, { timestamps: { ...context.timestamps, injected: new Date().toISOString() } });
     },
 
     // Back to EMPTY, e.g. "start a new review."
@@ -147,10 +157,22 @@ export function createAppState() {
         promptText: null,
         promptVersion: null,
         tokenEstimate: null,
+        documentWordCount: null,
+        overThreshold: null,
         response: null,
         validation: null,
         repairAttempts: {},
+        validationAttempts: [],
+        timestamps: { loaded: null, injected: null },
       });
+    },
+
+    // EMPTY -> {state}: restores a previously-saved session wholesale (M4b's Resume flow,
+    // session.js's loadSession). Legal only from a fresh page, guarded exactly like
+    // loadDocument, since hydrating over an in-progress review would silently discard it.
+    hydrate({ state: restoredState, context: restoredContext }) {
+      if (state !== STATES.EMPTY) illegal("hydrate");
+      set(restoredState, restoredContext);
     },
   };
 }
