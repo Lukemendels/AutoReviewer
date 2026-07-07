@@ -1,5 +1,6 @@
 import { validate } from "../validate.js";
 import { buildPrompt } from "../prompt.js";
+import { composeRepair } from "../repair.js";
 import { buildAuditRecord } from "../audit.js";
 import { saveSession } from "../session.js";
 import { createRatificationState, renderRatificationUI } from "./ratify.js";
@@ -336,7 +337,7 @@ function renderRunReviewPanel(panel) {
     container.appendChild(wrap);
 
     if (ctx.validation && !ctx.validation.ok) {
-      wrap.appendChild(buildGateFailureEl(ctx.validation));
+      wrap.appendChild(buildGateFailureEl(ctx.validation, ctx));
     }
 
     const fieldWrap = document.createElement("div");
@@ -396,7 +397,7 @@ function renderRunReviewPanel(panel) {
   // Mirrors the demo panel's failure view (first-divergence context is always cheap/O(n);
   // the full word-level diff is computed lazily, on demand, only if the human clicks the
   // button -- see validate.js's G2 comment for why an eager diffWords() call is unsafe).
-  function buildGateFailureEl(result) {
+  function buildGateFailureEl(result, ctx) {
     const box = document.createElement("div");
     box.className = "ar-gate-failure";
     const title = document.createElement("p");
@@ -432,15 +433,23 @@ function renderRunReviewPanel(panel) {
       box.appendChild(showDiffBtn);
     }
 
-    if (result.repairPrompt) {
-      const copyBtn = document.createElement("button");
-      copyBtn.type = "button";
-      copyBtn.textContent = "Copy repair prompt";
-      copyBtn.addEventListener("click", (e) => {
-        if (typeof copyWithFeedback === "function") copyWithFeedback(e.currentTarget, result.repairPrompt);
-      });
-      box.appendChild(copyBtn);
-    }
+    // Mistake-specific repair prompt (M4b binding ruling: named rule + quoted divergence +
+    // corrected pattern, not validate.js's generic "re-emit exactly" repairPrompt).
+    const attemptCount = ctx.repairAttempts[result.gate] || 0;
+    const repairText = composeRepair(result, ctx.response, attemptCount);
+    const repairEl = document.createElement("div");
+    repairEl.className = "ar-repair";
+    const repairPre = document.createElement("pre");
+    repairPre.textContent = repairText;
+    repairEl.appendChild(repairPre);
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.textContent = "Copy repair prompt";
+    copyBtn.addEventListener("click", (e) => {
+      if (typeof copyWithFeedback === "function") copyWithFeedback(e.currentTarget, repairText);
+    });
+    repairEl.appendChild(copyBtn);
+    box.appendChild(repairEl);
 
     return box;
   }
