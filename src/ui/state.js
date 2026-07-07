@@ -11,6 +11,15 @@
 // (-> PROMPT_READY); discarding an un-ratified response on that jump is the caller's call
 // to make (e.g. an explicit confirm dialog) -- this module just performs the reset once
 // asked.
+//
+// Chunk mode (M4c, spec §6.4 / architecture doc §7) PARAMETERIZES the existing
+// PROMPT_READY/AWAITING_RESPONSE/VALIDATING loop instead of adding new top-level states:
+// enterChunkMode() stays in DOC_LOADED (the caller follows up with the usual setPrompt() to
+// reach PROMPT_READY, exactly like the non-chunked path); chunkAdvance() is the "not the
+// last chunk yet" case of a VALIDATING pass, looping VALIDATING -> PROMPT_READY for the
+// next chunk instead of -> RATIFYING; the LAST chunk's pass reuses validationPassed exactly
+// as today. A chunk's own G1/G2 failure reuses validationFailed/acknowledgeFailure exactly
+// as today too -- the repair loop doesn't know or care whether it's repairing a chunk.
 export const STATES = Object.freeze({
   EMPTY: "EMPTY",
   DOC_LOADED: "DOC_LOADED",
@@ -39,6 +48,10 @@ export function createAppState() {
     repairAttempts: {}, // gate -> count, for M4b's "advise restarting after 2" rule
     validationAttempts: [], // M4b: audit's log -- { ts, result: "ok" | gate, offset? }, in order
     timestamps: { loaded: null, injected: null }, // M4b: audit's provenance timestamps
+    chunkMode: false, // M4c: true once enterChunkMode() has run for this document
+    chunks: null, // M4c: chunk.js's splitIntoChunks() output, or null outside chunk mode
+    chunkIndex: 0, // M4c: which chunks[] entry the current PROMPT_READY/.../VALIDATING loop is on
+    chunkEdits: [], // M4c: translated (full-document-coordinate) edits from completed chunks
   };
   const listeners = [];
 
@@ -84,6 +97,10 @@ export function createAppState() {
         repairAttempts: {},
         validationAttempts: [],
         timestamps: { loaded: new Date().toISOString(), injected: null },
+        chunkMode: false,
+        chunks: null,
+        chunkIndex: 0,
+        chunkEdits: [],
       });
     },
 
@@ -100,6 +117,15 @@ export function createAppState() {
       set(STATES.PROMPT_READY, { promptText: text, tokenEstimate, promptVersion, documentWordCount, overThreshold });
     },
 
+    // M4c: DOC_LOADED only -- the one-time switch into chunk mode for an over-threshold
+    // document, before any prompt has been composed yet. Stays in DOC_LOADED (this doesn't
+    // itself produce a prompt): the caller follows up with the ordinary setPrompt() for
+    // chunk 0's own prompt, landing on PROMPT_READY exactly like the non-chunked path.
+    enterChunkMode({ chunks }) {
+      if (state !== STATES.DOC_LOADED) illegal("enterChunkMode");
+      set(STATES.DOC_LOADED, { chunkMode: true, chunks, chunkIndex: 0, chunkEdits: [] });
+    },
+
     // PROMPT_READY -> AWAITING_RESPONSE: the human has copied the prompt and is off to
     // paste it into DHSChat.
     copyPrompt() {
@@ -111,6 +137,23 @@ export function createAppState() {
     submitResponse(responseText) {
       if (state !== STATES.AWAITING_RESPONSE) illegal("submitResponse");
       set(STATES.VALIDATING, { response: responseText });
+    },
+
+    // M4c: VALIDATING -> PROMPT_READY, the "phase 1 passed but this isn't the last chunk
+    // yet" branch -- accumulates this chunk's translated (full-document-coordinate) edits
+    // onto chunkEdits, advances chunkIndex, and sets the NEXT chunk's own prompt, looping
+    // the very same PROMPT_READY -> AWAITING_RESPONSE -> VALIDATING cycle for it. The LAST
+    // chunk's pass never calls this -- it reuses validationPassed once every chunk's edits
+    // are merged and resolved against the full document (see chunk.js/ui/app.js).
+    chunkAdvance({ promptText, promptVersion, tokenEstimate, translatedEdits }) {
+      if (state !== STATES.VALIDATING) illegal("chunkAdvance");
+      set(STATES.PROMPT_READY, {
+        promptText,
+        promptVersion,
+        tokenEstimate,
+        chunkIndex: context.chunkIndex + 1,
+        chunkEdits: [...context.chunkEdits, ...translatedEdits],
+      });
     },
 
     // VALIDATING -> RATIFYING on a passing validate() result. Appends to the audit's
@@ -169,6 +212,10 @@ export function createAppState() {
         repairAttempts: {},
         validationAttempts: [],
         timestamps: { loaded: null, injected: null },
+        chunkMode: false,
+        chunks: null,
+        chunkIndex: 0,
+        chunkEdits: [],
       });
     },
 

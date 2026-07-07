@@ -180,6 +180,113 @@ describe("createAppState: timestamps (M4b, audit provenance)", () => {
   });
 });
 
+describe("createAppState: chunk mode (M4c, spec §6.4 / architecture doc §7)", () => {
+  it("starts out of chunk mode on a fresh document load", () => {
+    const s = loadedState();
+    expect(s.context.chunkMode).toBe(false);
+    expect(s.context.chunks).toBeNull();
+    expect(s.context.chunkIndex).toBe(0);
+    expect(s.context.chunkEdits).toEqual([]);
+  });
+
+  it("enterChunkMode: legal from DOC_LOADED, stays in DOC_LOADED, seeds chunks/chunkIndex/chunkEdits", () => {
+    const s = loadedState();
+    const chunks = [{ index: 0, baseOffset: 0 }, { index: 1, baseOffset: 100 }];
+    s.enterChunkMode({ chunks });
+    expect(s.state).toBe(STATES.DOC_LOADED);
+    expect(s.context.chunkMode).toBe(true);
+    expect(s.context.chunks).toBe(chunks);
+    expect(s.context.chunkIndex).toBe(0);
+    expect(s.context.chunkEdits).toEqual([]);
+  });
+
+  it("enterChunkMode: illegal once a prompt has already been set (not DOC_LOADED anymore)", () => {
+    const s = loadedState();
+    s.setPrompt({ text: "p", tokenEstimate: 1, promptVersion: "v1" });
+    expect(() => s.enterChunkMode({ chunks: [] })).toThrow();
+  });
+
+  it("chunkAdvance: VALIDATING -> PROMPT_READY, accumulates translated edits, advances chunkIndex", () => {
+    const s = loadedState();
+    s.enterChunkMode({ chunks: [{ index: 0 }, { index: 1 }, { index: 2 }] });
+    s.setPrompt({ text: "chunk 0 prompt", tokenEstimate: 1, promptVersion: "m4c-chunk-2026.07-1" });
+    s.copyPrompt();
+    s.submitResponse("chunk 0 response");
+    expect(s.state).toBe(STATES.VALIDATING);
+
+    s.chunkAdvance({
+      promptText: "chunk 1 prompt",
+      promptVersion: "m4c-chunk-2026.07-1",
+      tokenEstimate: 2,
+      translatedEdits: [{ type: "sub", mdStart: 10, mdEnd: 15 }],
+    });
+    expect(s.state).toBe(STATES.PROMPT_READY);
+    expect(s.context.promptText).toBe("chunk 1 prompt");
+    expect(s.context.chunkIndex).toBe(1);
+    expect(s.context.chunkEdits).toEqual([{ type: "sub", mdStart: 10, mdEnd: 15 }]);
+
+    // A second chunk's advance APPENDS to chunkEdits rather than replacing it.
+    s.copyPrompt();
+    s.submitResponse("chunk 1 response");
+    s.chunkAdvance({
+      promptText: "chunk 2 prompt",
+      promptVersion: "m4c-chunk-2026.07-1",
+      tokenEstimate: 3,
+      translatedEdits: [{ type: "ins", mdPos: 200 }],
+    });
+    expect(s.context.chunkIndex).toBe(2);
+    expect(s.context.chunkEdits).toEqual([
+      { type: "sub", mdStart: 10, mdEnd: 15 },
+      { type: "ins", mdPos: 200 },
+    ]);
+  });
+
+  it("chunkAdvance: illegal outside VALIDATING", () => {
+    const s = loadedState();
+    s.enterChunkMode({ chunks: [{ index: 0 }, { index: 1 }] });
+    expect(() => s.chunkAdvance({ promptText: "x", promptVersion: "v", tokenEstimate: 1, translatedEdits: [] })).toThrow();
+  });
+
+  it("the LAST chunk's pass reuses validationPassed (-> RATIFYING), not chunkAdvance", () => {
+    const s = loadedState();
+    s.enterChunkMode({ chunks: [{ index: 0 }] });
+    s.setPrompt({ text: "chunk 0 prompt", tokenEstimate: 1, promptVersion: "m4c-chunk-2026.07-1" });
+    s.copyPrompt();
+    s.submitResponse("chunk 0 response");
+    s.validationPassed({ ok: true, edits: [{ type: "sub" }] });
+    expect(s.state).toBe(STATES.RATIFYING);
+    expect(s.context.validation.edits).toEqual([{ type: "sub" }]);
+  });
+
+  it("a chunk's own G1/G2 failure reuses validationFailed/acknowledgeFailure exactly like the single-doc repair loop", () => {
+    const s = loadedState();
+    s.enterChunkMode({ chunks: [{ index: 0 }, { index: 1 }] });
+    s.setPrompt({ text: "chunk 0 prompt", tokenEstimate: 1, promptVersion: "m4c-chunk-2026.07-1" });
+    s.copyPrompt();
+    s.submitResponse("bad chunk response");
+    s.validationFailed({ ok: false, gate: "G2", message: "drift" });
+    expect(s.state).toBe(STATES.VALIDATION_FAILED);
+    expect(s.context.chunkIndex).toBe(0); // unchanged -- still repairing chunk 0
+    s.acknowledgeFailure();
+    expect(s.state).toBe(STATES.AWAITING_RESPONSE);
+  });
+
+  it("reset clears the full chunk context", () => {
+    const s = loadedState();
+    s.enterChunkMode({ chunks: [{ index: 0 }] });
+    s.setPrompt({ text: "p", tokenEstimate: 1, promptVersion: "v1" });
+    s.copyPrompt();
+    s.submitResponse("r");
+    s.chunkAdvance({ promptText: "p2", promptVersion: "v1", tokenEstimate: 1, translatedEdits: [{ type: "ins" }] });
+    s.reset();
+    expect(s.state).toBe(STATES.EMPTY);
+    expect(s.context.chunkMode).toBe(false);
+    expect(s.context.chunks).toBeNull();
+    expect(s.context.chunkIndex).toBe(0);
+    expect(s.context.chunkEdits).toEqual([]);
+  });
+});
+
 describe("createAppState: hydrate (M4b Resume)", () => {
   it("restores state + context wholesale from EMPTY", () => {
     const s = createAppState();
