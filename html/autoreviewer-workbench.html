@@ -758,7 +758,7 @@ Proceed with the review content normally once the operator has the tool open.
       return { gateFailure: { gate: err.kind === "locked" ? "G4" : "G3", message: err.message } };
     }
   }
-  function validate({ responseMarkdown, exportedMarkdown, sourceMap, largestDeletionWords = 50 }) {
+  function validateText({ responseMarkdown, exportedMarkdown, sourceMap }) {
     const response = normalizeNewlines(responseMarkdown);
     const exported = normalizeNewlines(exportedMarkdown);
     const blocks = sourceMap.blocks || [];
@@ -815,7 +815,9 @@ Proceed with the review content normally once the operator has the tool open.
         repairPrompt: buildRepairPrompt()
       };
     }
-    const edits = parseEdits(response, tokenizeOpts);
+    return { ok: true, edits: parseEdits(response, tokenizeOpts) };
+  }
+  function resolveEdits({ edits, sourceMap, largestDeletionWords = 50 }) {
     const resolvedEdits = [];
     for (const edit of edits) {
       const { anchor, gateFailure } = resolveEditAnchor(edit, sourceMap);
@@ -853,6 +855,66 @@ Proceed with the review content normally once the operator has the tool open.
     const counts = { ins: 0, del: 0, sub: 0, comment: 0 };
     for (const edit of resolvedEdits) counts[edit.type]++;
     return { ok: true, edits: resolvedEdits, warnings, counts };
+  }
+  function validate({ responseMarkdown, exportedMarkdown, sourceMap, largestDeletionWords = 50 }) {
+    const textResult = validateText({ responseMarkdown, exportedMarkdown, sourceMap });
+    if (!textResult.ok) return textResult;
+    return resolveEdits({ edits: textResult.edits, sourceMap, largestDeletionWords });
+  }
+
+  // src/chunk.js
+  function isTopLevelHeading(block, exportedMarkdown) {
+    return block.kind === "heading" && /^# (?!#)/.test(exportedMarkdown.slice(block.mdStart, block.mdEnd));
+  }
+  function splitIntoChunks(exportedMarkdown, sourceMap) {
+    const blocks = sourceMap.blocks || [];
+    const boundaries = [0];
+    let seenFirstHeading = false;
+    for (const block of blocks) {
+      if (!isTopLevelHeading(block, exportedMarkdown)) continue;
+      if (!seenFirstHeading) {
+        seenFirstHeading = true;
+        continue;
+      }
+      boundaries.push(block.mdStart);
+    }
+    boundaries.push(exportedMarkdown.length);
+    const rebaseRange = (baseOffset) => ([s, e]) => [s - baseOffset, e - baseOffset];
+    const chunks = [];
+    for (let i = 0; i < boundaries.length - 1; i++) {
+      const baseOffset = boundaries[i];
+      const end = boundaries[i + 1];
+      const inChunk = (s, e) => s >= baseOffset && e <= end;
+      const chunkBlocks = blocks.filter((b) => inChunk(b.mdStart, b.mdEnd)).map((b) => ({
+        ...b,
+        mdStart: b.mdStart - baseOffset,
+        mdEnd: b.mdEnd - baseOffset,
+        runs: (b.runs || []).map((r) => ({ ...r, mdStart: r.mdStart - baseOffset, mdEnd: r.mdEnd - baseOffset }))
+      }));
+      chunks.push({
+        index: i,
+        baseOffset,
+        exportedMarkdown: exportedMarkdown.slice(baseOffset, end),
+        sourceMap: {
+          docHash: sourceMap.docHash,
+          blocks: chunkBlocks,
+          locked: (sourceMap.locked || []).filter(([s, e]) => inChunk(s, e)).map(rebaseRange(baseOffset)),
+          synthetic: (sourceMap.synthetic || []).filter(([s, e]) => inChunk(s, e)).map(rebaseRange(baseOffset))
+        }
+      });
+    }
+    return chunks;
+  }
+  var MD_OFFSET_FIELDS = ["mdPos", "mdStart", "mdEnd"];
+  function translateEdits(edits, baseOffset) {
+    if (!baseOffset) return edits;
+    return edits.map((edit) => {
+      const translated = { ...edit };
+      for (const field of MD_OFFSET_FIELDS) {
+        if (typeof translated[field] === "number") translated[field] += baseOffset;
+      }
+      return translated;
+    });
   }
 
   // src/persona.js
@@ -976,6 +1038,7 @@ Proceed with the review content normally once the operator has the tool open.
 
   // src/prompt.js
   var PROMPT_TEMPLATE_VERSION = "m4a-2026.07-1";
+  var CHUNK_PROMPT_TEMPLATE_VERSION = "m4c-chunk-2026.07-1";
   var CHUNK_WORD_THRESHOLD = 12e3;
   function wordCount2(text) {
     return text.trim().split(/\s+/).filter(Boolean).length;
@@ -1013,23 +1076,33 @@ Comment conventions: ${persona.commentConventions}`;
     lines.push("", "Comment conventions:", persona.commentConventions || "(not specified)");
     return lines.join("\n");
   }
-  function buildTaskSection() {
-    return "[TASK]\nReview the document below according to the persona above. Propose your edits and comments using ONLY the CriticMarkup syntax defined next. Return the ENTIRE document with your proposed changes expressed as CriticMarkup tokens -- never rewrite, paraphrase, or reformat anything outside those tokens.";
+  function buildTaskSection(chunk) {
+    const preamble = chunk ? `This is part ${chunk.index + 1} of ${chunk.total} of a larger document. Review ONLY the text below and return ONLY this part, beginning with its first line exactly.
+
+` : "";
+    return "[TASK]\n" + preamble + "Review the document below according to the persona above. Propose your edits and comments using ONLY the CriticMarkup syntax defined next. Return the ENTIRE document with your proposed changes expressed as CriticMarkup tokens -- never rewrite, paraphrase, or reformat anything outside those tokens.";
   }
   function buildCriticMarkupRulesSection() {
     return "[CRITICMARKUP RULES]\nSupport exactly these five constructs:\n  {++text++}            insertion\n  {--text--}             deletion\n  {~~old~>new~~}         substitution (~> is the only arrow form)\n  {==text==}{>>comment<<} anchored comment\n  {>>comment<<}          bare (point) comment\n\nNo nesting: no CriticMarkup token may contain another. No block-crossing: a token must open and close within one markdown block (paragraph, heading, list item, or table cell) -- express a multi-paragraph change as one token per paragraph.\n\nWorked example:\n  original: The rule shall apply to all carriers.\n  edited:   The rule {~~shall~>must~~} apply to all {--air--} carriers.\n            {==all carriers==}{>>Confirm scope includes indirect air carriers.<<}\n\nWhole-paragraph insert: to insert an entirely new paragraph, put the {++...++} token ALONE on its own line, between the two existing paragraphs it separates -- never place a newline character inside a mid-paragraph insertion's own text. Worked example:\n  Existing paragraph one.\n  {++This entire line is a new inserted paragraph.++}\n  Existing paragraph two.\n\nByte preservation: every character outside your CriticMarkup tokens -- including the document's three leading header comment lines and its FINAL trailing newline at the very end -- must be returned exactly as given, unchanged.";
   }
-  function buildHardConstraintsSection(persona, exportedMarkdown) {
-    const headerLines = exportedMarkdown.split("\n").slice(0, 3).join("\n");
+  function buildHardConstraintsSection(persona, exportedMarkdown, chunk) {
+    const isFirstChunk = !chunk || chunk.index === 0;
     const lines = [
       "[HARD CONSTRAINTS]",
       "- Return the ENTIRE document below, not an excerpt or summary.",
-      "- Change nothing outside your own CriticMarkup tokens.",
-      "- The document below begins with three HTML comment lines (export header and legend). These are part of the document, not metadata to skip. Your response must begin with those exact three lines, unmodified:\n" + headerLines.split("\n").map((l) => "    " + l).join("\n"),
+      "- Change nothing outside your own CriticMarkup tokens."
+    ];
+    if (isFirstChunk) {
+      const headerLines = exportedMarkdown.split("\n").slice(0, 3).join("\n");
+      lines.push(
+        "- The document below begins with three HTML comment lines (export header and legend). These are part of the document, not metadata to skip. Your response must begin with those exact three lines, unmodified:\n" + headerLines.split("\n").map((l) => "    " + l).join("\n")
+      );
+    }
+    lines.push(
       "- Text inside \u27E6\u2026\u27E7 and [image: \u2026] is locked: never edit, move, or comment inside it.",
       "- No nesting. No block-crossing.",
       "- Return your entire response inside ONE fenced code block: ```markdown ... ```, with no other output before or after it."
-    ];
+    );
     if (!persona.isDefault && persona.doNotTouch && persona.doNotTouch.length) {
       lines.push("- Do-not-touch rules from the persona (never edit or comment on this content):");
       for (const rule of persona.doNotTouch) lines.push(`    - ${rule}`);
@@ -1039,13 +1112,13 @@ Comment conventions: ${persona.commentConventions}`;
   function buildDocumentSection(exportedMarkdown) {
     return "[DOCUMENT]\n```markdown\n" + exportedMarkdown + "\n```";
   }
-  function buildPrompt({ persona, exportedMarkdown, filename }) {
+  function buildPrompt({ persona, exportedMarkdown, filename, chunk = null }) {
     const p = persona || DEFAULT_PERSONA;
     const sections = [
       buildPersonaSection(p),
-      buildTaskSection(),
+      buildTaskSection(chunk),
       buildCriticMarkupRulesSection(),
-      buildHardConstraintsSection(p, exportedMarkdown),
+      buildHardConstraintsSection(p, exportedMarkdown, chunk),
       buildDocumentSection(exportedMarkdown)
     ];
     const text = sections.join("\n\n");
@@ -1053,7 +1126,7 @@ Comment conventions: ${persona.commentConventions}`;
     return {
       text,
       tokenEstimate: estimateTokens(text),
-      promptVersion: PROMPT_TEMPLATE_VERSION,
+      promptVersion: chunk ? CHUNK_PROMPT_TEMPLATE_VERSION : PROMPT_TEMPLATE_VERSION,
       documentWordCount: words,
       overThreshold: words > CHUNK_WORD_THRESHOLD,
       filename
@@ -1197,8 +1270,16 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       // gate -> count, for M4b's "advise restarting after 2" rule
       validationAttempts: [],
       // M4b: audit's log -- { ts, result: "ok" | gate, offset? }, in order
-      timestamps: { loaded: null, injected: null }
+      timestamps: { loaded: null, injected: null },
       // M4b: audit's provenance timestamps
+      chunkMode: false,
+      // M4c: true once enterChunkMode() has run for this document
+      chunks: null,
+      // M4c: chunk.js's splitIntoChunks() output, or null outside chunk mode
+      chunkIndex: 0,
+      // M4c: which chunks[] entry the current PROMPT_READY/.../VALIDATING loop is on
+      chunkEdits: []
+      // M4c: translated (full-document-coordinate) edits from completed chunks
     };
     const listeners = [];
     function notify() {
@@ -1240,7 +1321,11 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
           validation: null,
           repairAttempts: {},
           validationAttempts: [],
-          timestamps: { loaded: (/* @__PURE__ */ new Date()).toISOString(), injected: null }
+          timestamps: { loaded: (/* @__PURE__ */ new Date()).toISOString(), injected: null },
+          chunkMode: false,
+          chunks: null,
+          chunkIndex: 0,
+          chunkEdits: []
         });
       },
       // Legal from any state >= DOC_LOADED; always regenerates the prompt and lands back on
@@ -1254,6 +1339,14 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
         if (state !== STATES.DOC_LOADED && state !== STATES.PROMPT_READY) illegal("setPrompt");
         set(STATES.PROMPT_READY, { promptText: text, tokenEstimate, promptVersion, documentWordCount, overThreshold });
       },
+      // M4c: DOC_LOADED only -- the one-time switch into chunk mode for an over-threshold
+      // document, before any prompt has been composed yet. Stays in DOC_LOADED (this doesn't
+      // itself produce a prompt): the caller follows up with the ordinary setPrompt() for
+      // chunk 0's own prompt, landing on PROMPT_READY exactly like the non-chunked path.
+      enterChunkMode({ chunks }) {
+        if (state !== STATES.DOC_LOADED) illegal("enterChunkMode");
+        set(STATES.DOC_LOADED, { chunkMode: true, chunks, chunkIndex: 0, chunkEdits: [] });
+      },
       // PROMPT_READY -> AWAITING_RESPONSE: the human has copied the prompt and is off to
       // paste it into DHSChat.
       copyPrompt() {
@@ -1264,6 +1357,22 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       submitResponse(responseText) {
         if (state !== STATES.AWAITING_RESPONSE) illegal("submitResponse");
         set(STATES.VALIDATING, { response: responseText });
+      },
+      // M4c: VALIDATING -> PROMPT_READY, the "phase 1 passed but this isn't the last chunk
+      // yet" branch -- accumulates this chunk's translated (full-document-coordinate) edits
+      // onto chunkEdits, advances chunkIndex, and sets the NEXT chunk's own prompt, looping
+      // the very same PROMPT_READY -> AWAITING_RESPONSE -> VALIDATING cycle for it. The LAST
+      // chunk's pass never calls this -- it reuses validationPassed once every chunk's edits
+      // are merged and resolved against the full document (see chunk.js/ui/app.js).
+      chunkAdvance({ promptText, promptVersion, tokenEstimate, translatedEdits }) {
+        if (state !== STATES.VALIDATING) illegal("chunkAdvance");
+        set(STATES.PROMPT_READY, {
+          promptText,
+          promptVersion,
+          tokenEstimate,
+          chunkIndex: context.chunkIndex + 1,
+          chunkEdits: [...context.chunkEdits, ...translatedEdits]
+        });
       },
       // VALIDATING -> RATIFYING on a passing validate() result. Appends to the audit's
       // validationAttempts log (M4b).
@@ -1318,7 +1427,11 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
           validation: null,
           repairAttempts: {},
           validationAttempts: [],
-          timestamps: { loaded: null, injected: null }
+          timestamps: { loaded: null, injected: null },
+          chunkMode: false,
+          chunks: null,
+          chunkIndex: 0,
+          chunkEdits: []
         });
       },
       // EMPTY -> {state}: restores a previously-saved session wholesale (M4b's Resume flow,
@@ -3239,7 +3352,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
         return;
       }
       renderPersonaControls(panel, ctx);
-      renderSessionBar(panel);
+      renderSessionBar(panel, ctx);
       if (state === STATES.DOC_LOADED || state === STATES.PROMPT_READY) {
         renderPromptStep(panel, ctx);
       } else if (state === STATES.AWAITING_RESPONSE || state === STATES.VALIDATION_FAILED) {
@@ -3253,8 +3366,31 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     }
     function regeneratePrompt(persona) {
       const ctx = appState.context;
+      if (ctx.chunkMode) {
+        const chunk = ctx.chunks[ctx.chunkIndex];
+        const built2 = buildPrompt({
+          persona,
+          exportedMarkdown: chunk.exportedMarkdown,
+          filename: ctx.filename,
+          chunk: { index: ctx.chunkIndex, total: ctx.chunks.length }
+        });
+        appState.setPrompt(built2);
+        return;
+      }
       const built = buildPrompt({ persona, exportedMarkdown: ctx.exported.markdown, filename: ctx.filename });
-      appState.setPrompt(built);
+      if (!built.overThreshold) {
+        appState.setPrompt(built);
+        return;
+      }
+      const chunks = splitIntoChunks(ctx.exported.markdown, ctx.exported.sourceMap);
+      appState.enterChunkMode({ chunks });
+      const chunk0Built = buildPrompt({
+        persona,
+        exportedMarkdown: chunks[0].exportedMarkdown,
+        filename: ctx.filename,
+        chunk: { index: 0, total: chunks.length }
+      });
+      appState.setPrompt(chunk0Built);
     }
     async function handleDocFiles(files) {
       const file = files[0];
@@ -3331,9 +3467,15 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
         resumeInput.value = "";
       });
     }
-    function renderSessionBar(container) {
+    function renderSessionBar(container, ctx) {
       const wrap = document.createElement("div");
       wrap.className = "ar-session-bar";
+      if (ctx.chunkMode) {
+        wrap.innerHTML = `<button type="button" id="ar-download-session" class="ar-link" disabled>Download session</button>
+        <span class="ar-hint">(unavailable mid-chunk-review -- not yet supported)</span>`;
+        container.appendChild(wrap);
+        return;
+      }
       wrap.innerHTML = `<button type="button" id="ar-download-session" class="ar-link">Download session</button>`;
       container.appendChild(wrap);
       wrap.querySelector("#ar-download-session").addEventListener("click", handleDownloadSession);
@@ -3359,6 +3501,10 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       const input = wrap.querySelector("#ar-persona-input");
       attachDropZone(dz, input, { onFiles: handlePersonaFiles });
     }
+    function chunkPartHint(ctx) {
+      if (!ctx.chunkMode) return "";
+      return `<p class="ar-hint ar-chunk-indicator"><strong>Part ${ctx.chunkIndex + 1} of ${ctx.chunks.length}</strong> of this document (chunk mode, spec \xA76.4).</p>`;
+    }
     function renderPromptStep(container, ctx, { collapsed = false } = {}) {
       const wrap = document.createElement("div");
       wrap.className = "ar-prompt-step";
@@ -3369,6 +3515,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       }
       if (collapsed) {
         wrap.innerHTML = `
+        ${chunkPartHint(ctx)}
         <details class="ar-prompt-details">
           <summary>Composed prompt (${ctx.tokenEstimate} tokens, ~${ctx.documentWordCount} words) &mdash; click to re-view</summary>
           <textarea class="ar-prompt-text" readonly>${escapeHtml(ctx.promptText)}</textarea>
@@ -3381,19 +3528,20 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
         });
         return;
       }
-      if (ctx.overThreshold) {
+      if (ctx.overThreshold && !ctx.chunkMode) {
         wrap.innerHTML = `
         <div class="ar-gate-failure">
-          <p><strong>This document is over the single-prompt word threshold.</strong>
-          Chunk mode required &mdash; coming in M4c. A full round trip on a document this
-          long is known to fail the fidelity gate (G2), so the prompt below is withheld
-          rather than handing you one known not to work.</p>
+          <p><strong>This document is over the single-prompt word threshold</strong> and chunk
+          mode was not entered for it. A full round trip on a document this long is known to
+          fail the fidelity gate (G2), so the prompt below is withheld rather than handing
+          you one known not to work.</p>
         </div>
       `;
         container.appendChild(wrap);
         return;
       }
       wrap.innerHTML = `
+      ${chunkPartHint(ctx)}
       <p class="ar-hint">Token estimate: ~${ctx.tokenEstimate} (prompt version ${escapeHtml(ctx.promptVersion)})</p>
       <textarea class="ar-prompt-text" readonly>${escapeHtml(ctx.promptText)}</textarea>
       <div class="ar-controls">
@@ -3412,7 +3560,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       wrap.className = "ar-response-step";
       container.appendChild(wrap);
       if (ctx.validation && !ctx.validation.ok) {
-        wrap.appendChild(buildGateFailureEl(ctx.validation, ctx));
+        wrap.appendChild(ctx.validation.global ? buildGlobalGateFailureEl(ctx.validation) : buildGateFailureEl(ctx.validation, ctx));
       }
       const fieldWrap = document.createElement("div");
       fieldWrap.innerHTML = `
@@ -3429,7 +3577,8 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       const responseEl = fieldWrap.querySelector("#ar-response");
       const pickerEl = fieldWrap.querySelector("#ar-picker");
       function runEnvelope(pastedText) {
-        const { candidates, noFencesFound } = extractCandidates(pastedText, { exportedLength: ctx.exported.markdown.length });
+        const referenceLength = ctx.chunkMode ? ctx.chunks[ctx.chunkIndex].exportedMarkdown.length : ctx.exported.markdown.length;
+        const { candidates, noFencesFound } = extractCandidates(pastedText, { exportedLength: referenceLength });
         if (candidates.length === 1 && !noFencesFound) {
           runValidation(candidates[0].content);
           return;
@@ -3450,14 +3599,69 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       function runValidation(responseText) {
         pickerEl.innerHTML = "";
         appState.submitResponse(responseText);
+        if (ctx.chunkMode) {
+          runChunkValidation(responseText);
+          return;
+        }
         const result = validate({ responseMarkdown: responseText, exportedMarkdown: ctx.exported.markdown, sourceMap: ctx.exported.sourceMap });
         if (result.ok) appState.validationPassed(result);
         else appState.validationFailed(result);
+      }
+      function runChunkValidation(responseText) {
+        const chunk = ctx.chunks[ctx.chunkIndex];
+        const isLastChunk = ctx.chunkIndex === ctx.chunks.length - 1;
+        const phase1 = validateText({
+          responseMarkdown: responseText,
+          exportedMarkdown: chunk.exportedMarkdown,
+          sourceMap: chunk.sourceMap
+        });
+        if (!phase1.ok) {
+          appState.validationFailed(phase1);
+          return;
+        }
+        const translated = translateEdits(phase1.edits, chunk.baseOffset);
+        if (!isLastChunk) {
+          const nextChunk = ctx.chunks[ctx.chunkIndex + 1];
+          const nextBuilt = buildPrompt({
+            persona: ctx.persona,
+            exportedMarkdown: nextChunk.exportedMarkdown,
+            filename: ctx.filename,
+            chunk: { index: ctx.chunkIndex + 1, total: ctx.chunks.length }
+          });
+          appState.chunkAdvance({
+            promptText: nextBuilt.text,
+            promptVersion: nextBuilt.promptVersion,
+            tokenEstimate: nextBuilt.tokenEstimate,
+            translatedEdits: translated
+          });
+          return;
+        }
+        const merged = [...ctx.chunkEdits, ...translated];
+        const resolved = resolveEdits({ edits: merged, sourceMap: ctx.exported.sourceMap });
+        if (resolved.ok) {
+          appState.validationPassed(resolved);
+        } else {
+          appState.validationFailed({ ...resolved, global: true });
+        }
       }
       wrap.querySelector("#ar-validate").addEventListener("click", () => runEnvelope(responseEl.value));
       responseEl.addEventListener("paste", () => {
         setTimeout(() => runEnvelope(responseEl.value), 0);
       });
+    }
+    function buildGlobalGateFailureEl(result) {
+      const box = document.createElement("div");
+      box.className = "ar-gate-failure";
+      box.innerHTML = `
+      <p><strong>${escapeHtml(result.gate)} failed after merging all chunks:</strong> ${escapeHtml(result.message)}</p>
+      <p class="ar-hint">This is rare -- chunk boundaries are chosen so an edit can never span
+      two chunks -- but it means the merged edit list doesn't resolve cleanly against the full
+      document, and the failing edit may not even be from the chunk you just pasted. Rather
+      than patch one chunk, start the review over.</p>
+      <button type="button" id="ar-restart-review" class="ar-primary">Start a new review</button>
+    `;
+      box.querySelector("#ar-restart-review").addEventListener("click", () => appState.reset());
+      return box;
     }
     function buildGateFailureEl(result, ctx) {
       const box = document.createElement("div");

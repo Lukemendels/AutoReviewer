@@ -1,4 +1,5 @@
-import { validate } from "../validate.js";
+import { validate, validateText, resolveEdits } from "../validate.js";
+import { splitIntoChunks, translateEdits } from "../chunk.js";
 import { buildPrompt } from "../prompt.js";
 import { composeRepair } from "../repair.js";
 import { buildAuditRecord } from "../audit.js";
@@ -212,7 +213,7 @@ function renderRunReviewPanel(panel) {
     }
 
     renderPersonaControls(panel, ctx);
-    renderSessionBar(panel);
+    renderSessionBar(panel, ctx);
 
     if (state === STATES.DOC_LOADED || state === STATES.PROMPT_READY) {
       renderPromptStep(panel, ctx);
@@ -228,10 +229,45 @@ function renderRunReviewPanel(panel) {
 
   // ---- doc + persona loading ----
 
+  // Composes the next prompt to show. Chunk mode (M4c, spec §6.4) is entered here, the
+  // first time a document's full-document prompt comes back overThreshold -- `chunkMode`
+  // is only ever set true once, from DOC_LOADED (state.js's enterChunkMode guard), which is
+  // exactly the state right after loadDocument() and before this function's very first
+  // call for that document. A LATER persona swap mid-chunk-review (loadPersona() already
+  // transitioned to PROMPT_READY by the time app.js gets here) takes the other branch:
+  // rebuild only the CURRENT chunk's own prompt with the new persona, leaving chunk
+  // progress (chunkIndex/chunkEdits) untouched -- it doesn't re-enter chunk mode, so it
+  // never hits enterChunkMode's DOC_LOADED-only guard.
   function regeneratePrompt(persona) {
     const ctx = appState.context;
+
+    if (ctx.chunkMode) {
+      const chunk = ctx.chunks[ctx.chunkIndex];
+      const built = buildPrompt({
+        persona,
+        exportedMarkdown: chunk.exportedMarkdown,
+        filename: ctx.filename,
+        chunk: { index: ctx.chunkIndex, total: ctx.chunks.length },
+      });
+      appState.setPrompt(built);
+      return;
+    }
+
     const built = buildPrompt({ persona, exportedMarkdown: ctx.exported.markdown, filename: ctx.filename });
-    appState.setPrompt(built);
+    if (!built.overThreshold) {
+      appState.setPrompt(built);
+      return;
+    }
+
+    const chunks = splitIntoChunks(ctx.exported.markdown, ctx.exported.sourceMap);
+    appState.enterChunkMode({ chunks });
+    const chunk0Built = buildPrompt({
+      persona,
+      exportedMarkdown: chunks[0].exportedMarkdown,
+      filename: ctx.filename,
+      chunk: { index: 0, total: chunks.length },
+    });
+    appState.setPrompt(chunk0Built);
   }
 
   async function handleDocFiles(files) {
@@ -315,10 +351,22 @@ function renderRunReviewPanel(panel) {
     });
   }
 
-  // Available in every non-EMPTY state (spec §5.4 / M4b build plan §3).
-  function renderSessionBar(container) {
+  // Available in every non-EMPTY state (spec §5.4 / M4b build plan §3) -- EXCEPT mid-chunk
+  // review (M4c NON-GOAL: session save/resume while mid-chunk-review is deferred).
+  // session.js's schema doesn't serialize chunks/chunkIndex/chunkEdits at all, so a session
+  // downloaded here would silently resume into a broken state: the wrong (full-document,
+  // non-chunk) prompt rebuilt for a chunk-mode promptVersion, and every completed chunk's
+  // edits gone. Disabling with an explicit reason is cheaper and safer than shipping that
+  // footgun for a deferred feature.
+  function renderSessionBar(container, ctx) {
     const wrap = document.createElement("div");
     wrap.className = "ar-session-bar";
+    if (ctx.chunkMode) {
+      wrap.innerHTML = `<button type="button" id="ar-download-session" class="ar-link" disabled>Download session</button>
+        <span class="ar-hint">(unavailable mid-chunk-review -- not yet supported)</span>`;
+      container.appendChild(wrap);
+      return;
+    }
     wrap.innerHTML = `<button type="button" id="ar-download-session" class="ar-link">Download session</button>`;
     container.appendChild(wrap);
     wrap.querySelector("#ar-download-session").addEventListener("click", handleDownloadSession);
@@ -349,6 +397,14 @@ function renderRunReviewPanel(panel) {
     attachDropZone(dz, input, { onFiles: handlePersonaFiles });
   }
 
+  // M4c: the "Part i of N" indicator shown throughout chunk mode, both on the live prompt
+  // step and its collapsed (AWAITING_RESPONSE/VALIDATION_FAILED) form -- the one visible
+  // reminder of which chunk the user is currently copying/pasting for.
+  function chunkPartHint(ctx) {
+    if (!ctx.chunkMode) return "";
+    return `<p class="ar-hint ar-chunk-indicator"><strong>Part ${ctx.chunkIndex + 1} of ${ctx.chunks.length}</strong> of this document (chunk mode, spec §6.4).</p>`;
+  }
+
   function renderPromptStep(container, ctx, { collapsed = false } = {}) {
     const wrap = document.createElement("div");
     wrap.className = "ar-prompt-step";
@@ -361,6 +417,7 @@ function renderRunReviewPanel(panel) {
 
     if (collapsed) {
       wrap.innerHTML = `
+        ${chunkPartHint(ctx)}
         <details class="ar-prompt-details">
           <summary>Composed prompt (${ctx.tokenEstimate} tokens, ~${ctx.documentWordCount} words) &mdash; click to re-view</summary>
           <textarea class="ar-prompt-text" readonly>${escapeHtml(ctx.promptText)}</textarea>
@@ -374,13 +431,16 @@ function renderRunReviewPanel(panel) {
       return;
     }
 
-    if (ctx.overThreshold) {
+    // Not reached in practice once a document has gone through regeneratePrompt() (which
+    // enters chunk mode itself the moment it sees overThreshold) -- kept as a defensive
+    // fallback rather than assuming that invariant holds for every future caller.
+    if (ctx.overThreshold && !ctx.chunkMode) {
       wrap.innerHTML = `
         <div class="ar-gate-failure">
-          <p><strong>This document is over the single-prompt word threshold.</strong>
-          Chunk mode required &mdash; coming in M4c. A full round trip on a document this
-          long is known to fail the fidelity gate (G2), so the prompt below is withheld
-          rather than handing you one known not to work.</p>
+          <p><strong>This document is over the single-prompt word threshold</strong> and chunk
+          mode was not entered for it. A full round trip on a document this long is known to
+          fail the fidelity gate (G2), so the prompt below is withheld rather than handing
+          you one known not to work.</p>
         </div>
       `;
       container.appendChild(wrap);
@@ -388,6 +448,7 @@ function renderRunReviewPanel(panel) {
     }
 
     wrap.innerHTML = `
+      ${chunkPartHint(ctx)}
       <p class="ar-hint">Token estimate: ~${ctx.tokenEstimate} (prompt version ${escapeHtml(ctx.promptVersion)})</p>
       <textarea class="ar-prompt-text" readonly>${escapeHtml(ctx.promptText)}</textarea>
       <div class="ar-controls">
@@ -408,7 +469,7 @@ function renderRunReviewPanel(panel) {
     container.appendChild(wrap);
 
     if (ctx.validation && !ctx.validation.ok) {
-      wrap.appendChild(buildGateFailureEl(ctx.validation, ctx));
+      wrap.appendChild(ctx.validation.global ? buildGlobalGateFailureEl(ctx.validation) : buildGateFailureEl(ctx.validation, ctx));
     }
 
     const fieldWrap = document.createElement("div");
@@ -428,7 +489,12 @@ function renderRunReviewPanel(panel) {
     const pickerEl = fieldWrap.querySelector("#ar-picker");
 
     function runEnvelope(pastedText) {
-      const { candidates, noFencesFound } = extractCandidates(pastedText, { exportedLength: ctx.exported.markdown.length });
+      // Chunk mode's "document-sized" reference is THIS chunk's own exportedMarkdown, not
+      // the full document's -- a real per-chunk response is only ever a fraction of the
+      // full document's length, so using ctx.exported.markdown.length here would make the
+      // envelope's own half-length threshold reject every legitimate chunk response.
+      const referenceLength = ctx.chunkMode ? ctx.chunks[ctx.chunkIndex].exportedMarkdown.length : ctx.exported.markdown.length;
+      const { candidates, noFencesFound } = extractCandidates(pastedText, { exportedLength: referenceLength });
       if (candidates.length === 1 && !noFencesFound) {
         runValidation(candidates[0].content);
         return;
@@ -452,9 +518,69 @@ function renderRunReviewPanel(panel) {
     function runValidation(responseText) {
       pickerEl.innerHTML = "";
       appState.submitResponse(responseText);
+      if (ctx.chunkMode) {
+        runChunkValidation(responseText);
+        return;
+      }
       const result = validate({ responseMarkdown: responseText, exportedMarkdown: ctx.exported.markdown, sourceMap: ctx.exported.sourceMap });
       if (result.ok) appState.validationPassed(result);
       else appState.validationFailed(result);
+    }
+
+    // M4c two-phase chunk validation (spec §6.4, architecture doc §7): phase 1
+    // (validateText) runs against the CURRENT chunk's own slice only -- a failure here is
+    // this chunk's own G1/G2 problem, reported and repaired exactly like the single-doc
+    // path. Once phase 1 passes, this chunk's edits are translated into the full
+    // document's coordinate space (chunk.js's translateEdits): if more chunks remain,
+    // that's chunkAdvance's job (loop back to PROMPT_READY for the next chunk's prompt);
+    // on the LAST chunk, every chunk's translated edits are merged and resolved ONCE
+    // (resolveEdits, phase 2) against the full document's source map -- exactly the
+    // single-document path's own G3/G4/G5 pass, just fed a merged edit list instead of one
+    // parsed straight from a single response.
+    function runChunkValidation(responseText) {
+      const chunk = ctx.chunks[ctx.chunkIndex];
+      const isLastChunk = ctx.chunkIndex === ctx.chunks.length - 1;
+
+      const phase1 = validateText({
+        responseMarkdown: responseText,
+        exportedMarkdown: chunk.exportedMarkdown,
+        sourceMap: chunk.sourceMap,
+      });
+      if (!phase1.ok) {
+        appState.validationFailed(phase1);
+        return;
+      }
+      const translated = translateEdits(phase1.edits, chunk.baseOffset);
+
+      if (!isLastChunk) {
+        const nextChunk = ctx.chunks[ctx.chunkIndex + 1];
+        const nextBuilt = buildPrompt({
+          persona: ctx.persona,
+          exportedMarkdown: nextChunk.exportedMarkdown,
+          filename: ctx.filename,
+          chunk: { index: ctx.chunkIndex + 1, total: ctx.chunks.length },
+        });
+        appState.chunkAdvance({
+          promptText: nextBuilt.text,
+          promptVersion: nextBuilt.promptVersion,
+          tokenEstimate: nextBuilt.tokenEstimate,
+          translatedEdits: translated,
+        });
+        return;
+      }
+
+      const merged = [...ctx.chunkEdits, ...translated];
+      const resolved = resolveEdits({ edits: merged, sourceMap: ctx.exported.sourceMap });
+      if (resolved.ok) {
+        appState.validationPassed(resolved);
+      } else {
+        // Rare by design (chunk boundaries stop edits spanning chunks) -- but the failing
+        // edit may be from an EARLIER chunk's own response, not this (last) chunk's, so a
+        // per-chunk repair prompt (which quotes ctx.response, only THIS chunk's text) would
+        // point at the wrong text entirely. Tag it distinctly so the UI surfaces a global
+        // restart notice instead of the ordinary repair flow.
+        appState.validationFailed({ ...resolved, global: true });
+      }
     }
 
     wrap.querySelector("#ar-validate").addEventListener("click", () => runEnvelope(responseEl.value));
@@ -463,6 +589,28 @@ function renderRunReviewPanel(panel) {
       // on paste"), then extract on the very next tick.
       setTimeout(() => runEnvelope(responseEl.value), 0);
     });
+  }
+
+  // M4c edge case: every chunk passed its own phase-1 (G1/G2) check, but the merged edit
+  // list failed phase 2 (G3/G4) against the FULL document -- rare by design, since chunk
+  // boundaries are chosen so an edit can never span two chunks. The failing edit may
+  // originate from an EARLIER chunk's own response, not the one just pasted, so a
+  // per-chunk repair prompt (composeRepair quotes ctx.response, which is only the LAST
+  // chunk's text) could point entirely at the wrong text. Surface the gate + message and
+  // let the human restart the review instead.
+  function buildGlobalGateFailureEl(result) {
+    const box = document.createElement("div");
+    box.className = "ar-gate-failure";
+    box.innerHTML = `
+      <p><strong>${escapeHtml(result.gate)} failed after merging all chunks:</strong> ${escapeHtml(result.message)}</p>
+      <p class="ar-hint">This is rare -- chunk boundaries are chosen so an edit can never span
+      two chunks -- but it means the merged edit list doesn't resolve cleanly against the full
+      document, and the failing edit may not even be from the chunk you just pasted. Rather
+      than patch one chunk, start the review over.</p>
+      <button type="button" id="ar-restart-review" class="ar-primary">Start a new review</button>
+    `;
+    box.querySelector("#ar-restart-review").addEventListener("click", () => appState.reset());
+    return box;
   }
 
   // Mirrors the demo panel's failure view (first-divergence context is always cheap/O(n);
