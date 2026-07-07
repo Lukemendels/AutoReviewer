@@ -1,7 +1,8 @@
 import { validate } from "../validate.js";
 import { buildPrompt } from "../prompt.js";
+import { composeRepair } from "../repair.js";
 import { buildAuditRecord } from "../audit.js";
-import { saveSession } from "../session.js";
+import { saveSession, loadSession } from "../session.js";
 import { createRatificationState, renderRatificationUI } from "./ratify.js";
 import { createAppState, STATES } from "./state.js";
 import { loadDocxFromBytes, loadPersonaFromText, attachDropZone, readFileAsArrayBuffer, readFileAsText } from "./load.js";
@@ -20,9 +21,6 @@ const FLOWS = [
   { id: "respond-review", label: "Respond to Review" },
   { id: "train-persona", label: "Train Persona" },
 ];
-
-// Not yet wired into any flow's UI (land in M4b/M5).
-const NOT_YET_WIRED = { buildAuditRecord, saveSession };
 
 function renderShell(root) {
   const nav = document.createElement("nav");
@@ -139,6 +137,18 @@ function downloadBlob(bytes, filename) {
   URL.revokeObjectURL(url);
 }
 
+function downloadJson(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 /* ------------------------------------------------------------------ *
  * Run Review flow (spec §6.1): load -> persona (optional) -> compose prompt -> copy ->
  * paste response -> validate -> ratify -> inject. Driven entirely by state.js's app state
@@ -148,6 +158,47 @@ function downloadBlob(bytes, filename) {
 function renderRunReviewPanel(panel) {
   const appState = createAppState();
   let loadError = null;
+  // Set by renderRatifyStep; read by handleDownloadSession so a session saved mid- or
+  // post-ratification carries the human's real decisions (ratify.js's state is ephemeral,
+  // recreated fresh each time RATIFYING is entered -- see ratify.js -- so it's never part
+  // of state.js's own context).
+  let currentRatifyState = null;
+
+  function currentDecisions() {
+    if (!currentRatifyState) return [];
+    return currentRatifyState.rows.map((r) => ({ id: r.id, decision: r.decision, reviewed: r.reviewed }));
+  }
+
+  function handleDownloadSession() {
+    const ctx = appState.context;
+    const saved = saveSession({ state: appState.state, context: ctx, decisions: currentDecisions() });
+    downloadJson(saved, `${ctx.filename} — session.json`);
+  }
+
+  async function handleResumeFiles(files) {
+    const file = files[0];
+    if (!file) return;
+    if (!/\.json$/i.test(file.name)) {
+      loadError = `"${file.name}" is not a session .json file.`;
+      render();
+      return;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(await readFileAsText(file));
+    } catch (err) {
+      loadError = `Could not parse "${file.name}" as a session file: ${err.message}`;
+      render();
+      return;
+    }
+    try {
+      const { state, context } = loadSession(parsed);
+      appState.hydrate({ state, context });
+    } catch (err) {
+      loadError = `Could not resume session: ${err.message}`;
+      render();
+    }
+  }
 
   function render() {
     panel.innerHTML = "";
@@ -155,11 +206,13 @@ function renderRunReviewPanel(panel) {
     const ctx = appState.context;
 
     if (state === STATES.EMPTY) {
+      currentRatifyState = null;
       renderLoadStep(panel);
       return;
     }
 
     renderPersonaControls(panel, ctx);
+    renderSessionBar(panel);
 
     if (state === STATES.DOC_LOADED || state === STATES.PROMPT_READY) {
       renderPromptStep(panel, ctx);
@@ -244,12 +297,31 @@ function renderRunReviewPanel(panel) {
       <input type="file" id="ar-doc-input" accept=".docx" style="display:none" />
       <p id="ar-load-status" class="ar-hint">${loadError ? escapeHtml(loadError) : ""}</p>
       <p class="ar-hint">No document handy? <button type="button" id="ar-try-demo" class="ar-link">Try the demo</button> instead.</p>
+      <p class="ar-hint">Resuming a review? <button type="button" id="ar-resume-session" class="ar-link">Resume session</button>
+      from a saved session <code>.json</code>.</p>
+      <input type="file" id="ar-resume-input" accept=".json" style="display:none" />
     `;
     container.appendChild(wrap);
     const dz = wrap.querySelector("#ar-dropzone");
     const input = wrap.querySelector("#ar-doc-input");
     attachDropZone(dz, input, { onFiles: handleDocFiles });
     wrap.querySelector("#ar-try-demo").addEventListener("click", handleTryDemo);
+    const resumeInput = wrap.querySelector("#ar-resume-input");
+    wrap.querySelector("#ar-resume-session").addEventListener("click", () => resumeInput.click());
+    resumeInput.addEventListener("change", () => {
+      const files = resumeInput.files ? [...resumeInput.files] : [];
+      if (files.length) handleResumeFiles(files);
+      resumeInput.value = "";
+    });
+  }
+
+  // Available in every non-EMPTY state (spec §5.4 / M4b build plan §3).
+  function renderSessionBar(container) {
+    const wrap = document.createElement("div");
+    wrap.className = "ar-session-bar";
+    wrap.innerHTML = `<button type="button" id="ar-download-session" class="ar-link">Download session</button>`;
+    container.appendChild(wrap);
+    wrap.querySelector("#ar-download-session").addEventListener("click", handleDownloadSession);
   }
 
   function renderPersonaControls(container, ctx) {
@@ -336,7 +408,7 @@ function renderRunReviewPanel(panel) {
     container.appendChild(wrap);
 
     if (ctx.validation && !ctx.validation.ok) {
-      wrap.appendChild(buildGateFailureEl(ctx.validation));
+      wrap.appendChild(buildGateFailureEl(ctx.validation, ctx));
     }
 
     const fieldWrap = document.createElement("div");
@@ -396,7 +468,7 @@ function renderRunReviewPanel(panel) {
   // Mirrors the demo panel's failure view (first-divergence context is always cheap/O(n);
   // the full word-level diff is computed lazily, on demand, only if the human clicks the
   // button -- see validate.js's G2 comment for why an eager diffWords() call is unsafe).
-  function buildGateFailureEl(result) {
+  function buildGateFailureEl(result, ctx) {
     const box = document.createElement("div");
     box.className = "ar-gate-failure";
     const title = document.createElement("p");
@@ -432,15 +504,23 @@ function renderRunReviewPanel(panel) {
       box.appendChild(showDiffBtn);
     }
 
-    if (result.repairPrompt) {
-      const copyBtn = document.createElement("button");
-      copyBtn.type = "button";
-      copyBtn.textContent = "Copy repair prompt";
-      copyBtn.addEventListener("click", (e) => {
-        if (typeof copyWithFeedback === "function") copyWithFeedback(e.currentTarget, result.repairPrompt);
-      });
-      box.appendChild(copyBtn);
-    }
+    // Mistake-specific repair prompt (M4b binding ruling: named rule + quoted divergence +
+    // corrected pattern, not validate.js's generic "re-emit exactly" repairPrompt).
+    const attemptCount = ctx.repairAttempts[result.gate] || 0;
+    const repairText = composeRepair(result, ctx.response, attemptCount);
+    const repairEl = document.createElement("div");
+    repairEl.className = "ar-repair";
+    const repairPre = document.createElement("pre");
+    repairPre.textContent = repairText;
+    repairEl.appendChild(repairPre);
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.textContent = "Copy repair prompt";
+    copyBtn.addEventListener("click", (e) => {
+      if (typeof copyWithFeedback === "function") copyWithFeedback(e.currentTarget, repairText);
+    });
+    repairEl.appendChild(copyBtn);
+    box.appendChild(repairEl);
 
     return box;
   }
@@ -478,6 +558,15 @@ function renderRunReviewPanel(panel) {
     const ratifyContainer = document.createElement("div");
     wrap.appendChild(ratifyContainer);
     const state = createRatificationState(ctx.validation.edits);
+    currentRatifyState = state; // read by handleDownloadSession
+    // Resume flow (M4b): loadSession() staged the saved decisions on ctx.pendingDecisions
+    // rather than the (freshly re-derived) ratify state -- re-apply them here, once, by id.
+    if (ctx.pendingDecisions && ctx.pendingDecisions.length) {
+      for (const d of ctx.pendingDecisions) {
+        state.setDecision(d.id, d.decision);
+        if (d.reviewed) state.markReviewed(d.id);
+      }
+    }
     renderRatificationUI(ratifyContainer, state, { sourceText: ctx.exported.markdown });
 
     const statusEl = document.createElement("p");
@@ -489,21 +578,45 @@ function renderRunReviewPanel(panel) {
       injectBtn.addEventListener("click", async () => {
         injectBtn.disabled = true;
         statusEl.textContent = "Injecting accepted edits...";
+        const author = authorEl.value.trim() || "AutoReviewer";
+        let rewritten;
         try {
           const acceptedEdits = state.acceptedEdits();
-          const rewritten = await buildReviewedDocx({
+          rewritten = await buildReviewedDocx({
             docxBytes: ctx.docxBytes,
             acceptedEdits,
             sourceMap: ctx.exported.sourceMap,
-            author: authorEl.value.trim() || "AutoReviewer",
+            author,
             date: new Date().toISOString(),
           });
-          const downloadName = `${ctx.filename} — reviewed.docx`;
-          downloadBlob(rewritten, downloadName);
-          appState.inject();
+          downloadBlob(rewritten, `${ctx.filename} — reviewed.docx`);
+          appState.inject(); // stamps ctx.timestamps.injected, read by buildAuditRecord below
         } catch (err) {
           statusEl.textContent = `Injection failed: ${err.message}`;
           injectBtn.disabled = false;
+          return;
+        }
+
+        // Audit sidecar (spec §12): assembled here, after the docx is actually serialized
+        // and written, so output.sha256 hashes the real written bytes. A failure here is
+        // reported separately -- the reviewed docx above already downloaded successfully.
+        try {
+          const auditRecord = await buildAuditRecord({
+            promptVersion: ctx.promptVersion,
+            timestamps: ctx.timestamps,
+            filename: ctx.filename,
+            docxBytes: ctx.docxBytes,
+            outputBytes: rewritten,
+            response: ctx.response,
+            sourceMap: ctx.exported.sourceMap,
+            persona: ctx.persona,
+            validationAttempts: ctx.validationAttempts,
+            rows: state.rows,
+            author,
+          });
+          downloadJson(auditRecord, `${ctx.filename} — review-audit.json`);
+        } catch (err) {
+          statusEl.textContent = `Reviewed document downloaded, but the audit sidecar failed to build: ${err.message}`;
         }
       });
     }
@@ -537,4 +650,4 @@ if (typeof document !== "undefined") {
   }
 }
 
-export { NOT_YET_WIRED, renderShell, selectFlow };
+export { renderShell, selectFlow };

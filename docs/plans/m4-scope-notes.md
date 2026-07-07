@@ -50,7 +50,8 @@ recorded here so M4 planning reads them from the repo rather than from memory.
 
 Open design questions surfaced during per-PR (Opus) review, to be ruled on in the single
 Fable pass after M4c merges. Each is non-blocking for its phase; listed here so Fable gets
-a checklist rather than a scavenger hunt across three PR threads.
+a checklist rather than a scavenger hunt across three PR threads. **Status after M4b:**
+item 2 is resolved (see below); item 1 (header echo) is the sole remaining open question.
 
 1. **Header echo — §4 single-source vs Issue #10** (M4a, PR #21 — `prompt.js`,
    `buildHardConstraintsSection`). The export's first three header lines are re-emitted
@@ -63,10 +64,13 @@ a checklist rather than a scavenger hunt across three PR threads.
    `headerLines` derivation) or does the literal-echo aid to G2 justify the exception
    (→ keep, confirm empirically in the hand-run)? In-code flag at the site.
 
-2. **Audit `resolvedAnchor` sourcing** (M4b — `audit.js` / spec §12). Spec §12 requires
-   resolved anchors per edit. `validate()` resolves anchors in G3/G4 but doesn't currently
-   return them, and capturing them must not touch the frozen `validate.js`. Options: (a)
-   capture from the resolution pass at inject time (small app-layer change, no validate.js
-   edit); (b) defer to M4c, where `resolveEdits` is split out and already returns the
-   triples, and ship M4b without the field. May be pulled forward and decided before M4b
-   starts; recorded here so it isn't lost.
+2. **Audit `resolvedAnchor` sourcing — RESOLVED in M4b; no Fable action needed.** Spec §12
+   requires a resolved anchor per edit. Ruled during M4b Opus review: **option (a)** — the
+   anchor is captured at the app layer as `row.edit.anchor` and written to the audit
+   record. This needed **no** change to the frozen `validate.js`: its success path already
+   returns `{ ...edit, anchor }` (`resolvedEdits.push` in validate.js), so the resolved
+   triple rides through `validate() → ratify rows → audit` unmodified. Implemented in
+   `audit.js` (`resolvedAnchor: row.edit.anchor`) and covered by `audit.test.js` (asserts
+   the audit anchor mirrors the ratify row, plus a `source.sha256 === sourceMap.docHash`
+   consistency guard). Option (b) — deferring to M4c's `resolveEdits` split — was therefore
+   unnecessary. Left here for provenance so it isn't reopened.

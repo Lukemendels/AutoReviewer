@@ -9,6 +9,8 @@ import { describe, expect, it } from "vitest";
 import { renderShell } from "../src/ui/app.js";
 import { exportDocx } from "../src/ooxml/export.js";
 import { DEMO_DOCX_BASE64 } from "../src/ui/demo-doc.js";
+import { createAppState, STATES } from "../src/ui/state.js";
+import { loadSession } from "../src/session.js";
 
 // happy-dom's own DOMParser doesn't reliably parse a real, namespace-heavy document.xml
 // (see tests/app.test.js's header comment -- it silently drops the whole body). Every
@@ -83,5 +85,35 @@ describe("Run Review panel: the demo document walks the whole state machine", ()
     const injectBtn = panel.querySelector('[data-action="inject"]');
     expect(injectBtn).toBeTruthy();
     expect(injectBtn.disabled).toBe(false); // zero rows -> canInject() trivially true
+
+    // M4b: "Download session" is available now that RATIFYING is reached. Capture the
+    // Blob the real download path builds (happy-dom implements URL.createObjectURL) and
+    // feed its JSON straight through loadSession() -- the same deserialization path a
+    // real Resume click would drive -- to prove the UI wiring produces a session that
+    // actually resumes to the same state, rather than just asserting the button exists.
+    const downloadBtn = panel.querySelector("#ar-download-session");
+    expect(downloadBtn).toBeTruthy();
+    let capturedBlob = null;
+    const realCreateObjectURL = URL.createObjectURL;
+    URL.createObjectURL = (blob) => {
+      capturedBlob = blob;
+      return realCreateObjectURL.call(URL, blob);
+    };
+    try {
+      downloadBtn.click();
+    } finally {
+      URL.createObjectURL = realCreateObjectURL;
+    }
+    expect(capturedBlob).toBeTruthy();
+    const savedJson = JSON.parse(await capturedBlob.text());
+    expect(savedJson.state).toBe(STATES.RATIFYING);
+    expect(savedJson.personaRef).toBeNull();
+    expect(savedJson.decisions).toEqual([]); // zero-edit echo -> zero ratify rows
+
+    const resumed = createAppState();
+    const { state: restoredState, context: restoredContext } = loadSession(savedJson);
+    resumed.hydrate({ state: restoredState, context: restoredContext });
+    expect(resumed.state).toBe(STATES.RATIFYING);
+    expect(resumed.context.validation.ok).toBe(true);
   });
 });
