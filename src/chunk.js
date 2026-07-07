@@ -117,7 +117,7 @@ export function translateEdits(edits, baseOffset) {
 // Only once every chunk has passed does phase 2 run, exactly once, against the merged,
 // translated edit list -- identical in shape to what the single-document validate() would
 // produce from one big response, per the chunked-vs-unchunked equivalence oracle
-// (tests/chunk.equivalence.test.js).
+// (tests/chunk.test.js).
 export function validateChunked({ chunks, chunkResponses, sourceMap, largestDeletionWords = 50 }) {
   const merged = [];
   for (let i = 0; i < chunks.length; i++) {

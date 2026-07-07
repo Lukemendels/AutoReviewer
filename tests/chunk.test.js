@@ -74,6 +74,16 @@ function stripRaw(value) {
   return value;
 }
 
+// Splices a unique substring `target` to `replacement` in `markdown`, failing loudly if
+// `target` isn't found exactly once (same convention as validate.test.js's withEdit).
+function withEdit(markdown, target, replacement) {
+  const first = markdown.indexOf(target);
+  const last = markdown.lastIndexOf(target);
+  if (first === -1) throw new Error(`withEdit: target not found: ${JSON.stringify(target)}`);
+  if (first !== last) throw new Error(`withEdit: target not unique: ${JSON.stringify(target)}`);
+  return markdown.slice(0, first) + replacement + markdown.slice(first + target.length);
+}
+
 describe("chunk mode: splitting", () => {
   it("splits at each top-level heading; chunk 0 carries the document header", () => {
     const { markdown, sourceMap } = buildMultiSectionDoc([
@@ -204,4 +214,49 @@ describe("chunk mode: chunked-vs-unchunked equivalence oracle (architecture doc 
       }
     }
   );
+});
+
+// A permanent, deterministic guard alongside the randomized oracle above -- the fuzz suite
+// draws a fresh seed by default, so it can't be relied on to have exercised this exact shape
+// (an edit in the FIRST chunk, a D1 whole-paragraph insert in a MIDDLE chunk, and an edit in
+// the LAST chunk) on any given run. Hand-writing it once pins the case down for good.
+describe("chunk mode: hand-written architecture doc §7 guard case", () => {
+  it("edits in the first and last chunk, plus a D1 whole-paragraph insert in a middle chunk, all resolve identically chunked vs. unchunked", () => {
+    const { markdown, sourceMap } = buildMultiSectionDoc([
+      { heading: "Alpha", paragraphs: ["The first section discusses the proposed rule."] },
+      { heading: "Bravo", paragraphs: ["The middle section covers economic impact."] },
+      { heading: "Charlie", paragraphs: ["The final section states the conclusion."] },
+    ]);
+    const chunks = splitIntoChunks(markdown, sourceMap);
+    expect(chunks.length).toBe(3); // guard: really 3 chunks, one per heading
+
+    // chunk 0 (first, carries the header): a substitution.
+    const chunk0Response = withEdit(chunks[0].exportedMarkdown, "first", "{~~first~>initial~~}");
+    // chunk 1 (middle): a D1 whole-paragraph insert, spliced over the heading/paragraph
+    // "\n\n" gap -- the only shape validate.js's D1 rule accepts (spec §4).
+    const chunk1Response = withEdit(chunks[1].exportedMarkdown, "\n\nThe middle section", "\n{++A new whole paragraph.++}\nThe middle section");
+    // chunk 2 (last): a deletion.
+    const chunk2Response = withEdit(chunks[2].exportedMarkdown, "states the conclusion", "{--states the conclusion--}");
+    const chunkResponses = [chunk0Response, chunk1Response, chunk2Response];
+    const fullResponse = chunkResponses.join("");
+
+    const baseline = validate({ responseMarkdown: fullResponse, exportedMarkdown: markdown, sourceMap });
+    const chunked = validateChunked({ chunks, chunkResponses, sourceMap });
+
+    expect(baseline.ok, `baseline failed -- gate=${baseline.gate} message=${baseline.message}`).toBe(true);
+    expect(chunked.ok, `chunked failed -- gate=${chunked.gate} message=${chunked.message} chunkIndex=${chunked.chunkIndex}`).toBe(
+      true
+    );
+    expect(stripRaw(chunked.edits)).toEqual(stripRaw(baseline.edits));
+    expect(stripRaw(chunked.warnings)).toEqual(stripRaw(baseline.warnings));
+    expect(chunked.counts).toEqual(baseline.counts);
+    expect(chunked.counts).toEqual({ ins: 1, del: 1, sub: 1, comment: 0 });
+
+    // Proves offset translation actually ran: the middle chunk's D1 insert must resolve to
+    // a global md-offset inside chunk 1's own range, not chunk 0's or chunk 2's.
+    const ins = chunked.edits.find((e) => e.type === "ins");
+    expect(ins.wholeParagraph).toBe(true);
+    expect(ins.mdPos).toBeGreaterThanOrEqual(chunks[1].baseOffset);
+    expect(ins.mdPos).toBeLessThan(chunks[2].baseOffset);
+  });
 });
