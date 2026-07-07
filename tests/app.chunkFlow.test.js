@@ -128,6 +128,11 @@ describe("Run Review panel: chunk mode drives a 3-part document to RATIFYING wit
     expect(promptTextarea.value).toMatch(/This is part 1 of 3 of a larger document\./);
     expect(panel.textContent).toContain("Part 1 of 3");
 
+    // Session save/resume mid-chunk-review is a declared M4c non-goal (session.js doesn't
+    // serialize chunks/chunkIndex/chunkEdits) -- the button must be disabled throughout,
+    // not just silently produce a session that resumes broken.
+    expect(panel.querySelector("#ar-download-session").disabled).toBe(true);
+
     for (let i = 0; i < SECTIONS.length; i++) {
       promptTextarea = panel.querySelector(".ar-prompt-text");
       expect(promptTextarea.value).toContain(`This is part ${i + 1} of ${SECTIONS.length} of a larger document.`);
@@ -169,6 +174,10 @@ describe("Run Review panel: chunk mode drives a 3-part document to RATIFYING wit
     const injectBtn = panel.querySelector('[data-action="inject"]');
     expect(injectBtn).toBeTruthy();
     expect(injectBtn.disabled).toBe(true); // per spec §8: must scroll/review every row first
+
+    // chunkMode is never cleared by validationPassed/inject -- the session bar stays
+    // disabled through RATIFYING too, not just the pre-RATIFYING paste loop.
+    expect(panel.querySelector("#ar-download-session").disabled).toBe(true);
   });
 
   it("flags overThreshold honestly for the synthetic document (sanity on the test fixture itself)", async () => {

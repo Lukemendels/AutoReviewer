@@ -213,7 +213,7 @@ function renderRunReviewPanel(panel) {
     }
 
     renderPersonaControls(panel, ctx);
-    renderSessionBar(panel);
+    renderSessionBar(panel, ctx);
 
     if (state === STATES.DOC_LOADED || state === STATES.PROMPT_READY) {
       renderPromptStep(panel, ctx);
@@ -351,10 +351,22 @@ function renderRunReviewPanel(panel) {
     });
   }
 
-  // Available in every non-EMPTY state (spec §5.4 / M4b build plan §3).
-  function renderSessionBar(container) {
+  // Available in every non-EMPTY state (spec §5.4 / M4b build plan §3) -- EXCEPT mid-chunk
+  // review (M4c NON-GOAL: session save/resume while mid-chunk-review is deferred).
+  // session.js's schema doesn't serialize chunks/chunkIndex/chunkEdits at all, so a session
+  // downloaded here would silently resume into a broken state: the wrong (full-document,
+  // non-chunk) prompt rebuilt for a chunk-mode promptVersion, and every completed chunk's
+  // edits gone. Disabling with an explicit reason is cheaper and safer than shipping that
+  // footgun for a deferred feature.
+  function renderSessionBar(container, ctx) {
     const wrap = document.createElement("div");
     wrap.className = "ar-session-bar";
+    if (ctx.chunkMode) {
+      wrap.innerHTML = `<button type="button" id="ar-download-session" class="ar-link" disabled>Download session</button>
+        <span class="ar-hint">(unavailable mid-chunk-review -- not yet supported)</span>`;
+      container.appendChild(wrap);
+      return;
+    }
     wrap.innerHTML = `<button type="button" id="ar-download-session" class="ar-link">Download session</button>`;
     container.appendChild(wrap);
     wrap.querySelector("#ar-download-session").addEventListener("click", handleDownloadSession);

@@ -3352,7 +3352,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
         return;
       }
       renderPersonaControls(panel, ctx);
-      renderSessionBar(panel);
+      renderSessionBar(panel, ctx);
       if (state === STATES.DOC_LOADED || state === STATES.PROMPT_READY) {
         renderPromptStep(panel, ctx);
       } else if (state === STATES.AWAITING_RESPONSE || state === STATES.VALIDATION_FAILED) {
@@ -3467,9 +3467,15 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
         resumeInput.value = "";
       });
     }
-    function renderSessionBar(container) {
+    function renderSessionBar(container, ctx) {
       const wrap = document.createElement("div");
       wrap.className = "ar-session-bar";
+      if (ctx.chunkMode) {
+        wrap.innerHTML = `<button type="button" id="ar-download-session" class="ar-link" disabled>Download session</button>
+        <span class="ar-hint">(unavailable mid-chunk-review -- not yet supported)</span>`;
+        container.appendChild(wrap);
+        return;
+      }
       wrap.innerHTML = `<button type="button" id="ar-download-session" class="ar-link">Download session</button>`;
       container.appendChild(wrap);
       wrap.querySelector("#ar-download-session").addEventListener("click", handleDownloadSession);
