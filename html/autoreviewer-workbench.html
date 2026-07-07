@@ -758,7 +758,7 @@ Proceed with the review content normally once the operator has the tool open.
       return { gateFailure: { gate: err.kind === "locked" ? "G4" : "G3", message: err.message } };
     }
   }
-  function validate({ responseMarkdown, exportedMarkdown, sourceMap, largestDeletionWords = 50 }) {
+  function validateText({ responseMarkdown, exportedMarkdown, sourceMap }) {
     const response = normalizeNewlines(responseMarkdown);
     const exported = normalizeNewlines(exportedMarkdown);
     const blocks = sourceMap.blocks || [];
@@ -815,7 +815,9 @@ Proceed with the review content normally once the operator has the tool open.
         repairPrompt: buildRepairPrompt()
       };
     }
-    const edits = parseEdits(response, tokenizeOpts);
+    return { ok: true, edits: parseEdits(response, tokenizeOpts) };
+  }
+  function resolveEdits({ edits, sourceMap, largestDeletionWords = 50 }) {
     const resolvedEdits = [];
     for (const edit of edits) {
       const { anchor, gateFailure } = resolveEditAnchor(edit, sourceMap);
@@ -853,6 +855,11 @@ Proceed with the review content normally once the operator has the tool open.
     const counts = { ins: 0, del: 0, sub: 0, comment: 0 };
     for (const edit of resolvedEdits) counts[edit.type]++;
     return { ok: true, edits: resolvedEdits, warnings, counts };
+  }
+  function validate({ responseMarkdown, exportedMarkdown, sourceMap, largestDeletionWords = 50 }) {
+    const textResult = validateText({ responseMarkdown, exportedMarkdown, sourceMap });
+    if (!textResult.ok) return textResult;
+    return resolveEdits({ edits: textResult.edits, sourceMap, largestDeletionWords });
   }
 
   // src/persona.js

@@ -106,7 +106,18 @@ function resolveEditAnchor(edit, sourceMap) {
   }
 }
 
-export function validate({ responseMarkdown, exportedMarkdown, sourceMap, largestDeletionWords = 50 }) {
+// Phase 1 (spec §7 G1-G2): grammar + fidelity, checked against the response text and the
+// exportedMarkdown it must reproduce byte-for-byte outside its own CriticMarkup tokens. Only
+// `sourceMap.blocks` is read (for the header boundary and G1's block-crossing check) -- never
+// `.locked`/`.runs`, which belong to phase 2's anchor resolution. That makes this phase
+// composable with chunk mode (M4c, architecture doc §7): a caller can run it once per chunk
+// against that chunk's own local exportedMarkdown + local blocks, in the chunk's own
+// zero-based coordinate space. On success, returns the parsed (not yet anchor-resolved) edit
+// list -- mdPos/mdStart/mdEnd are in THIS CALL's coordinate space; a chunked caller must
+// translate them (add the chunk's baseOffset) before handing them to resolveEdits, which
+// expects full-document coordinates. rawStart/rawEnd index into responseMarkdown itself and
+// are never translated.
+export function validateText({ responseMarkdown, exportedMarkdown, sourceMap }) {
   const response = normalizeNewlines(responseMarkdown);
   const exported = normalizeNewlines(exportedMarkdown);
 
@@ -219,8 +230,17 @@ export function validate({ responseMarkdown, exportedMarkdown, sourceMap, larges
     };
   }
 
+  return { ok: true, edits: parseEdits(response, tokenizeOpts) };
+}
+
+// Phase 2 (spec §7 G3-G5): anchor resolution against the FULL document's source map, plus
+// the never-blocking sanity report. `edits` must already be in the source map's coordinate
+// space -- for a chunked caller (M4c), that means every edit's mdPos/mdStart/mdEnd has
+// already had its chunk's baseOffset added (see validateText's doc comment); rawStart/rawEnd
+// are left as-is throughout, since they only ever index into a response string for
+// diagnostics/repair prompts, never into the source map.
+export function resolveEdits({ edits, sourceMap, largestDeletionWords = 50 }) {
   // G3/G4 -- anchor resolution + protection
-  const edits = parseEdits(response, tokenizeOpts);
   const resolvedEdits = [];
   for (const edit of edits) {
     const { anchor, gateFailure } = resolveEditAnchor(edit, sourceMap);
@@ -262,4 +282,14 @@ export function validate({ responseMarkdown, exportedMarkdown, sourceMap, larges
   for (const edit of resolvedEdits) counts[edit.type]++;
 
   return { ok: true, edits: resolvedEdits, warnings, counts };
+}
+
+// Full-document composition of the two phases above (spec §7 G1-G5) -- the single entry
+// point every non-chunked caller uses. Behavior-identical to the pre-split validate(): phase
+// 1 and phase 2 run against the same (full-document) sourceMap, so no offset translation is
+// needed here -- that only exists at chunk mode's phase-1/phase-2 boundary (chunk.js, M4c).
+export function validate({ responseMarkdown, exportedMarkdown, sourceMap, largestDeletionWords = 50 }) {
+  const textResult = validateText({ responseMarkdown, exportedMarkdown, sourceMap });
+  if (!textResult.ok) return textResult;
+  return resolveEdits({ edits: textResult.edits, sourceMap, largestDeletionWords });
 }
