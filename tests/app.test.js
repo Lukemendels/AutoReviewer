@@ -16,6 +16,7 @@ import { validate } from "../src/validate.js";
 import { createRatificationState } from "../src/ui/ratify.js";
 import { buildReviewedDocx } from "../src/ui/app.js";
 import { unzip, readEntry } from "../src/zip/reader.js";
+import { buildAuditRecord } from "../src/audit.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixturesDir = path.join(root, "fixtures");
@@ -95,5 +96,63 @@ describe("buildReviewedDocx: the Inject flow's pure core", () => {
     const commentsXml = await readEntry(zip, "word/comments.xml");
     expect(commentsXml).toContain("Please double-check this framing.");
     expect(commentsXml).toContain('w:author="AutoReviewer — Test Persona"');
+  });
+});
+
+// M4b's INJECTED-step audit wiring (app.js assembles buildAuditRecord's `details` from the
+// same real pieces buildReviewedDocx above uses -- docxBytes, sourceMap, ratify rows, and
+// the actual written output bytes). Exercised here against real fixtures + real
+// crypto.subtle (no digestImpl override), in the default Node environment, rather than via
+// a happy-dom click: buildReviewedDocx crosses real Streams-API boundaries the Inject
+// button's happy-dom test above already opts out of (see this file's header comment).
+describe("app.js's audit wiring: buildAuditRecord over the real pieces the Inject handler assembles", () => {
+  it("produces a spec-complete record whose source.sha256 matches the real sourceMap.docHash", async () => {
+    const docxBytes = loadDocxBytes("plain-paragraphs");
+    const exported = await exportDocx(docxBytes, { DOMParserImpl: DOMParser, filename: "plain-paragraphs" });
+
+    let response = exported.markdown;
+    response = response.replace("the first paragraph", "the {++truly ++}first paragraph");
+    response = response.replace("This is the second", "{--This is the second--}");
+
+    const result = validate({ responseMarkdown: response, exportedMarkdown: exported.markdown, sourceMap: exported.sourceMap });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+
+    const ratify = createRatificationState(result.edits);
+    const delRow = ratify.rows.find((r) => r.edit.type === "del");
+    ratify.setDecision(delRow.id, "reject");
+
+    const author = "AutoReviewer — Test Persona";
+    const rewritten = await buildReviewedDocx({
+      docxBytes,
+      acceptedEdits: ratify.acceptedEdits(),
+      sourceMap: exported.sourceMap,
+      author,
+      date: "2026-01-01T00:00:00Z",
+      DOMParserImpl: DOMParser,
+      XMLSerializerImpl: XMLSerializer,
+    });
+
+    const record = await buildAuditRecord({
+      promptVersion: "m4a-2026.07-1",
+      timestamps: { loaded: "2026-01-01T00:00:00Z", injected: "2026-01-01T00:01:00Z" },
+      filename: "plain-paragraphs",
+      docxBytes,
+      outputBytes: rewritten,
+      response,
+      sourceMap: exported.sourceMap,
+      persona: null,
+      validationAttempts: [{ ts: "2026-01-01T00:00:30Z", result: "ok" }],
+      rows: ratify.rows,
+      author,
+    });
+
+    expect(record.source.sha256).toBe(exported.sourceMap.docHash);
+    expect(record.persona).toEqual({ name: "Default Persona (built-in)" });
+    expect(record.edits).toHaveLength(2);
+    expect(record.edits.find((e) => e.type === "ins").decision).toBe("accept");
+    expect(record.edits.find((e) => e.type === "del").decision).toBe("reject");
+    // The rejected deletion never reached injectEdits (see the test above) -- counts
+    // reflect only what actually got injected.
+    expect(record.injection.counts).toEqual({ ins: 1, del: 0, sub: 0, comment: 0 });
   });
 });

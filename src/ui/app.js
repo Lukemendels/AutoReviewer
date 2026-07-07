@@ -22,9 +22,6 @@ const FLOWS = [
   { id: "train-persona", label: "Train Persona" },
 ];
 
-// Not yet wired into any flow's UI (lands in M4b step 4).
-const NOT_YET_WIRED = { buildAuditRecord };
-
 function renderShell(root) {
   const nav = document.createElement("nav");
   nav.className = "ar-tabs";
@@ -581,21 +578,45 @@ function renderRunReviewPanel(panel) {
       injectBtn.addEventListener("click", async () => {
         injectBtn.disabled = true;
         statusEl.textContent = "Injecting accepted edits...";
+        const author = authorEl.value.trim() || "AutoReviewer";
+        let rewritten;
         try {
           const acceptedEdits = state.acceptedEdits();
-          const rewritten = await buildReviewedDocx({
+          rewritten = await buildReviewedDocx({
             docxBytes: ctx.docxBytes,
             acceptedEdits,
             sourceMap: ctx.exported.sourceMap,
-            author: authorEl.value.trim() || "AutoReviewer",
+            author,
             date: new Date().toISOString(),
           });
-          const downloadName = `${ctx.filename} — reviewed.docx`;
-          downloadBlob(rewritten, downloadName);
-          appState.inject();
+          downloadBlob(rewritten, `${ctx.filename} — reviewed.docx`);
+          appState.inject(); // stamps ctx.timestamps.injected, read by buildAuditRecord below
         } catch (err) {
           statusEl.textContent = `Injection failed: ${err.message}`;
           injectBtn.disabled = false;
+          return;
+        }
+
+        // Audit sidecar (spec §12): assembled here, after the docx is actually serialized
+        // and written, so output.sha256 hashes the real written bytes. A failure here is
+        // reported separately -- the reviewed docx above already downloaded successfully.
+        try {
+          const auditRecord = await buildAuditRecord({
+            promptVersion: ctx.promptVersion,
+            timestamps: ctx.timestamps,
+            filename: ctx.filename,
+            docxBytes: ctx.docxBytes,
+            outputBytes: rewritten,
+            response: ctx.response,
+            sourceMap: ctx.exported.sourceMap,
+            persona: ctx.persona,
+            validationAttempts: ctx.validationAttempts,
+            rows: state.rows,
+            author,
+          });
+          downloadJson(auditRecord, `${ctx.filename} — review-audit.json`);
+        } catch (err) {
+          statusEl.textContent = `Reviewed document downloaded, but the audit sidecar failed to build: ${err.message}`;
         }
       });
     }
@@ -629,4 +650,4 @@ if (typeof document !== "undefined") {
   }
 }
 
-export { NOT_YET_WIRED, renderShell, selectFlow };
+export { renderShell, selectFlow };
