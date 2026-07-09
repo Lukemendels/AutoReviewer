@@ -1,0 +1,464 @@
+## Report: CriticMarkup validation failure loop
+
+### Summary
+
+The task is failing because the source document already contains CriticMarkup-like tokens, and the downstream validator appears to treat those pre-existing source tokens as if they are newly proposed markup from the model. This causes the validator’s “underlying text” comparison to diverge at the location of the pre-existing token.
+
+The persistent failure at offset `13608` is tied to this exact original source text:
+
+```markdown
+In addition to these changes, TSA is issuing a program re-write {==(Change 17) ==}{>>Pitino, Salvatore (2025-07-25): ACD: EAB is using ‘Change 17’ as a placeholder based on Change 16 issued by PPE Aviation in Jan. 2025.<<}which introduces new requirements for twelve-five operators and modifies other requirements currently in place.
+```
+
+That `{==(Change 17) ==}{>>...<<}` sequence is not an edit I introduced. It was already present in the exported document. However, the validator appears to parse it as CriticMarkup and strip or transform it when computing the response’s underlying text. The original exported document still includes those literal characters, so the comparison fails.
+
+---
+
+## Observable failure pattern
+
+The validator reports:
+
+```text
+the response's underlying text does not byte-match the exported document outside CriticMarkup tokens
+Your response diverges at offset 13608.
+You wrote:    "(Change 17) which introduces new requirements for twelve-five operators ..."
+Expected:     "{==(Change 17) ==}{>>Pitino, Salvatore ...<<}"
+```
+
+This strongly suggests:
+
+1. The response includes the original source token exactly:
+   ```markdown
+   {==(Change 17) ==}{>>Pitino, Salvatore ...<<}which
+   ```
+
+2. The validator parses that source token as CriticMarkup:
+   - `{==(Change 17) ==}{>>comment<<}` becomes underlying text:
+     ```text
+     (Change 17)
+     ```
+   - The comment token is removed from the underlying text.
+   - Depending on whitespace handling, the validator sees:
+     ```text
+     (Change 17) which
+     ```
+
+3. The validator compares that parsed “underlying” response text against the raw original export, which still contains:
+   ```text
+   {==(Change 17) ==}{>>Pitino, Salvatore ...<<}which
+   ```
+
+4. Therefore, the response appears to diverge even though the response preserved the original bytes.
+
+This is a tool ambiguity: the same syntax is being used both as source content and as model-generated edit markup.
+
+---
+
+## Why minimal edits did not solve it
+
+We tried reducing the number of proposed edits. The failure still occurred at the same offset because the problem is independent of the new edits.
+
+Even if the model returns the document unchanged except for one harmless edit somewhere else, the downstream validator will still encounter the pre-existing CriticMarkup token in the source and misinterpret it.
+
+The issue is therefore structural, not a model compliance issue.
+
+---
+
+## Secondary issues encountered
+
+### 1. Markdown table block-boundary errors
+
+Earlier failures occurred around edits inside Markdown tables, especially:
+
+```markdown
+| CAGR | {~~Compounded~>Compound~~} Annual Growth Rate |
+```
+
+The validator reported that a token crossed a paragraph/block boundary.
+
+This may indicate one or more of the following:
+
+- The validator’s block parser does not treat Markdown table rows/cells as independent safe regions.
+- The token parser may be operating before table block segmentation.
+- Pipes or row boundaries may confuse the block-boundary checker.
+- The validator may define a “block” differently than expected, perhaps treating the whole table as one block or failing to classify table rows.
+
+For prompt reliability, edits inside Markdown tables should be avoided unless the validator explicitly supports them.
+
+### 2. Existing CriticMarkup in source creates “nesting” or ownership ambiguity
+
+The source contains:
+
+```markdown
+{==(Change 17) ==}{>>Pitino, Salvatore ...<<}
+```
+
+This is valid CriticMarkup syntax. But the task rules said the response should use CriticMarkup tokens for proposed edits. They did not distinguish between:
+
+- pre-existing CriticMarkup tokens from the source export, and
+- new CriticMarkup tokens introduced by the model.
+
+The validator needs a way to preserve the former while interpreting the latter.
+
+### 3. Comments attached to headings or table-title lines are safer than table-cell edits, but not enough
+
+We tried moving some comments outside tables, such as:
+
+```markdown
+**List of Abbreviations**{>>Verify “CPB”; ...<<}
+```
+
+This avoids many table-specific block-boundary errors. But it does not address the pre-existing token at offset 13608.
+
+---
+
+## Root cause
+
+The root cause is that the validation pipeline lacks a distinction between source-authored CriticMarkup and model-authored CriticMarkup.
+
+More formally:
+
+- Let `S` be the original source document.
+- Let `R` be the model response.
+- The validator computes `underlying(R)` by applying CriticMarkup semantics to every token-shaped sequence in `R`.
+- It then compares `underlying(R)` against `S`, or against an insufficiently processed version of `S`.
+
+This fails when `S` itself contains token-shaped sequences.
+
+Correct behavior should be one of:
+
+1. Compare `underlying(R)` to `underlying(S)`, if pre-existing source CriticMarkup is considered markup rather than literal text.
+2. Compare source-preserved regions as literal bytes and only interpret tokens newly introduced by the model.
+3. Preprocess source CriticMarkup into locked sentinels before sending to the model and before validation.
+
+The current behavior appears to be:
+
+```text
+compare strip_all_criticmarkup_tokens(R) to raw(S)
+```
+
+That is unsafe if `S` may contain CriticMarkup.
+
+---
+
+## Recommended downstream-tool fixes
+
+### Best fix: sentinelize pre-existing source CriticMarkup before prompting
+
+Before sending the document to the model, scan the source for existing CriticMarkup tokens and replace them with locked sentinels.
+
+Example source:
+
+```markdown
+program re-write {==(Change 17) ==}{>>Pitino, Salvatore ...<<}which introduces
+```
+
+Preprocessed prompt text:
+
+```markdown
+program re-write ⟦LOCKED_CM_0001⟧which introduces
+```
+
+Maintain a mapping:
+
+```json
+{
+  "⟦LOCKED_CM_0001⟧": "{==(Change 17) ==}{>>Pitino, Salvatore (2025-07-25): ACD: EAB is using ‘Change 17’ as a placeholder based on Change 16 issued by PPE Aviation in Jan. 2025.<<}"
+}
+```
+
+Then instruct the model:
+
+```text
+Text inside ⟦...⟧ is locked. Do not edit, move, or comment inside it.
+```
+
+Validate against the sentinelized source. After successful validation, restore the original source CriticMarkup from the mapping.
+
+Benefits:
+
+- Simple.
+- Robust.
+- Prevents the model from accidentally editing or nesting around existing tokens.
+- Reuses an already established locked-region convention from the prompt.
+
+Potential detail:
+
+- If the model needs to insert a space after a sentinel, it can do so outside the sentinel:
+  ```markdown
+  ⟦LOCKED_CM_0001⟧{++ ++}which
+  ```
+  But you may want to discourage edits immediately adjacent to sentinels unless necessary.
+
+---
+
+### Alternative fix: validate response against normalized source
+
+Instead of comparing:
+
+```text
+underlying(response) == raw(source)
+```
+
+compare:
+
+```text
+underlying(response) == underlying(source)
+```
+
+This would allow pre-existing CriticMarkup in the source.
+
+However, this changes the meaning of byte preservation. The user requirement says characters outside new tokens must be preserved exactly. If the source already has CriticMarkup, treating it as markup rather than literal text may hide accidental changes to those tokens.
+
+For example, if the model slightly changes the old source comment text inside `{>>...<<}`, `underlying(response)` might still match `underlying(source)` because comments are stripped. That would violate byte preservation but pass validation.
+
+So this fix is less strict unless paired with source-token preservation checks.
+
+---
+
+### Better but more complex fix: diff-aware ownership model
+
+The validator can distinguish source tokens from model-added tokens by aligning `R` against `S`.
+
+Possible algorithm:
+
+1. Parse or diff `R` against `S`.
+2. Any CriticMarkup token that appears at the same byte span with identical content in both `S` and `R` is source-owned and should be treated as literal preserved text for byte-match validation.
+3. Any CriticMarkup token present in `R` but not in `S` is model-owned and should be interpreted as markup.
+4. Any source-owned token changed by the model is a byte-preservation error unless the change itself is represented by a valid outer edit, which should probably be disallowed to avoid nesting.
+
+This is more complicated than sentinelization and less robust in the face of model output drift.
+
+---
+
+## Recommended prompt changes
+
+### 1. Add explicit handling for pre-existing CriticMarkup
+
+Current prompt says to use CriticMarkup tokens but does not address source tokens already present. Add something like:
+
+```text
+The source text may already contain CriticMarkup-like tokens. Treat any CriticMarkup tokens present in the source as locked literal text unless they have been replaced by locked sentinels. Do not edit, remove, interpret, wrap, or comment inside pre-existing CriticMarkup tokens.
+```
+
+However, this prompt-only change will not fix the validator if it continues parsing source tokens in the response. It helps model behavior but not validation.
+
+### 2. Prefer sentinelized source in the prompt
+
+Recommended prompt wording if preprocessing is implemented:
+
+```text
+Pre-existing CriticMarkup tokens in the source have been replaced with locked sentinels in the form ⟦LOCKED_CM_####⟧. Treat these as locked text. Do not edit, move, delete, or comment inside them. You may place CriticMarkup edits outside the sentinels only if needed.
+```
+
+### 3. Warn against table-cell edits unless supported
+
+Because table edits triggered block-boundary failures, add:
+
+```text
+Avoid placing CriticMarkup tokens inside Markdown tables unless the change is essential and the token opens and closes within a single table cell. Prefer an anchored comment on the table title or immediately preceding paragraph for table-wide issues.
+```
+
+If the downstream parser cannot reliably handle table cells, make this stronger:
+
+```text
+Do not place CriticMarkup tokens inside Markdown table rows or cells. Use comments outside the table to flag table issues.
+```
+
+### 4. Require minimal high-confidence edits when validation is strict
+
+For early validation hardening:
+
+```text
+Use no more than 5 CriticMarkup tokens. Prefer comments over substitutions for uncertain changes. Avoid edits adjacent to locked fields, images, or pre-existing CriticMarkup sentinels.
+```
+
+This can help isolate tooling issues.
+
+---
+
+## Recommended validation logic
+
+Here is a practical validation approach.
+
+### Preprocessing
+
+1. Input raw source document `S_raw`.
+2. Identify locked regions:
+   - existing `⟦...⟧`
+   - `[image: ...]`
+   - pre-existing CriticMarkup tokens or token pairs
+
+3. Replace pre-existing CriticMarkup with sentinels:
+   - CriticMarkup substitutions: `{~~old~>new~~}`
+   - insertions: `{++text++}`
+   - deletions: `{--text--}`
+   - comments: `{>>comment<<}`
+   - anchored comments: `{==text==}{>>comment<<}`
+
+4. Produce `S_prompt`.
+
+### Model response validation
+
+1. Confirm response is a single fenced Markdown block.
+2. Extract inner Markdown exactly.
+3. Confirm it starts with the required three header comment lines.
+4. Confirm locked sentinels are unchanged and present in the same order.
+5. Parse only model-authored CriticMarkup tokens, since source CriticMarkup is hidden as sentinels.
+6. Check:
+   - no nesting,
+   - token types are allowed,
+   - no block crossing,
+   - no token inside locked `⟦...⟧` or `[image: ...]`,
+   - no newline inside inline insertion/substitution/deletion/comment tokens,
+   - whole-paragraph insertions are alone on their line,
+   - underlying text after applying CriticMarkup equals `S_prompt`.
+7. Restore source CriticMarkup sentinels in the final accepted output.
+
+This is probably the most reliable architecture.
+
+---
+
+## Notes on parsing pre-existing CriticMarkup
+
+A pre-existing anchored comment consists of two adjacent tokens:
+
+```markdown
+{==highlighted text==}{>>comment text<<}
+```
+
+When sentinelizing, treat the pair as one locked unit where possible. If treated separately, the second comment token may still be adjacent to the first sentinel and cause awkward restoration. Better:
+
+```text
+⟦LOCKED_CM_0001⟧
+```
+
+maps to:
+
+```markdown
+{==highlighted text==}{>>comment text<<}
+```
+
+Also note that comments may contain punctuation, names, dates, apostrophes, and colons. The parser should be non-greedy and should not cross paragraph boundaries.
+
+---
+
+## Why escaping source CriticMarkup is not ideal
+
+One possible thought is to escape the source braces, but that violates byte preservation and may alter downstream rendering. Sentinelization is cleaner because it is reversible and keeps the model from touching those spans.
+
+---
+
+## Specific source issue that caused the persistent failure
+
+The source line:
+
+```markdown
+The TFSSP has evolved over time. In September 2019, Change 9 of the TFSSP became effective. Since 2019, TSA has issued nine (9) additional program changes, including technical amendments. These program changes included, but were not limited to, adding training requirements for insider threat awareness, establishing cybersecurity incident reporting requirements, establishing a cybersecurity coordinator, and developing an aircraft operator ID Media Plan. In addition to these changes, TSA is issuing a program re-write {==(Change 17) ==}{>>Pitino, Salvatore (2025-07-25): ACD: EAB is using ‘Change 17’ as a placeholder based on Change 16 issued by PPE Aviation in Jan. 2025.<<}which introduces new requirements for twelve-five operators and modifies other requirements currently in place. These requirements include, but are not limited to, the incorporation of cargo screening requirements with technology, Standard Security Screening Procedures for Air Cargo (SSPAC), Security Threat Assessment (STA) requirements, Known Shipper Management System (KSMS) requirements, and Cargo Acceptance and Transfer Measures.
+```
+
+Validator observed model underlying output as:
+
+```markdown
+... TSA is issuing a program re-write (Change 17) which introduces ...
+```
+
+But expected raw source as:
+
+```markdown
+... TSA is issuing a program re-write {==(Change 17) ==}{>>Pitino, Salvatore ...<<}which introduces ...
+```
+
+That proves the validator is stripping or interpreting source CriticMarkup from the response.
+
+---
+
+## Suggested coding-agent tasks
+
+1. **Add source CriticMarkup sentinelization before model invocation.**
+2. **Update prompt to mention locked sentinels.**
+3. **Validate against sentinelized source, not raw source.**
+4. **Restore source CriticMarkup after validation.**
+5. **Add test case with source containing pre-existing anchored comment.**
+6. **Add test case with source containing source `{++...++}`, `{--...--}`, `{~~...~>...~~}`, and bare `{>>...<<}` tokens.**
+7. **Add test case where model changes a sentinel or deletes one, expected fail.**
+8. **Add test case where model inserts valid CriticMarkup adjacent to a sentinel, expected pass if allowed.**
+9. **Consider disabling or warning on table-cell edits until the block parser is robust.**
+
+---
+
+## Minimal test fixture for the bug
+
+### Source
+
+```markdown
+A sentence with {==(Change 17) ==}{>>Existing author comment.<<}which continues.
+
+Another sentence.
+```
+
+### Valid model response
+
+```markdown
+A sentence with {==(Change 17) ==}{>>Existing author comment.<<}which continues.
+
+Another {~~sentence~>line~~}.
+```
+
+### Current validator likely computes response underlying text as
+
+```markdown
+A sentence with (Change 17) which continues.
+
+Another sentence.
+```
+
+or:
+
+```markdown
+A sentence with (Change 17)which continues.
+
+Another sentence.
+```
+
+### But expected raw source is
+
+```markdown
+A sentence with {==(Change 17) ==}{>>Existing author comment.<<}which continues.
+
+Another sentence.
+```
+
+So it fails.
+
+### Sentinelized source
+
+```markdown
+A sentence with ⟦LOCKED_CM_0001⟧which continues.
+
+Another sentence.
+```
+
+### Model response after sentinelization
+
+```markdown
+A sentence with ⟦LOCKED_CM_0001⟧which continues.
+
+Another {~~sentence~>line~~}.
+```
+
+### Underlying model response
+
+```markdown
+A sentence with ⟦LOCKED_CM_0001⟧which continues.
+
+Another sentence.
+```
+
+This matches sentinelized source. Then restore sentinel.
+
+---
+
+## Bottom line
+
+The model is not the primary blocker at this point. The persistent offset `13608` failure is caused by the downstream validator interpreting pre-existing CriticMarkup in the source as if it were new model markup. The most robust fix is to sentinelize pre-existing CriticMarkup before prompting and validation, then restore it after validation.
