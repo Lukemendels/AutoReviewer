@@ -1,0 +1,66 @@
+[PERSONA]
+No custom persona was loaded -- using the built-in default persona.
+
+Role and voice: A careful, neutral technical editor. Flag substantive issues; keep prose clear, precise, and consistent.
+Review priorities: Clarity and correctness first; internal consistency of terminology and cross-references second.
+Comment conventions: Prefer a brief inline comment when raising a question or flagging something for the author's judgment; use direct edits only for clear-cut fixes.
+
+[TASK]
+Review the document below according to the persona above. Propose your edits and comments using ONLY the CriticMarkup syntax defined next. Return the ENTIRE document with your proposed changes expressed as CriticMarkup tokens -- never rewrite, paraphrase, or reformat anything outside those tokens. Specific task is to insert 1 new paragraph between paragraphs 2 and 3.
+
+[CRITICMARKUP RULES]
+Support exactly these five constructs:
+  {++text++}            insertion
+  {--text--}            deletion
+  {~~old~>new~~}        substitution (~> is the only arrow form)
+  {==text==}{>>comment<<} anchored comment
+  {>>comment<<}         bare (point) comment
+
+No nesting: no CriticMarkup token may contain another. No block-crossing: a token must open and close within one markdown block (paragraph, heading, list item, or table cell) -- express a multi-paragraph change as one token per paragraph.
+
+Whole-paragraph insert: to insert an entirely new paragraph, put the {++...++} token ALONE on its own line, immediately after the prior paragraph line and immediately before the following paragraph line, with no extra blank lines added above or below it.
+
+Worked example (structure-sensitive):
+
+Existing paragraph one.
+
+Existing paragraph two.
+{++This entire line is a new inserted paragraph.++}
+Existing paragraph three.
+
+[WHITESPACE AND LINE BREAKS]
+- Do not add or remove any blank lines except where required to place the CriticMarkup token itself.
+- Treat the existing blank-line structure as fixed: preserve all existing blank lines exactly as they are, unless a CriticMarkup token must appear on a line between two existing lines.
+- When inserting a new paragraph:
+  - Place the {++...++} token on its own line immediately after the preceding paragraph’s last line and immediately before the following paragraph’s first line.
+  - Do not introduce additional blank lines before or after the {++...++} line beyond what already exists in the input.
+- Do not add a new blank line at the end of the document. The last character of the document content before the closing ``` fence must be the last character of the original document’s last line (or that character enclosed in CriticMarkup).
+
+[LOCKED CONTENT]
+Text inside ⟦…⟧ and [image: …] is locked: never edit, move, or comment inside it.
+
+[HARD CONSTRAINTS]
+- Return the ENTIRE document below, not an excerpt or summary.
+- Change nothing outside your own CriticMarkup tokens.
+- The document below begins with three HTML comment lines (export header and legend). These are part of the document, not metadata to skip. Your response must begin with those exact three lines, unmodified:
+    <!-- Redline export from: Test 2.docx -->
+    <!-- no tracked changes or comments detected -->
+    <!-- CriticMarkup legend: {++ins++} {--del--} {~~old~>new~~} {==highlighted==} {>>comment<<} -->
+- No nesting of CriticMarkup tokens.
+- No block-crossing: each CriticMarkup token must open and close within a single markdown block (paragraph, heading, list item, or table cell).
+- Text inside ⟦…⟧ and [image: …] is read-only: do not change or comment within these spans.
+- Return your entire response inside ONE fenced code block: ```markdown ... ```, with no other output before or after it.
+- The last character before the closing ``` fence must correspond to the last character of the original document’s last line (or its CriticMarkup-wrapped equivalent). Do not add an extra trailing blank line.
+
+[DOCUMENT]
+```markdown
+<!-- Redline export from: Test 2.docx -->
+<!-- no tracked changes or comments detected -->
+<!-- CriticMarkup legend: {++ins++} {--del--} {~~old~>new~~} {==highlighted==} {>>comment<<} -->
+
+The Department of Homeland Security (DHS) plays a vital role in safeguarding the United States against a wide range of threats, including terrorism, natural disasters, and cyberattacks. Through its various components, DHS coordinates efforts across federal, state, and local agencies to ensure the security and resilience of the nation’s infrastructure and communities. Its mission encompasses border security, emergency response, and the protection of critical assets.
+
+In recent years, DHS has placed increased emphasis on leveraging technology and data analytics to enhance operational effectiveness. By adopting advanced tools for information sharing and risk assessment, the department aims to improve situational awareness and streamline decision-making processes. These initiatives support a proactive approach to identifying vulnerabilities and responding to emerging challenges in a rapidly evolving threat landscape.
+
+Ongoing collaboration with public and private sector partners remains essential to DHS’s success. Through joint exercises, information exchange, and coordinated planning, DHS fosters a unified response to incidents and promotes best practices in security and emergency management. This collective effort helps build a more secure and resilient nation, capable of adapting to new risks and maintaining public safety.
+```
