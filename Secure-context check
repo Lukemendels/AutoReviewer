@@ -1,0 +1,4 @@
+console.log(window.isSecureContext, !!(window.crypto && crypto.subtle));
+crypto.subtle.digest('SHA-256', new TextEncoder().encode('x'))
+  .then(b => console.log('OK', [...new Uint8Array(b)].slice(0,4)))
+  .catch(e => console.log('FAIL', e));
