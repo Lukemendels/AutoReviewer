@@ -75,6 +75,45 @@ item 2 is resolved (see below); item 1 (header echo) is the sole remaining open 
    consistency guard). Option (b) — deferring to M4c's `resolveEdits` split — was therefore
    unnecessary. Left here for provenance so it isn't reopened.
 
+## M4 acceptance hand-run (2026-07-09) — findings and the M4d cleanup pass
+
+Luke ran the M4 acceptance script by hand against the built HTML tool on 2026-07-09.
+Findings below drove the M4d cleanup pass (four PRs, one seam each); recorded here so the
+scope notes tell the whole story without that plan doc in hand.
+
+### Hand-run results
+
+| Test | What it exercised | Outcome | Finding(s) |
+| --- | --- | --- | --- |
+| 1 | (see Luke's own hand-run notes — not re-derived here; nothing in this pass's brief attributes a specific finding to Test 1 alone) | — | — |
+| 2 | Clean, 3-paragraph fixture; full Run Review loop including a deliberately bad paste mid-flow | Repair loop never recovered from the bad paste — every subsequent Validate click/paste threw uncaught; the shipped prompt also failed D1 (whole-paragraph insertion) until hand-improvised | F-1, F-4 |
+| 3 | Clean multi-page document with tables and soft line breaks (checked in Word via Ctrl+Shift+8) | `injectEdits` crashed with `splitRun: invalid range` on a run containing a soft break/tab/tracked deletion | F-2 |
+| 4 | Real air-cargo-style document (TSA program-rewrite text) with a pre-existing anchored comment already in the source | G2 failed on a byte-perfect echo: `export.js` renders the pre-existing `{==...==}{>>...<<}` as CriticMarkup, and the validator re-parses it as if the model had authored it. Full repro and root-cause writeup in the repo root file "Test 4 DHSChat 5.5 Report" | F-3 (fenced, not fixed, in M4d — full fix is M6a's sentinelization) |
+| 5 | Header-echo A/B (quoted-header bullet in `[HARD CONSTRAINTS]` present vs. absent), n=1 each arm, 5.5-low, medium-length clean doc | Both arms clean | Ruling R-1 (below) |
+
+F-5 (audit record has no model identity — 5.5-low/"Standard" and 5.5-medium/"Advanced" are
+different reviewers a sidecar couldn't tell apart, or either from 5.1) and F-6 (G2's
+trailing-newline message was generic, and `prompt.js`'s header-line derivation could drift
+from `validate.js`'s own) were noticed during the hand-run's audit-trail and code review,
+not tied to one single numbered test's failure output.
+
+### Ruling R-1 — header-echo bullet stays (Test 5, conditions attached)
+
+Conditions: 5.5-low ("Standard"), one medium-length clean document, n=1 per arm. Both the
+"quoted header lines present" arm (A) and the "quoted header lines absent" arm (B) passed
+G2 cleanly. **This is insufficient evidence to remove the quoted header lines** — PR #21's
+belt-and-suspenders reading (Deferred-to-Fable item 1, above) STANDS; `tests/prompt.test.js`
+does not flip. If a future run gathers more evidence (more arms, more models, longer
+documents) that changes this, re-open item 1 above rather than re-litigating it here.
+
+### GA plan model-tier note
+
+The GA plan is Standard = 5.5-low, Advanced = 5.5-medium. All M4 acceptance evidence
+gathered before this hand-run, except Test 5 above, was gathered on 5.5-medium or 5.1 —
+not on 5.5-low, the tier the GA "Standard" plan actually ships. M4d's audit `model` field
+(F-5) exists specifically so future evidence records which tier actually produced it,
+rather than requiring this kind of reconstruction from memory again.
+
 ## M4c step 2 (chunk.js) — decisions surfaced and settled
 
 1. **D1 — chunk-mode `promptVersion` is distinct from single-doc.** Confirmed: single-doc

@@ -18,6 +18,18 @@ function overlappingBlocks(blocks, start, end) {
   return (blocks || []).filter((b) => start < b.mdEnd && b.mdStart < end);
 }
 
+// M4d PR-4, F-6: true iff a G2 divergence is EXCLUSIVELY a trailing-newline mismatch --
+// everything up to firstDivergence.offset already matched, and everything from there to
+// the end of BOTH strings is nothing but newline characters (one side has more, or the
+// other has none). The generic G2 message is otherwise silent about this specific, common
+// mistake (an extra or missing blank line right before the closing fence), which is easy
+// to miss when the first-divergence context window shows nothing but whitespace.
+function isTrailingNewlineOnlyDivergence(a, b, firstDivergence) {
+  const tailA = a.slice(firstDivergence.offset);
+  const tailB = b.slice(firstDivergence.offset);
+  return /^\n*$/.test(tailA) && /^\n*$/.test(tailB);
+}
+
 function buildRepairPrompt() {
   return (
     "Your last response modified or omitted text outside your own CriticMarkup tokens " +
@@ -220,11 +232,18 @@ export function validateText({ responseMarkdown, exportedMarkdown, sourceMap }) 
     // tab on a real 50-page document. findFirstDivergence is O(n) and safe unconditionally;
     // the full diff (still capped -- see diff.js) is computed lazily, on demand, only when
     // a human actually asks to see it (the ratification UI's failure view).
+    const firstDivergence = findFirstDivergence(strippedResponse, exported);
+    let message = "the response's underlying text does not byte-match the exported document outside CriticMarkup tokens";
+    if (isTrailingNewlineOnlyDivergence(strippedResponse, exported, firstDivergence)) {
+      message +=
+        " The response is missing (or adds) a newline at the very end of the document. The last character before " +
+        "the closing fence must match the source exactly.";
+    }
     return {
       ok: false,
       gate: "G2",
-      message: "the response's underlying text does not byte-match the exported document outside CriticMarkup tokens",
-      firstDivergence: findFirstDivergence(strippedResponse, exported),
+      message,
+      firstDivergence,
       diffInputs: { a: strippedResponse, b: exported },
       repairPrompt: buildRepairPrompt(),
     };

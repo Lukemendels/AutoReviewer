@@ -164,6 +164,40 @@ describe("G2 -- fidelity (paraphrase drift)", () => {
     expect(result.gate).toBe("G2");
     expect(result.message).toMatch(/header/i);
   });
+
+  // M4d PR-4 (F-6): a trailing-newline-only divergence gets an extra, specific sentence --
+  // the generic G2 message alone is easy to misread when the first-divergence context
+  // window shows nothing but whitespace.
+  describe("trailing-newline-only divergence gets a clarifying message", () => {
+    it("response missing the final trailing newline", async () => {
+      const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+      expect(exported.endsWith("\n")).toBe(true);
+      const response = exported.slice(0, -1);
+      const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
+      expect(result.ok).toBe(false);
+      expect(result.gate).toBe("G2");
+      expect(result.message).toMatch(/missing \(or adds\) a newline at the very end/);
+      expect(result.message).toMatch(/last character before the closing fence must match the source exactly/);
+    });
+
+    it("response with an extra trailing newline", async () => {
+      const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+      const response = exported + "\n";
+      const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
+      expect(result.ok).toBe(false);
+      expect(result.gate).toBe("G2");
+      expect(result.message).toMatch(/missing \(or adds\) a newline at the very end/);
+    });
+
+    it("does NOT append the clarifying sentence for an ordinary mid-document paraphrase drift", async () => {
+      const { markdown: exported, sourceMap } = await exportFixture("plain-paragraphs");
+      const response = withEdit(exported, "This is the second paragraph", "This is now the second paragraph");
+      const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
+      expect(result.ok).toBe(false);
+      expect(result.gate).toBe("G2");
+      expect(result.message).not.toMatch(/missing \(or adds\) a newline/);
+    });
+  });
 });
 
 describe("G3 -- anchor resolution", () => {
