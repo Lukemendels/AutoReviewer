@@ -499,6 +499,17 @@ function renderRunReviewPanel(panel) {
         runValidation(candidates[0].content);
         return;
       }
+      // Fences were found but none survived the document-sized filter (candidates.length
+      // === 0 with noFencesFound false) -- a picker with zero buttons would be an
+      // unreachable dead end (F-1's sibling bug: runValidation never fires). Degrade to the
+      // same "use the entire paste" fallback as the no-fences-at-all case rather than
+      // stranding the user.
+      if (!noFencesFound && candidates.length === 0) {
+        pickerEl.innerHTML = `<p class="ar-hint">No document-sized fenced code block was found -- using the entire paste. If that's wrong, edit the text above and click Validate.</p>`;
+        runValidation(pastedText);
+        return;
+      }
+
       pickerEl.innerHTML = noFencesFound
         ? `<p class="ar-hint">No fenced code block was found -- using the entire paste. If that's wrong, edit the text above and click Validate.</p>`
         : `<p class="ar-hint">${candidates.length} plausible document-sized fenced blocks were found -- pick the right one:</p>`;
@@ -517,6 +528,11 @@ function renderRunReviewPanel(panel) {
 
     function runValidation(responseText) {
       pickerEl.innerHTML = "";
+      // The repair loop's documented recovery path: a G1-G4 failure lands the app on
+      // VALIDATION_FAILED, and acknowledgeFailure() is the only legal exit back to
+      // AWAITING_RESPONSE (state.js). Without this, every repair paste after the first
+      // failure throws "cannot submitResponse from state VALIDATION_FAILED" uncaught.
+      if (appState.state === STATES.VALIDATION_FAILED) appState.acknowledgeFailure();
       appState.submitResponse(responseText);
       if (ctx.chunkMode) {
         runChunkValidation(responseText);

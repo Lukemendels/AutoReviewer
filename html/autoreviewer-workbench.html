@@ -3583,6 +3583,11 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
           runValidation(candidates[0].content);
           return;
         }
+        if (!noFencesFound && candidates.length === 0) {
+          pickerEl.innerHTML = `<p class="ar-hint">No document-sized fenced code block was found -- using the entire paste. If that's wrong, edit the text above and click Validate.</p>`;
+          runValidation(pastedText);
+          return;
+        }
         pickerEl.innerHTML = noFencesFound ? `<p class="ar-hint">No fenced code block was found -- using the entire paste. If that's wrong, edit the text above and click Validate.</p>` : `<p class="ar-hint">${candidates.length} plausible document-sized fenced blocks were found -- pick the right one:</p>`;
         if (!noFencesFound) {
           candidates.forEach((c, i) => {
@@ -3598,6 +3603,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       }
       function runValidation(responseText) {
         pickerEl.innerHTML = "";
+        if (appState.state === STATES.VALIDATION_FAILED) appState.acknowledgeFailure();
         appState.submitResponse(responseText);
         if (ctx.chunkMode) {
           runChunkValidation(responseText);
