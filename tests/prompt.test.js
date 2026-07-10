@@ -163,3 +163,57 @@ describe("buildPrompt: chunk mode (M4c, spec §6.4 / architecture doc §7)", () 
     expect(hardConstraints).toContain("Text inside ⟦…⟧ and [image: …] is locked");
   });
 });
+
+describe("buildPrompt: M4d PR-3 (prompt fold from the hand-tuned DHSChat test prompt)", () => {
+  it("records the m4d template version", () => {
+    expect(PROMPT_TEMPLATE_VERSION).toBe("m4d-2026.07-1");
+  });
+
+  it("carries the structure-sensitive D1 worked example AND its WRONG counterpart", () => {
+    const { text } = buildPrompt({ persona: null, exportedMarkdown: EXPORTED, filename: "x" });
+    const rules = text.slice(text.indexOf("[CRITICMARKUP RULES]"), text.indexOf("[HARD CONSTRAINTS]"));
+    expect(rules).toContain("Worked example (structure-sensitive):");
+    expect(rules).toContain("Existing paragraph one.");
+    expect(rules).toContain("Existing paragraph three.");
+    expect(rules.toLowerCase()).toContain("wrong");
+    // The anti-example must actually differ from the correct one -- wrapped in its own
+    // blank lines -- not just repeat the same worked example under a WRONG label.
+    const wrongIdx = rules.toLowerCase().indexOf("wrong");
+    const anti = rules.slice(wrongIdx);
+    expect(anti).toContain("{++This entire line is a new inserted paragraph.++}\n\n  Existing paragraph three.");
+  });
+
+  it("carries the [WHITESPACE AND LINE BREAKS] section, including the closing-fence rule", () => {
+    const { text } = buildPrompt({ persona: null, exportedMarkdown: EXPORTED, filename: "x" });
+    const rules = text.slice(text.indexOf("[CRITICMARKUP RULES]"), text.indexOf("[HARD CONSTRAINTS]"));
+    expect(rules).toContain("[WHITESPACE AND LINE BREAKS]");
+    expect(rules.toLowerCase()).toContain("last character before");
+    expect(rules.toLowerCase()).toContain("closing ``` fence");
+  });
+
+  it("contains no smart quotes (U+2019) anywhere in the assembled prompt", () => {
+    const { text } = buildPrompt({ persona: null, exportedMarkdown: EXPORTED, filename: "x" });
+    expect(text).not.toContain("’");
+  });
+});
+
+describe("buildPrompt: M4d PR-3 (F-6, header derivation hardened against drift)", () => {
+  it("quotes exactly the sourceMap-derived header, not a hardcoded 3-line guess", () => {
+    // A synthetic header shaped differently from the real 3-line export header -- proves
+    // the derivation is content-anchored (blocks[0].mdStart), not a `split("\n").slice(0,3)`
+    // guess that would silently misquote a header of a different shape.
+    const doc = "<!-- one header line -->\n\nFirst real paragraph.\n";
+    const sourceMap = { blocks: [{ mdStart: doc.indexOf("First real paragraph.") }] };
+    const { text } = buildPrompt({ persona: null, exportedMarkdown: doc, filename: "x", sourceMap });
+    const hardConstraints = text.slice(text.indexOf("[HARD CONSTRAINTS]"), text.indexOf("[DOCUMENT]"));
+    expect(hardConstraints).toContain("<!-- one header line -->");
+    expect(hardConstraints).not.toContain("First real paragraph.");
+  });
+
+  it("falls back to the old first-3-lines guess when no sourceMap is given (back-compat)", () => {
+    const { text } = buildPrompt({ persona: null, exportedMarkdown: EXPORTED, filename: "x" });
+    const hardConstraints = text.slice(text.indexOf("[HARD CONSTRAINTS]"), text.indexOf("[DOCUMENT]"));
+    expect(hardConstraints).toContain("<!-- Redline export from: policy-draft.docx -->");
+    expect(hardConstraints).toContain("<!-- CriticMarkup legend:");
+  });
+});

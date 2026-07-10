@@ -36,13 +36,17 @@ function excerpt(edit, pad = 60) {
   return text.length > pad ? text.slice(0, pad) + "…" : text;
 }
 
-// `details`: { promptVersion, timestamps, filename, docxBytes, outputBytes, response,
-// sourceMap, persona, validationAttempts, rows, author }. `rows` are ratify.js's rows --
+// `details`: { promptVersion, model, timestamps, filename, docxBytes, outputBytes,
+// response, sourceMap, persona, validationAttempts, rows, author }. `model` is the
+// free-text "Model (as shown in DHSChat)" (M4d, F-5) -- 5.5-low ("Standard") and
+// 5.5-medium ("Advanced") are different reviewers, and a sidecar couldn't previously tell
+// them apart, or either from 5.1; recorded verbatim (free text, not an enum, since
+// DHSChat's own model list will change under us). `rows` are ratify.js's rows --
 // `{ id, edit, decision, reviewed }` -- covering EVERY ratified edit (accept and reject
 // alike; spec §12 wants the full decision record). `edit.anchor` (set by validate.js's
 // resolveEditAnchor for every resolved edit, accepted or not) is the resolvedAnchor.
 export async function buildAuditRecord(details, { digestImpl = (data) => crypto.subtle.digest("SHA-256", data) } = {}) {
-  const { promptVersion, timestamps, filename, docxBytes, outputBytes, response, sourceMap, persona, validationAttempts, rows, author } =
+  const { promptVersion, model, timestamps, filename, docxBytes, outputBytes, response, sourceMap, persona, validationAttempts, rows, author } =
     details;
 
   const sourceSha = await sha256Tag(digestImpl, docxBytes);
@@ -70,6 +74,7 @@ export async function buildAuditRecord(details, { digestImpl = (data) => crypto.
     schemaVersion: 1,
     appVersion: APP_VERSION,
     promptVersion,
+    model: model || "",
     timestamps,
     source: { filename, sha256: sourceSha },
     output: { sha256: await sha256Tag(digestImpl, outputBytes) },

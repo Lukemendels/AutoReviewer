@@ -24,6 +24,7 @@ export const DEFAULT_PERSONA = Object.freeze({
   styleExemplars: [],
   doNotTouch: [],
   commentConventions: "Prefer a brief inline comment when raising a question or flagging something for the author's judgment; use direct edits only for clear-cut fixes.",
+  assistantUrl: null,
   raw: null,
   warnings: [],
   isDefault: true,
@@ -148,6 +149,10 @@ export function parsePersona(markdown, { filename } = {}) {
     styleExemplars: values.styleExemplars,
     doNotTouch: values.doNotTouch,
     commentConventions: values.commentConventions,
+    // Optional (M4d): a link to the persona author's own assistant/profile, if the
+    // frontmatter carries one -- not required, not validated as a real URL (personas are
+    // never G2-checked, so there's no byte-equality contract to protect here).
+    assistantUrl: fields.assistantUrl || null,
     raw: markdown,
     warnings,
     isDefault: false,

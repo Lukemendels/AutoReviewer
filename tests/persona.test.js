@@ -96,6 +96,17 @@ describe("parsePersona: unstructured style exemplars", () => {
   });
 });
 
+describe("parsePersona: M4d assistantUrl (optional)", () => {
+  it("reads assistantUrl from frontmatter when present", () => {
+    const md = FULL_PERSONA.replace("okf: persona\n", "okf: persona\nassistantUrl: https://example.com/ria-economist\n");
+    expect(parsePersona(md).assistantUrl).toBe("https://example.com/ria-economist");
+  });
+
+  it("defaults to null when frontmatter has no assistantUrl", () => {
+    expect(parsePersona(FULL_PERSONA).assistantUrl).toBeNull();
+  });
+});
+
 describe("DEFAULT_PERSONA", () => {
   it("is clearly labeled as the built-in default, with no persona content to leak into do-not-touch", () => {
     expect(DEFAULT_PERSONA.isDefault).toBe(true);

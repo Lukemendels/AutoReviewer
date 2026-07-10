@@ -44,6 +44,7 @@ export function saveSession({ state, context, decisions = [] }) {
     personaRef: context.persona ? { name: context.persona.name, raw: context.persona.raw } : null,
     promptVersion: context.promptVersion,
     response: context.response,
+    model: context.model || "",
     decisions,
     savedAt: new Date().toISOString(),
   };
@@ -74,11 +75,12 @@ export function loadSession(saved) {
     repairAttempts: {},
     validationAttempts: [],
     timestamps: { loaded: null, injected: null },
+    model: saved.model || "",
     pendingDecisions: saved.decisions || [],
   };
 
   if (atLeast(saved.state, STATES.PROMPT_READY)) {
-    const built = buildPrompt({ persona, exportedMarkdown: saved.exported.markdown, filename: saved.filename });
+    const built = buildPrompt({ persona, exportedMarkdown: saved.exported.markdown, filename: saved.filename, sourceMap: saved.exported.sourceMap });
     context.promptText = built.text;
     context.tokenEstimate = built.tokenEstimate;
     context.documentWordCount = built.documentWordCount;

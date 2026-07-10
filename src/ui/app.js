@@ -220,6 +220,7 @@ function renderRunReviewPanel(panel) {
     }
 
     renderPersonaControls(panel, ctx);
+    renderModelField(panel, ctx);
     renderSessionBar(panel, ctx);
 
     if (state === STATES.DOC_LOADED || state === STATES.PROMPT_READY) {
@@ -255,12 +256,13 @@ function renderRunReviewPanel(panel) {
         exportedMarkdown: chunk.exportedMarkdown,
         filename: ctx.filename,
         chunk: { index: ctx.chunkIndex, total: ctx.chunks.length },
+        sourceMap: chunk.sourceMap,
       });
       appState.setPrompt(built);
       return;
     }
 
-    const built = buildPrompt({ persona, exportedMarkdown: ctx.exported.markdown, filename: ctx.filename });
+    const built = buildPrompt({ persona, exportedMarkdown: ctx.exported.markdown, filename: ctx.filename, sourceMap: ctx.exported.sourceMap });
     if (!built.overThreshold) {
       appState.setPrompt(built);
       return;
@@ -273,6 +275,7 @@ function renderRunReviewPanel(panel) {
       exportedMarkdown: chunks[0].exportedMarkdown,
       filename: ctx.filename,
       chunk: { index: 0, total: chunks.length },
+      sourceMap: chunks[0].sourceMap,
     });
     appState.setPrompt(chunk0Built);
   }
@@ -402,6 +405,27 @@ function renderRunReviewPanel(panel) {
     const dz = wrap.querySelector("#ar-persona-dropzone");
     const input = wrap.querySelector("#ar-persona-input");
     attachDropZone(dz, input, { onFiles: handlePersonaFiles });
+  }
+
+  // M4d provenance (F-5): free-text "which model produced this response" -- 5.5-low
+  // ("Standard") and 5.5-medium ("Advanced") are different reviewers, and free text is
+  // deliberate (a dropdown would go stale the moment DHSChat's own model list changes).
+  // Mutates ctx directly rather than routing through appState, the same way
+  // renderRatifyStep's author field is read straight off its own input rather than a
+  // context field -- ctx is the one stable object state.js ever hands out (never
+  // reassigned, only Object.assign'd into), so this persists across re-renders without
+  // forcing a full re-render (and lost focus/cursor) on every keystroke.
+  function renderModelField(container, ctx) {
+    const wrap = document.createElement("div");
+    wrap.className = "ar-model-field ar-field";
+    wrap.innerHTML = `
+      <label for="ar-model">Model (as shown in DHSChat)</label>
+      <input type="text" id="ar-model" class="ar-model" value="${escapeHtml(ctx.model || "")}" placeholder="e.g. GPT-5.5 (Standard)" />
+    `;
+    container.appendChild(wrap);
+    wrap.querySelector("#ar-model").addEventListener("input", (e) => {
+      ctx.model = e.target.value;
+    });
   }
 
   // M4c: the "Part i of N" indicator shown throughout chunk mode, both on the live prompt
@@ -582,6 +606,7 @@ function renderRunReviewPanel(panel) {
           exportedMarkdown: nextChunk.exportedMarkdown,
           filename: ctx.filename,
           chunk: { index: ctx.chunkIndex + 1, total: ctx.chunks.length },
+          sourceMap: nextChunk.sourceMap,
         });
         appState.chunkAdvance({
           promptText: nextBuilt.text,
@@ -774,6 +799,7 @@ function renderRunReviewPanel(panel) {
         try {
           const auditRecord = await buildAuditRecord({
             promptVersion: ctx.promptVersion,
+            model: ctx.model,
             timestamps: ctx.timestamps,
             filename: ctx.filename,
             docxBytes: ctx.docxBytes,

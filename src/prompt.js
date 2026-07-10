@@ -7,7 +7,7 @@
 // past review's exact prompt is reconstructable later.
 import { DEFAULT_PERSONA } from "./persona.js";
 
-export const PROMPT_TEMPLATE_VERSION = "m4a-2026.07-1";
+export const PROMPT_TEMPLATE_VERSION = "m4d-2026.07-1";
 
 // Chunk-mode prompts (M4c) prepend a part-N-of-M preamble to [TASK] -- distinct template
 // text from the single-doc prompt, so it gets its own version rather than silently sharing
@@ -79,6 +79,13 @@ function buildTaskSection(chunk) {
   );
 }
 
+// Folded from the repo's hand-tuned "DHSChat Prompt (adjusted after Test 2)" (M4d PR-3),
+// which one-shot D1 (whole-paragraph insertion) on GPT-5.5 where the shipped template
+// hadn't. The worked example, its WRONG counterpart, and the [WHITESPACE AND LINE BREAKS]
+// rules are folded in verbatim (smart quotes converted to ASCII apostrophes; the
+// test-harness-specific task line and the pre-existing-CriticMarkup language in that file
+// are deliberately NOT folded here -- the latter is M6a scope, made unreachable by the
+// M4d PR-2 annotation fence).
 function buildCriticMarkupRulesSection() {
   return (
     "[CRITICMARKUP RULES]\n" +
@@ -96,27 +103,55 @@ function buildCriticMarkupRulesSection() {
     "  edited:   The rule {~~shall~>must~~} apply to all {--air--} carriers.\n" +
     "            {==all carriers==}{>>Confirm scope includes indirect air carriers.<<}\n\n" +
     "Whole-paragraph insert: to insert an entirely new paragraph, put the {++...++} token " +
-    "ALONE on its own line, between the two existing paragraphs it separates -- never place " +
-    "a newline character inside a mid-paragraph insertion's own text. Worked example:\n" +
-    "  Existing paragraph one.\n" +
+    "ALONE on its own line, immediately after the prior paragraph line and immediately " +
+    "before the following paragraph line, with no extra blank lines added above or below it.\n\n" +
+    "Worked example (structure-sensitive):\n\n" +
+    "  Existing paragraph one.\n\n" +
+    "  Existing paragraph two.\n" +
     "  {++This entire line is a new inserted paragraph.++}\n" +
+    "  Existing paragraph three.\n\n" +
+    "WRONG -- do not wrap the inserted line in blank lines of its own:\n\n" +
     "  Existing paragraph two.\n\n" +
+    "  {++This entire line is a new inserted paragraph.++}\n\n" +
+    "  Existing paragraph three.\n\n" +
+    "[WHITESPACE AND LINE BREAKS]\n" +
+    "- Do not add or remove any blank lines except where required to place the CriticMarkup " +
+    "token itself.\n" +
+    "- Treat the existing blank-line structure as fixed: preserve all existing blank lines " +
+    "exactly as they are, unless a CriticMarkup token must appear on a line between two " +
+    "existing lines.\n" +
+    "- When inserting a new paragraph, do not introduce additional blank lines before or " +
+    "after the {++...++} line beyond what already exists in the input.\n" +
+    "- Do not add a new blank line at the end of the document. The last character before " +
+    "the closing ``` fence must match the source document exactly.\n\n" +
     "Byte preservation: every character outside your CriticMarkup tokens -- including the " +
-    "document's three leading header comment lines and its FINAL trailing newline at the " +
+    "document's leading header comment lines and its FINAL trailing newline at the " +
     "very end -- must be returned exactly as given, unchanged."
   );
 }
 
-function buildHardConstraintsSection(persona, exportedMarkdown, chunk) {
-  // FABLE-REVIEW (M4 milestone): re-emits the export's 3 header lines here in addition to
+// M4d PR-3, F-6: matches validate.js's validateText D7 derivation exactly (headerContent,
+// content-anchored to the export's own header text) instead of a static "first 3 lines"
+// slice, so the prompt's quoted header and G2's own header check can never drift apart
+// again. Falls back to the old line-count guess only when no sourceMap is available (e.g.
+// a caller that hasn't been updated yet) -- every production call site passes one.
+function deriveHeaderContent(exportedMarkdown, sourceMap) {
+  const blocks = sourceMap && sourceMap.blocks;
+  if (!blocks) return exportedMarkdown.split("\n").slice(0, 3).join("\n");
+  const rawHeaderPrefix = blocks.length ? exportedMarkdown.slice(0, blocks[0].mdStart) : exportedMarkdown;
+  return rawHeaderPrefix.replace(/\s+$/, "");
+}
+
+function buildHardConstraintsSection(persona, exportedMarkdown, chunk, sourceMap) {
+  // FABLE-REVIEW (M4 milestone): re-emits the export's header lines here in addition to
   // the verbatim [DOCUMENT] embedding below -- §4 single-source vs Issue #10, two conformant
   // readings. Deferred ruling; see docs/plans/m4-scope-notes.md -> "Deferred to Fable".
   // Do not "resolve" this ad hoc.
   //
   // Only chunk 0 (or the single-doc case, chunk == null) actually carries the document's
-  // 3-line header -- chunk.js's splitIntoChunks folds the header into chunk 0 and starts
-  // every later chunk's own slice directly at its top-level heading (M4c, architecture doc
-  // §7). Instructing a later chunk to echo 3 header lines it was never given would be an
+  // header -- chunk.js's splitIntoChunks folds the header into chunk 0 and starts every
+  // later chunk's own slice directly at its top-level heading (M4c, architecture doc §7).
+  // Instructing a later chunk to echo header lines it was never given would be an
   // instruction the model can't satisfy, and validateText's own header check (derived from
   // that chunk's own sourceMap.blocks[0].mdStart, which is 0) doesn't require it either.
   const isFirstChunk = !chunk || chunk.index === 0;
@@ -126,11 +161,11 @@ function buildHardConstraintsSection(persona, exportedMarkdown, chunk) {
     "- Change nothing outside your own CriticMarkup tokens.",
   ];
   if (isFirstChunk) {
-    const headerLines = exportedMarkdown.split("\n").slice(0, 3).join("\n");
+    const headerLines = deriveHeaderContent(exportedMarkdown, sourceMap);
     lines.push(
-      "- The document below begins with three HTML comment lines (export header and legend). " +
+      "- The document below begins with HTML comment lines (export header and legend). " +
         "These are part of the document, not metadata to skip. Your response must begin with " +
-        "those exact three lines, unmodified:\n" +
+        "those exact lines, unmodified:\n" +
         headerLines
           .split("\n")
           .map((l) => "    " + l)
@@ -161,14 +196,14 @@ function buildDocumentSection(exportedMarkdown) {
 // [TASK] and (b) drops the header-echo bullet from [HARD CONSTRAINTS] for any chunk after
 // the first, which never carries the header. See CHUNK_PROMPT_TEMPLATE_VERSION's comment
 // for why chunk mode gets its own promptVersion.
-export function buildPrompt({ persona, exportedMarkdown, filename, chunk = null }) {
+export function buildPrompt({ persona, exportedMarkdown, filename, chunk = null, sourceMap = null }) {
   const p = persona || DEFAULT_PERSONA;
 
   const sections = [
     buildPersonaSection(p),
     buildTaskSection(chunk),
     buildCriticMarkupRulesSection(),
-    buildHardConstraintsSection(p, exportedMarkdown, chunk),
+    buildHardConstraintsSection(p, exportedMarkdown, chunk, sourceMap),
     buildDocumentSection(exportedMarkdown),
   ];
   const text = sections.join("\n\n");

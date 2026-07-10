@@ -122,6 +122,18 @@ describe("buildAuditRecord: injection.counts matches what was actually injected"
   });
 });
 
+describe("buildAuditRecord: M4d provenance (F-5, model field)", () => {
+  it("records the model string verbatim, alongside promptVersion", async () => {
+    const record = await buildAuditRecord(await baseDetails({ model: "GPT-5.5 (Standard)" }), { digestImpl: fakeDigestImpl });
+    expect(record.model).toBe("GPT-5.5 (Standard)");
+  });
+
+  it("defaults to an empty string when no model was recorded", async () => {
+    const record = await buildAuditRecord(await baseDetails({ model: undefined }), { digestImpl: fakeDigestImpl });
+    expect(record.model).toBe("");
+  });
+});
+
 describe("buildAuditRecord: no load path (immutability, G-3)", () => {
   it("the module exposes no loadAudit / parse function", async () => {
     const auditModule = await import("../src/audit.js");
