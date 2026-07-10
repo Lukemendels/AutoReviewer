@@ -1,0 +1,983 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoReviewer &mdash; Redline Export</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#0f172a; --muted:#64748b;
+    --line:#d7dce3; --accent:#4f46e5; --accent-soft:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  .wrap{max-width:900px; margin:0 auto; padding:32px 20px 60px}
+  header h1{font-size:22px; margin:0 0 4px; letter-spacing:-0.01em}
+  header p{margin:0; color:var(--muted); font-size:13.5px}
+  .rl-note{
+    margin-top:14px; padding:10px 14px; border:1px solid var(--line); border-radius:10px;
+    background:var(--accent-soft); color:var(--ink); font-size:13px; font-weight:600;
+  }
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:18px; margin-top:20px;
+  }
+  .rl-dropzone{
+    border:2px dashed var(--line); border-radius:12px; padding:28px 16px; text-align:center;
+    color:var(--muted); cursor:pointer; margin-top:8px;
+  }
+  .rl-dropzone.ar-drag-over{border-color:var(--accent); background:var(--accent-soft); color:var(--ink)}
+  .rl-error{
+    display:none; margin-top:14px; padding:12px 14px; border:1px solid #fecaca; background:#fef2f2;
+    border-radius:10px; color:#991b1b; font-size:13.5px; white-space:pre-wrap;
+  }
+  #rl-results{display:none}
+  .rl-summary{font-size:13.5px; color:var(--muted); margin-top:14px}
+  .rl-warning{
+    display:none; margin-top:10px; padding:10px 14px; border:1px solid #fde68a; background:#fffbeb;
+    border-radius:10px; color:#92400e; font-size:13px;
+  }
+  .rl-output{
+    width:100%; height:420px; resize:vertical; font:12.5px/1.5 "SF Mono",Menlo,Consolas,monospace;
+    padding:12px; border:1px solid var(--line); border-radius:10px; background:#fcfdff; color:var(--ink);
+    white-space:pre; tab-size:2; margin-top:12px;
+  }
+  .rl-controls{display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap}
+  .rl-controls button{
+    font:inherit; font-size:13px; font-weight:600; padding:7px 13px; border-radius:8px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink); cursor:pointer;
+  }
+  button.rl-primary{background:var(--accent); border-color:var(--accent); color:#fff}
+  .rl-optional-hint{font-size:11.5px; color:var(--muted)}
+  .foot{margin-top:26px; font-size:12px; color:var(--muted); text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>AutoReviewer &mdash; Redline Export</h1>
+    <p>Convert a .docx with tracked changes and comments into CriticMarkup markdown you can paste into an LLM chat.</p>
+  </header>
+
+  <p class="rl-note">Read-only. This tool does not modify your document.</p>
+
+  <div id="rl-app" class="card">
+    <div class="rl-dropzone" id="rl-dropzone">
+      Drop a .docx file here, or click to choose one.
+      <input type="file" id="rl-file" accept=".docx" style="display:none">
+    </div>
+
+    <div class="rl-error" id="rl-error"></div>
+
+    <div id="rl-results">
+      <p class="rl-summary" id="rl-summary"></p>
+      <p class="rl-warning" id="rl-warning"></p>
+      <textarea class="rl-output" id="rl-output" readonly></textarea>
+      <div class="rl-controls">
+        <button type="button" id="rl-copy" class="rl-primary">Copy markdown</button>
+        <button type="button" id="rl-download-md">Download .md</button>
+        <button type="button" id="rl-download-sourcemap">Download source map (.json)</button>
+        <span class="rl-optional-hint">Source map is optional &mdash; not needed for the chat paste.</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">Offline &middot; no dependencies &middot; no data leaves this page</div>
+</div>
+
+<!-- Tool bundle (esbuild output, inlined by build/build-redline.js) -->
+<script>
+(() => {
+  // src/zip/reader.js
+  async function unzip(buf) {
+    const dv = new DataView(buf), bytes = new Uint8Array(buf), len = bytes.length;
+    let eocd = -1;
+    for (let i = len - 22; i >= Math.max(0, len - 22 - 65535); i--) {
+      if (dv.getUint32(i, true) === 101010256) {
+        eocd = i;
+        break;
+      }
+    }
+    if (eocd < 0) throw new Error("not a valid .docx (no ZIP end record)");
+    const count = dv.getUint16(eocd + 10, true);
+    let p = dv.getUint32(eocd + 16, true);
+    const entries = {};
+    const order = [];
+    for (let n = 0; n < count; n++) {
+      if (dv.getUint32(p, true) !== 33639248) break;
+      const versionMadeBy = dv.getUint16(p + 4, true);
+      const versionNeeded = dv.getUint16(p + 6, true);
+      const flags = dv.getUint16(p + 8, true);
+      const method = dv.getUint16(p + 10, true);
+      const dosTime = dv.getUint16(p + 12, true);
+      const dosDate = dv.getUint16(p + 14, true);
+      const crc32 = dv.getUint32(p + 16, true);
+      const compSize = dv.getUint32(p + 20, true);
+      const uncompSize = dv.getUint32(p + 24, true);
+      const nameLen = dv.getUint16(p + 28, true);
+      const extraLen = dv.getUint16(p + 30, true);
+      const commLen = dv.getUint16(p + 32, true);
+      const internalAttrs = dv.getUint16(p + 36, true);
+      const externalAttrs = dv.getUint32(p + 38, true);
+      const localOff = dv.getUint32(p + 42, true);
+      const name = new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + nameLen));
+      entries[name] = {
+        method,
+        compSize,
+        localOff,
+        versionMadeBy,
+        versionNeeded,
+        flags,
+        dosTime,
+        dosDate,
+        crc32,
+        uncompSize,
+        internalAttrs,
+        externalAttrs
+      };
+      order.push(name);
+      p += 46 + nameLen + extraLen + commLen;
+    }
+    return { dv, bytes, entries, order };
+  }
+  async function inflateRaw(u8) {
+    const stream = new Blob([u8]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+  async function readEntryBytes(zip, name) {
+    const e = zip.entries[name];
+    if (!e) return null;
+    if (zip.dv.getUint32(e.localOff, true) !== 67324752) throw new Error("bad local header: " + name);
+    const nameLen = zip.dv.getUint16(e.localOff + 26, true);
+    const extraLen = zip.dv.getUint16(e.localOff + 28, true);
+    const start = e.localOff + 30 + nameLen + extraLen;
+    const comp = zip.bytes.subarray(start, start + e.compSize);
+    if (e.method === 0) return comp;
+    if (e.method === 8) return inflateRaw(comp);
+    throw new Error("unsupported compression in " + name);
+  }
+  async function readEntry(zip, name) {
+    const bytes = await readEntryBytes(zip, name);
+    return bytes && new TextDecoder("utf-8").decode(bytes);
+  }
+
+  // src/ooxml/parse.js
+  var NS = {
+    w: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    w14: "http://schemas.microsoft.com/office/word/2010/wordml",
+    w15: "http://schemas.microsoft.com/office/word/2012/wordml",
+    r: "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+  };
+  var wAttr = (el, n) => el.getAttributeNS(NS.w, n) ?? el.getAttribute("w:" + n);
+  var w14Attr = (el, n) => el.getAttributeNS(NS.w14, n) ?? el.getAttribute("w14:" + n);
+  var w15Attr = (el, n) => el.getAttributeNS(NS.w15, n) ?? el.getAttribute("w15:" + n);
+  var rAttr = (el, n) => el.getAttributeNS(NS.r, n) ?? el.getAttribute("r:" + n);
+  var kids = (el, ln) => [...el.children].filter((c) => c.localName === ln);
+  var kid = (el, ln) => [...el.children].find((c) => c.localName === ln) || null;
+  var basename = (p) => String(p).split("/").pop().split("\\").pop();
+  var fmtDate = (d) => {
+    if (!d) return "";
+    const t = d.indexOf("T");
+    return t > 0 ? d.slice(0, t) : d;
+  };
+  function parseXml(xml, DOMParserCtor) {
+    const Ctor = DOMParserCtor || globalThis.DOMParser;
+    return new Ctor().parseFromString(xml, "application/xml");
+  }
+  function parseRels(xml, DOMParserCtor) {
+    const map = {};
+    if (!xml) return map;
+    const doc = parseXml(xml, DOMParserCtor);
+    for (const rel of doc.getElementsByTagName("*")) {
+      if (rel.localName === "Relationship") {
+        const id = rel.getAttribute("Id"), target = rel.getAttribute("Target");
+        if (id) map[id] = target;
+      }
+    }
+    return map;
+  }
+
+  // src/ooxml/export.js
+  function pushRange(arr, start, end) {
+    if (start === end) return;
+    const last = arr[arr.length - 1];
+    if (last && last[1] === start) last[1] = end;
+    else arr.push([start, end]);
+  }
+  function clipRanges(arr, pos) {
+    const out = [];
+    for (const [s, e] of arr) {
+      if (s >= pos) continue;
+      out.push([s, Math.min(e, pos)]);
+    }
+    return out;
+  }
+  var Composer = class {
+    constructor() {
+      this.out = "";
+      this.docRuns = [];
+      this.synthetic = [];
+      this.locked = [];
+      this.blocks = [];
+    }
+    get pos() {
+      return this.out.length;
+    }
+    writeSynthetic(str) {
+      if (!str) return;
+      const s = this.pos;
+      this.out += str;
+      pushRange(this.synthetic, s, this.pos);
+    }
+    writeLocked(str) {
+      if (!str) return;
+      const s = this.pos;
+      this.out += str;
+      pushRange(this.synthetic, s, this.pos);
+      pushRange(this.locked, s, this.pos);
+    }
+    writeDocText(str, runIndex, charOffset) {
+      if (!str) return;
+      const s = this.pos;
+      this.out += str;
+      this.docRuns.push({ mdStart: s, mdEnd: this.pos, runIndex, charOffset });
+    }
+    rollbackTo(pos) {
+      this.out = this.out.slice(0, pos);
+      this.synthetic = clipRanges(this.synthetic, pos);
+      this.locked = clipRanges(this.locked, pos);
+      this.blocks = this.blocks.filter((b) => b.mdStart < pos);
+    }
+    mergeFrom(other) {
+      const shift = this.pos;
+      this.out += other.out;
+      for (const r of other.synthetic) pushRange(this.synthetic, r[0] + shift, r[1] + shift);
+      for (const r of other.locked) pushRange(this.locked, r[0] + shift, r[1] + shift);
+      for (const b of other.blocks) {
+        this.blocks.push({
+          ...b,
+          mdStart: b.mdStart + shift,
+          mdEnd: b.mdEnd + shift,
+          runs: b.runs.map((r) => ({ ...r, mdStart: r.mdStart + shift, mdEnd: r.mdEnd + shift }))
+        });
+      }
+    }
+  };
+  function buildCommentsData(commentsXml, extXml, DOMParserImpl) {
+    const comments = {};
+    const childrenMap = {};
+    const paraIdToId = {};
+    if (commentsXml) {
+      const doc = parseXml(commentsXml, DOMParserImpl);
+      for (const cm of doc.getElementsByTagName("*")) {
+        if (cm.localName !== "comment") continue;
+        const id = wAttr(cm, "id");
+        const author = wAttr(cm, "author") || "Unknown";
+        const date = fmtDate(wAttr(cm, "date"));
+        const ps = [];
+        for (const p of cm.getElementsByTagName("*")) {
+          if (p.localName === "p") {
+            ps.push(p);
+            const pid = w14Attr(p, "paraId");
+            if (pid) paraIdToId[pid] = id;
+          }
+        }
+        const text = ps.map((p) => collectRunsText(p).trim()).filter(Boolean).join(" ") || "(empty comment)";
+        comments[id] = { id, author, date, text, done: false, parentId: null };
+      }
+    }
+    if (extXml) {
+      const doc = parseXml(extXml, DOMParserImpl);
+      for (const ce of doc.getElementsByTagName("*")) {
+        if (ce.localName !== "commentEx") continue;
+        const pid = w15Attr(ce, "paraId");
+        const parent = w15Attr(ce, "paraIdParent");
+        const done = w15Attr(ce, "done");
+        const id = paraIdToId[pid];
+        if (id == null || !comments[id]) continue;
+        comments[id].done = done === "1" || done === "true";
+        if (parent) {
+          const par = paraIdToId[parent];
+          if (par != null) comments[id].parentId = par;
+        }
+      }
+    }
+    for (const id in comments) {
+      const pid = comments[id].parentId;
+      if (pid != null) (childrenMap[pid] = childrenMap[pid] || []).push(id);
+    }
+    return { comments, childrenMap };
+  }
+  function commentToken(c, depth) {
+    const arrow = depth > 0 ? "\u21B3".repeat(depth) + " " : "";
+    const date = c.date ? " (" + c.date + ")" : "";
+    const res = c.done ? " [resolved]" : "";
+    return "{>>" + arrow + c.author + date + res + ": " + c.text + "<<}";
+  }
+  function renderReplies(comments, childrenMap, parentId, depth) {
+    let s = "";
+    for (const childId of childrenMap[parentId] || []) {
+      s += commentToken(comments[childId], depth);
+      s += renderReplies(comments, childrenMap, childId, depth + 1);
+    }
+    return s;
+  }
+  function renderThread(comments, childrenMap, id) {
+    const c = comments[id];
+    if (!c) return "";
+    return commentToken(c, 0) + renderReplies(comments, childrenMap, id, 1);
+  }
+  function runText(r) {
+    let s = "";
+    for (const c of r.children) {
+      if (c.localName === "t" || c.localName === "delText") s += c.textContent;
+      else if (c.localName === "tab") s += " ";
+      else if (c.localName === "br" || c.localName === "cr") s += "  \n";
+    }
+    return s;
+  }
+  function runEmph(r) {
+    const rPr = kid(r, "rPr");
+    let b = false, i = false;
+    if (rPr) {
+      const be = kid(rPr, "b");
+      if (be) {
+        const v = wAttr(be, "val");
+        b = !(v === "0" || v === "false");
+      }
+      const ie = kid(rPr, "i");
+      if (ie) {
+        const v = wAttr(ie, "val");
+        i = !(v === "0" || v === "false");
+      }
+    }
+    return { b, i };
+  }
+  function emphParts(s, { b, i }) {
+    if (!s || !s.trim()) return { lead: s || "", core: "", trail: "", openMark: "", closeMark: "" };
+    const lead = s.match(/^\s*/)[0], trail = s.match(/\s*$/)[0];
+    const core = s.slice(lead.length, s.length - trail.length);
+    const openMark = (b ? "**" : "") + (i ? "*" : "");
+    const closeMark = (i ? "*" : "") + (b ? "**" : "");
+    return { lead, core, trail, openMark, closeMark };
+  }
+  function emph(s, be) {
+    const { lead, core, trail, openMark, closeMark } = emphParts(s, be);
+    return lead + openMark + core + closeMark + trail;
+  }
+  function collectRunsText(el) {
+    let s = "";
+    for (const c of el.children) {
+      if (c.localName === "r") s += emph(runText(c), runEmph(c));
+      else if (["ins", "del", "hyperlink", "smartTag"].includes(c.localName)) s += collectRunsText(c);
+    }
+    return s;
+  }
+  function collectRunsTextIndexed(el, runCounter) {
+    let s = "";
+    for (const c of el.children) {
+      if (c.localName === "r") {
+        s += emph(runText(c), runEmph(c));
+        runCounter.next++;
+      } else if (["ins", "del", "hyperlink", "smartTag"].includes(c.localName)) s += collectRunsTextIndexed(c, runCounter);
+    }
+    return s;
+  }
+  function findImage(r, rels) {
+    for (const e of r.getElementsByTagName("*")) {
+      if (e.localName === "blip") {
+        const id = rAttr(e, "embed") || rAttr(e, "link");
+        if (id && rels[id]) return basename(rels[id]);
+        if (id) return "image";
+      }
+      if (e.localName === "imagedata") {
+        const id = rAttr(e, "id");
+        if (id && rels[id]) return basename(rels[id]);
+      }
+    }
+    return null;
+  }
+  function buildSegments(p, rels, runCounter) {
+    const segs = [];
+    let fieldState = null;
+    for (const c of p.children) {
+      const ln = c.localName;
+      if (ln === "commentRangeStart") segs.push({ t: "cstart", id: wAttr(c, "id") });
+      else if (ln === "commentRangeEnd") segs.push({ t: "cend", id: wAttr(c, "id") });
+      else if (ln === "fldSimple") {
+        const instr = wAttr(c, "instr") || "";
+        const cached = collectRunsTextIndexed(c, runCounter).trim();
+        segs.push({ t: "locked", s: "\u27E6field: " + (instr.trim() || cached || "field") + "\u27E7" });
+      } else if (ln === "sdt") {
+        const content = kid(c, "sdtContent");
+        let inner = "";
+        if (content) {
+          for (const cc of content.children) {
+            if (cc.localName === "r") {
+              inner += emph(runText(cc), runEmph(cc));
+              runCounter.next++;
+            } else if (["ins", "del", "hyperlink", "smartTag"].includes(cc.localName)) inner += collectRunsTextIndexed(cc, runCounter);
+          }
+        }
+        if (inner.trim()) segs.push({ t: "locked", s: inner });
+      } else if (ln === "r") {
+        const runIndex = runCounter.next++;
+        const fldChar = kid(c, "fldChar");
+        if (fldChar) {
+          const type = wAttr(fldChar, "fldCharType");
+          if (type === "begin") fieldState = { buf: "", instr: "" };
+          else if (type === "end") {
+            if (fieldState) {
+              const shown = fieldState.instr.trim() || fieldState.buf.trim() || "field";
+              segs.push({ t: "locked", s: "\u27E6field: " + shown + "\u27E7" });
+            }
+            fieldState = null;
+          }
+          continue;
+        }
+        const instrText = kid(c, "instrText");
+        if (instrText && fieldState) {
+          fieldState.instr += instrText.textContent;
+          continue;
+        }
+        const img = findImage(c, rels);
+        if (img) {
+          segs.push({ t: "locked", s: "[image: " + img + "]" });
+          continue;
+        }
+        const raw = runText(c);
+        if (fieldState) {
+          if (raw) fieldState.buf += raw;
+          continue;
+        }
+        if (!raw) {
+          const hasEmbed = [...c.getElementsByTagName("*")].some((e) => ["oMath", "object", "pict"].includes(e.localName));
+          if (hasEmbed) {
+            segs.push({ t: "locked", s: "\u27E6object\u27E7" });
+            continue;
+          }
+        }
+        const { b, i } = runEmph(c);
+        if (raw) segs.push({ t: "text", raw, b, i, runIndex });
+      } else if (ln === "ins") {
+        segs.push({ t: "ins", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date") });
+      } else if (ln === "del") {
+        segs.push({ t: "del", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date") });
+      } else if (ln === "hyperlink") {
+        const txt = collectRunsTextIndexed(c, runCounter);
+        const url = rels[rAttr(c, "id")] || "";
+        segs.push({ t: "opaque", s: url ? "[" + txt + "](" + url + ")" : txt });
+      }
+    }
+    return segs;
+  }
+  function normalize(segs) {
+    const merged = [];
+    for (const s of segs) {
+      const last = merged[merged.length - 1];
+      if (last && last.t === s.t && (s.t === "ins" || s.t === "del")) last.s += s.s;
+      else merged.push({ ...s });
+    }
+    const out = [];
+    for (let i = 0; i < merged.length; i++) {
+      const curr = merged[i], next = merged[i + 1];
+      if (curr.t === "del" && next && next.t === "ins") {
+        out.push({ t: "sub", del: curr.s, ins: next.s, author: next.author, date: next.date });
+        i++;
+      } else out.push(curr);
+    }
+    return out;
+  }
+  function authorTag(s, annotate) {
+    return annotate && s.author ? "{>>\u2014" + s.author + "<<}" : "";
+  }
+  function cendAfter(segs, i, id) {
+    for (let j = i + 1; j < segs.length; j++) if (segs[j].t === "cend" && segs[j].id === id) return true;
+    return false;
+  }
+  function writeTextSegTracked(local, seg) {
+    const { lead, core, trail, openMark, closeMark } = emphParts(seg.raw, { b: seg.b, i: seg.i });
+    let charOffset = 0;
+    if (lead) {
+      local.writeDocText(lead, seg.runIndex, charOffset);
+      charOffset += lead.length;
+    }
+    if (openMark) local.writeSynthetic(openMark);
+    if (core) {
+      local.writeDocText(core, seg.runIndex, charOffset);
+      charOffset += core.length;
+    }
+    if (closeMark) local.writeSynthetic(closeMark);
+    if (trail) local.writeDocText(trail, seg.runIndex, charOffset);
+  }
+  function serializeSegsTracked(local, segs, ctx) {
+    let openId = null;
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      if (s.t === "text") writeTextSegTracked(local, s);
+      else if (s.t === "locked") local.writeLocked(s.s);
+      else if (s.t === "opaque") local.writeSynthetic(s.s);
+      else if (s.t === "ins") {
+        local.writeSynthetic("{++" + s.s + "++}" + authorTag(s, ctx.annotate));
+        ctx.counts.ins++;
+      } else if (s.t === "del") {
+        local.writeSynthetic("{--" + s.s + "--}" + authorTag(s, ctx.annotate));
+        ctx.counts.del++;
+      } else if (s.t === "sub") {
+        local.writeSynthetic("{~~" + s.del + "~>" + s.ins + "~~}" + authorTag(s, ctx.annotate));
+        ctx.counts.sub++;
+      } else if (s.t === "cstart") {
+        if (openId === null && cendAfter(segs, i, s.id)) {
+          openId = s.id;
+          local.writeSynthetic("{==");
+        } else if (!ctx.emitted.has(s.id)) {
+          local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
+          ctx.emitted.add(s.id);
+        }
+      } else if (s.t === "cend") {
+        if (openId === s.id) {
+          local.writeSynthetic("==}");
+          openId = null;
+          if (!ctx.emitted.has(s.id)) {
+            local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
+            ctx.emitted.add(s.id);
+          }
+        }
+      }
+    }
+    if (openId !== null) {
+      local.writeSynthetic("==}");
+      if (!ctx.emitted.has(openId)) {
+        local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, openId));
+        ctx.emitted.add(openId);
+      }
+    }
+  }
+  function renderParagraphContent(p, rels, ctx) {
+    const pPr = kid(p, "pPr");
+    let style = "", isList = false, ilvl = 0;
+    if (pPr) {
+      const ps = kid(pPr, "pStyle");
+      if (ps) style = wAttr(ps, "val") || "";
+      const np = kid(pPr, "numPr");
+      if (np) {
+        isList = true;
+        const il = kid(np, "ilvl");
+        if (il) ilvl = parseInt(wAttr(il, "val") || "0", 10) || 0;
+      }
+    }
+    const runCounter = { next: 0 };
+    const segs = normalize(buildSegments(p, rels, runCounter));
+    const local = new Composer();
+    serializeSegsTracked(local, segs, ctx);
+    return { local, style, isList, ilvl };
+  }
+  function commitParagraphBlock(main, local, prefix, kind, bodyPath, forceKeep = false) {
+    const text = local.out;
+    const leadWs = text.match(/^\s*/)[0].length;
+    const trailWs = text.match(/\s*$/)[0].length;
+    const trimEnd = Math.max(leadWs, text.length - trailWs);
+    const isBlank = leadWs >= trimEnd;
+    if (isBlank && !forceKeep) return false;
+    const trimmedText = isBlank ? "" : text.slice(leadWs, trimEnd);
+    const blockStart = main.pos;
+    if (prefix) main.writeSynthetic(prefix);
+    const afterPrefix = main.pos;
+    if (trimmedText) main.out += trimmedText;
+    if (!isBlank) {
+      for (const r of local.synthetic) {
+        const s = Math.max(r[0], leadWs), e = Math.min(r[1], trimEnd);
+        if (e > s) pushRange(main.synthetic, afterPrefix + s - leadWs, afterPrefix + e - leadWs);
+      }
+      for (const r of local.locked) {
+        const s = Math.max(r[0], leadWs), e = Math.min(r[1], trimEnd);
+        if (e > s) pushRange(main.locked, afterPrefix + s - leadWs, afterPrefix + e - leadWs);
+      }
+    }
+    const runs = [];
+    if (!isBlank) {
+      for (const dr of local.docRuns) {
+        const s = Math.max(dr.mdStart, leadWs), e = Math.min(dr.mdEnd, trimEnd);
+        if (e <= s) continue;
+        const dropStart = s - dr.mdStart;
+        runs.push({ mdStart: afterPrefix + s - leadWs, mdEnd: afterPrefix + e - leadWs, runIndex: dr.runIndex, charOffset: dr.charOffset + dropStart });
+      }
+    }
+    main.blocks.push({ mdStart: blockStart, mdEnd: main.pos, kind, bodyPath, runs });
+    return true;
+  }
+  function commitLockedParagraph(main, local, bodyPath) {
+    const text = local.out.trim();
+    if (!text) return false;
+    const blockStart = main.pos;
+    main.writeLocked(text);
+    main.blocks.push({ mdStart: blockStart, mdEnd: main.pos, kind: "locked", bodyPath, runs: [] });
+    return true;
+  }
+  function renderTableCellTracked(tc, rels, ctx, bodyPathPrefix) {
+    const paras = kids(tc, "p");
+    const pieces = [];
+    for (let pIdx = 0; pIdx < paras.length; pIdx++) {
+      const { local } = renderParagraphContent(paras[pIdx], rels, ctx);
+      const t = local.out.trim();
+      if (t) pieces.push({ pIdx, local, text: t });
+    }
+    const joinedPlain = pieces.map((p) => p.text).join(" ");
+    const hasPipe = joinedPlain.includes("|");
+    return function write(main) {
+      if (!pieces.length) {
+        main.writeSynthetic(" ");
+        return;
+      }
+      if (hasPipe) {
+        main.writeSynthetic(joinedPlain.replace(/\|/g, "\\|"));
+        return;
+      }
+      pieces.forEach((piece, idx) => {
+        if (idx > 0) main.writeSynthetic(" ");
+        commitParagraphBlock(main, piece.local, "", "tableCell", [...bodyPathPrefix, piece.pIdx]);
+      });
+    };
+  }
+  function renderTableTracked(main, tbl, rels, ctx, bodyIdx) {
+    const rows = kids(tbl, "tr");
+    if (!rows.length) return false;
+    const matrixWriters = rows.map(
+      (tr, rowIdx) => kids(tr, "tc").map((tc, cellIdx) => renderTableCellTracked(tc, rels, ctx, [bodyIdx, rowIdx, cellIdx]))
+    );
+    const cols = Math.max(...matrixWriters.map((r) => r.length));
+    function writeRow(cellWriters) {
+      main.writeSynthetic("| ");
+      for (let c = 0; c < cols; c++) {
+        if (c > 0) main.writeSynthetic(" | ");
+        if (cellWriters[c]) cellWriters[c](main);
+        else main.writeSynthetic(" ");
+      }
+      main.writeSynthetic(" |");
+    }
+    writeRow(matrixWriters[0]);
+    main.writeSynthetic("\n| " + Array(cols).fill("---").join(" | ") + " |");
+    for (let r = 1; r < matrixWriters.length; r++) {
+      main.writeSynthetic("\n");
+      writeRow(matrixWriters[r]);
+    }
+    return true;
+  }
+  function walkBodyTracked(main, body, rels, ctx) {
+    let bodyIdx = 0;
+    let wroteAny = false;
+    for (const el of body.children) {
+      if (el.localName === "p") {
+        const { local, style, isList, ilvl } = renderParagraphContent(el, rels, ctx);
+        const h = /^Heading([1-6])$/.exec(style);
+        let prefix = "", kind = "p", forceKeep = false;
+        if (h) {
+          prefix = "#".repeat(+h[1]) + " ";
+          kind = "heading";
+          forceKeep = true;
+        } else if (style === "Title") {
+          prefix = "# ";
+          kind = "heading";
+          forceKeep = true;
+        } else if (isList) {
+          prefix = "  ".repeat(ilvl) + "- ";
+          kind = "list";
+          forceKeep = true;
+        }
+        const beforePos = main.pos;
+        if (wroteAny) main.writeSynthetic("\n\n");
+        const wrote = commitParagraphBlock(main, local, prefix, kind, [bodyIdx], forceKeep);
+        if (!wrote) main.rollbackTo(beforePos);
+        else wroteAny = true;
+      } else if (el.localName === "tbl") {
+        const beforePos = main.pos;
+        if (wroteAny) main.writeSynthetic("\n\n");
+        const wrote = renderTableTracked(main, el, rels, ctx, bodyIdx);
+        if (!wrote) main.rollbackTo(beforePos);
+        else wroteAny = true;
+      } else if (el.localName === "sdt") {
+        const content = kid(el, "sdtContent");
+        if (content) {
+          for (const ip of kids(content, "p")) {
+            const { local } = renderParagraphContent(ip, rels, ctx);
+            const beforePos = main.pos;
+            if (wroteAny) main.writeSynthetic("\n\n");
+            const wrote = commitLockedParagraph(main, local, [bodyIdx]);
+            if (!wrote) main.rollbackTo(beforePos);
+            else wroteAny = true;
+          }
+        }
+      }
+      bodyIdx++;
+    }
+  }
+  function buildHeaderTracked(filename, comments, counts) {
+    const total = Object.keys(comments).length;
+    const unresolved = Object.values(comments).filter((c) => !c.done).length;
+    const parts = [];
+    if (counts.ins) parts.push(counts.ins + " insertion" + (counts.ins !== 1 ? "s" : ""));
+    if (counts.del) parts.push(counts.del + " deletion" + (counts.del !== 1 ? "s" : ""));
+    if (counts.sub) parts.push(counts.sub + " substitution" + (counts.sub !== 1 ? "s" : ""));
+    if (total) parts.push(total + " comment" + (total !== 1 ? "s" : "") + (unresolved ? " (" + unresolved + " unresolved)" : ""));
+    if (counts.fmt) parts.push(counts.fmt + " formatting change" + (counts.fmt !== 1 ? "s" : ""));
+    const summary = parts.length ? parts.join(" \xB7 ") : "no tracked changes or comments detected";
+    return "<!-- Redline export from: " + filename + ".docx -->\n<!-- " + summary + " -->\n<!-- CriticMarkup legend: {++ins++} {--del--} {~~old~>new~~} {==highlighted==} {>>comment<<} -->";
+  }
+  function render({ body, rels, comments, childrenMap, docDoc, filename }, annotate) {
+    const ctx = { comments, childrenMap, annotate, counts: { ins: 0, del: 0, sub: 0, fmt: 0 }, emitted: /* @__PURE__ */ new Set() };
+    for (const e of docDoc.getElementsByTagName("*")) {
+      if (e.localName === "rPrChange" || e.localName === "pPrChange") ctx.counts.fmt++;
+    }
+    const bodyComposer = new Composer();
+    walkBodyTracked(bodyComposer, body, rels, ctx);
+    const final = new Composer();
+    final.writeSynthetic(buildHeaderTracked(filename, ctx.comments, ctx.counts));
+    final.writeSynthetic("\n\n");
+    final.mergeFrom(bodyComposer);
+    const orphans = Object.values(ctx.comments).filter((c) => !c.parentId && !ctx.emitted.has(c.id));
+    if (orphans.length) {
+      final.writeSynthetic(
+        "\n\n## Unanchored comments\n\n" + orphans.map((c) => {
+          ctx.emitted.add(c.id);
+          return "- " + renderThread(ctx.comments, ctx.childrenMap, c.id);
+        }).join("\n")
+      );
+    }
+    final.writeSynthetic("\n");
+    return { markdown: final.out, blocks: final.blocks, synthetic: final.synthetic, locked: final.locked, comments: ctx.comments, counts: ctx.counts };
+  }
+  async function sha256Hex(arrayBuffer) {
+    const digest = await crypto.subtle.digest("SHA-256", arrayBuffer);
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  async function exportDocx(docxBytes, options = {}) {
+    const { DOMParserImpl, annotate = false, filename = "document" } = options;
+    const zip = await unzip(docxBytes);
+    const docXml = await readEntry(zip, "word/document.xml");
+    if (!docXml) throw new Error("not a Word document (no word/document.xml)");
+    const rels = parseRels(await readEntry(zip, "word/_rels/document.xml.rels"), DOMParserImpl);
+    const { comments, childrenMap } = buildCommentsData(
+      await readEntry(zip, "word/comments.xml"),
+      await readEntry(zip, "word/commentsExtended.xml"),
+      DOMParserImpl
+    );
+    const docDoc = parseXml(docXml, DOMParserImpl);
+    const body = [...docDoc.documentElement.children].find((c) => c.localName === "body");
+    if (!body) throw new Error("no document body found");
+    const result = render({ body, rels, comments, childrenMap, docDoc, filename }, annotate);
+    const docHash = "sha256-" + await sha256Hex(docxBytes);
+    return {
+      markdown: result.markdown,
+      sourceMap: { docHash, blocks: result.blocks, synthetic: result.synthetic, locked: result.locked },
+      comments: result.comments,
+      counts: result.counts
+    };
+  }
+
+  // src/persona.js
+  var DEFAULT_PERSONA = Object.freeze({
+    name: "Default Persona (built-in)",
+    roleAndVoice: "A careful, neutral technical editor. Flag substantive issues; keep prose clear, precise, and consistent.",
+    reviewPriorities: "Clarity and correctness first; internal consistency of terminology and cross-references second.",
+    styleExemplars: [],
+    doNotTouch: [],
+    commentConventions: "Prefer a brief inline comment when raising a question or flagging something for the author's judgment; use direct edits only for clear-cut fixes.",
+    raw: null,
+    warnings: [],
+    isDefault: true
+  });
+
+  // src/prompt.js
+  var CHUNK_WORD_THRESHOLD = 12e3;
+
+  // src/ui/redline-export.js
+  function baseName(filename) {
+    return (filename || "document").replace(/\.docx$/i, "");
+  }
+  function wordCount(text) {
+    const trimmed = (text || "").trim();
+    return trimmed ? trimmed.split(/\s+/).length : 0;
+  }
+  function buildSummary(counts, comments) {
+    const nodes = Object.values(comments || {});
+    const total = nodes.length;
+    const topLevel = nodes.filter((c) => c.parentId == null).length;
+    const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    const parts = [
+      plural(counts.ins, "insertion"),
+      plural(counts.del, "deletion"),
+      plural(counts.sub, "substitution"),
+      total === topLevel ? plural(total, "comment") : `${plural(topLevel, "comment thread")} (${total} total)`
+    ];
+    return parts.join(" \xB7 ");
+  }
+  function checkWordCountWarning(markdown) {
+    const words = wordCount(markdown);
+    if (words <= CHUNK_WORD_THRESHOLD) return null;
+    return `This document is ${words.toLocaleString()} words, which is likely too long for a single chat paste. Consider splitting it by top-level heading before pasting.`;
+  }
+  async function readFileAsArrayBuffer(file) {
+    if (typeof file.arrayBuffer === "function") return file.arrayBuffer();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(file);
+    });
+  }
+  function downloadText(text, filename, mimeType) {
+    const blob = new Blob([text], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  function legacyCopy(text) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (e) {
+      ok = false;
+    }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text).then(() => true).catch(() => legacyCopy(text));
+    }
+    return Promise.resolve(legacyCopy(text));
+  }
+  function attachDropZone(el, inputEl, { onFiles }) {
+    const stop = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    el.addEventListener("dragover", (e) => {
+      stop(e);
+      el.classList.add("ar-drag-over");
+    });
+    el.addEventListener("dragleave", (e) => {
+      stop(e);
+      el.classList.remove("ar-drag-over");
+    });
+    el.addEventListener("drop", (e) => {
+      stop(e);
+      el.classList.remove("ar-drag-over");
+      const files = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
+      if (files.length) onFiles(files);
+    });
+    if (inputEl) {
+      el.addEventListener("click", () => inputEl.click());
+      inputEl.addEventListener("change", () => {
+        const files = inputEl.files ? [...inputEl.files] : [];
+        if (files.length) onFiles(files);
+        inputEl.value = "";
+      });
+    }
+  }
+  function mount(root) {
+    const dropzone = root.querySelector("#rl-dropzone");
+    const fileInput = root.querySelector("#rl-file");
+    const errorEl = root.querySelector("#rl-error");
+    const summaryEl = root.querySelector("#rl-summary");
+    const warningEl = root.querySelector("#rl-warning");
+    const outputEl = root.querySelector("#rl-output");
+    const resultsEl = root.querySelector("#rl-results");
+    const copyBtn = root.querySelector("#rl-copy");
+    const downloadMdBtn = root.querySelector("#rl-download-md");
+    const downloadSourceMapBtn = root.querySelector("#rl-download-sourcemap");
+    let current = null;
+    function showError(message) {
+      errorEl.textContent = message;
+      errorEl.style.display = message ? "block" : "none";
+    }
+    function reset() {
+      current = null;
+      resultsEl.style.display = "none";
+      summaryEl.textContent = "";
+      warningEl.textContent = "";
+      outputEl.value = "";
+    }
+    async function handleFiles(files) {
+      const file = files[0];
+      showError("");
+      reset();
+      if (!/\.docx$/i.test(file.name || "")) {
+        showError(`"${file.name || "This file"}" is not a .docx file. Choose a Word .docx document.`);
+        return;
+      }
+      const filename = baseName(file.name);
+      let bytes;
+      try {
+        bytes = await readFileAsArrayBuffer(file);
+      } catch (err) {
+        showError(`Could not read "${file.name}": ${err.message}`);
+        return;
+      }
+      let exported;
+      try {
+        exported = await exportDocx(bytes, { DOMParserImpl: DOMParser, annotate: true, filename });
+      } catch (err) {
+        showError(err.message);
+        return;
+      }
+      current = { ...exported, filename };
+      outputEl.value = exported.markdown;
+      summaryEl.textContent = buildSummary(exported.counts, exported.comments);
+      const warning = checkWordCountWarning(exported.markdown);
+      warningEl.textContent = warning || "";
+      warningEl.style.display = warning ? "block" : "none";
+      resultsEl.style.display = "block";
+    }
+    attachDropZone(dropzone, fileInput, { onFiles: handleFiles });
+    copyBtn.addEventListener("click", async () => {
+      if (!current) return;
+      const ok = await copyText(current.markdown);
+      const original = copyBtn.textContent;
+      copyBtn.textContent = ok ? "Copied \u2713" : "Copy failed";
+      setTimeout(() => {
+        copyBtn.textContent = original;
+      }, 1500);
+    });
+    downloadMdBtn.addEventListener("click", () => {
+      if (!current) return;
+      downloadText(current.markdown, `${current.filename}.redline.md`, "text/markdown");
+    });
+    downloadSourceMapBtn.addEventListener("click", () => {
+      if (!current) return;
+      const payload = { sourceMap: current.sourceMap, comments: current.comments };
+      downloadText(JSON.stringify(payload, null, 2), `${current.filename}.sourcemap.json`, "application/json");
+    });
+  }
+  function init() {
+    const root = document.getElementById("rl-app");
+    if (!root) return;
+    mount(root);
+  }
+  if (typeof document !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", init);
+    } else {
+      init();
+    }
+  }
+})();
+
+</script>
+</body>
+</html>
