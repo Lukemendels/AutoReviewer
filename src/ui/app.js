@@ -76,6 +76,13 @@ function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// Preflight failures (src/ui/load.js's checkPreflight) can carry more than one applicable
+// reason, joined with a blank line -- render each as its own paragraph rather than letting
+// a plain <p> collapse the separators to whitespace.
+function formatLoadError(message) {
+  return escapeHtml(message).replace(/\n\n/g, "<br><br>");
+}
+
 function renderDiff(container, segments) {
   container.innerHTML = "";
   container.className = "ar-diff";
@@ -331,7 +338,7 @@ function renderRunReviewPanel(panel) {
         <p>Drop a <code>.docx</code> here, or click to browse.</p>
       </div>
       <input type="file" id="ar-doc-input" accept=".docx" style="display:none" />
-      <p id="ar-load-status" class="ar-hint">${loadError ? escapeHtml(loadError) : ""}</p>
+      <p id="ar-load-status" class="ar-hint">${loadError ? formatLoadError(loadError) : ""}</p>
       <p class="ar-hint">No document handy? <button type="button" id="ar-try-demo" class="ar-link">Try the demo</button> instead.</p>
       <p class="ar-hint">Resuming a review? <button type="button" id="ar-resume-session" class="ar-link">Resume session</button>
       from a saved session <code>.json</code>.</p>

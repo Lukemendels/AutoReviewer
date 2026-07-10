@@ -1826,6 +1826,17 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     return map;
   }
 
+  // src/ooxml/runtext.js
+  function runPlainText(run) {
+    let s = "";
+    for (const c of run.children) {
+      if (c.localName === "t" || c.localName === "delText") s += c.textContent;
+      else if (c.localName === "tab") s += " ";
+      else if (c.localName === "br" || c.localName === "cr") s += "  \n";
+    }
+    return s;
+  }
+
   // src/ooxml/export.js
   function pushRange(arr, start, end) {
     if (start === end) return;
@@ -1956,14 +1967,13 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     if (!c) return "";
     return commentToken(c, 0) + renderReplies(comments, childrenMap, id, 1);
   }
-  function runText(r) {
-    let s = "";
-    for (const c of r.children) {
-      if (c.localName === "t" || c.localName === "delText") s += c.textContent;
-      else if (c.localName === "tab") s += " ";
-      else if (c.localName === "br" || c.localName === "cr") s += "  \n";
+  var runText = runPlainText;
+  function hasStructuralHazard(body) {
+    for (const el of body.getElementsByTagName("*")) {
+      const ln = el.localName;
+      if (ln === "tab" || ln === "br" || ln === "cr" || ln === "delText") return true;
     }
-    return s;
+    return false;
   }
   function runEmph(r) {
     const rPr = kid(r, "rPr");
@@ -2399,7 +2409,8 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       markdown: result.markdown,
       sourceMap: { docHash, blocks: result.blocks, synthetic: result.synthetic, locked: result.locked },
       comments: result.comments,
-      counts: result.counts
+      counts: result.counts,
+      structuralHazard: hasStructuralHazard(body)
     };
   }
 
@@ -2445,11 +2456,6 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     const state = { count: 0, target: runIndex, found: null };
     walkForRun(p, state, true);
     return state.found;
-  }
-  function runPlainText(run) {
-    let s = "";
-    for (const c of run.children) if (c.localName === "t") s += c.textContent;
-    return s;
   }
   function cloneRunPiece(doc, run, text) {
     const newRun = doc.createElementNS(NS.w, "w:r");
@@ -2797,6 +2803,8 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
 
   // src/ui/load.js
   var COMMENT_REPLY_MESSAGE = "This document contains a comment reply (a threaded response to another comment). Resolve or remove replies in Word first, then re-export and re-run the review.";
+  var STRUCTURAL_FENCE_MESSAGE = "This document contains soft line breaks, tabs, or tracked deletions inside paragraphs, which this version cannot reposition safely. Remove them (Ctrl+Shift+8 in Word shows soft breaks as a bent arrow) or use a copy saved without them.";
+  var ANNOTATION_FENCE_MESSAGE = "This document already contains comments or tracked changes. This version reviews clean documents only; support for annotated documents is the next milestone.";
   function baseName(filename) {
     return (filename || "document").replace(/\.docx$/i, "");
   }
@@ -2807,13 +2815,15 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     return { ok: true };
   }
   function checkPreflight(exportResult) {
-    const { counts, comments } = exportResult;
-    if (counts.ins || counts.del || counts.sub) {
-      return { ok: false, message: D4_ERROR_MESSAGE };
+    const { counts, comments, structuralHazard } = exportResult;
+    const reasons = [];
+    if (structuralHazard) reasons.push(STRUCTURAL_FENCE_MESSAGE);
+    if (counts.ins || counts.del || counts.sub) reasons.push(D4_ERROR_MESSAGE);
+    if (Object.values(comments || {}).some((c) => c.parentId != null)) reasons.push(COMMENT_REPLY_MESSAGE);
+    if (counts.ins || counts.del || counts.sub || Object.keys(comments || {}).length > 0) {
+      reasons.push(ANNOTATION_FENCE_MESSAGE);
     }
-    if (Object.values(comments || {}).some((c) => c.parentId != null)) {
-      return { ok: false, message: COMMENT_REPLY_MESSAGE };
-    }
+    if (reasons.length) return { ok: false, message: reasons.join("\n\n") };
     return { ok: true };
   }
   async function loadDocxFromBytes(docxBytes, { originalFilename, DOMParserImpl } = {}) {
@@ -3246,6 +3256,9 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
   function escapeHtml(s) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
+  function formatLoadError(message) {
+    return escapeHtml(message).replace(/\n\n/g, "<br><br>");
+  }
   function renderDiff(container, segments) {
     container.innerHTML = "";
     container.className = "ar-diff";
@@ -3448,7 +3461,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
         <p>Drop a <code>.docx</code> here, or click to browse.</p>
       </div>
       <input type="file" id="ar-doc-input" accept=".docx" style="display:none" />
-      <p id="ar-load-status" class="ar-hint">${loadError ? escapeHtml(loadError) : ""}</p>
+      <p id="ar-load-status" class="ar-hint">${loadError ? formatLoadError(loadError) : ""}</p>
       <p class="ar-hint">No document handy? <button type="button" id="ar-try-demo" class="ar-link">Try the demo</button> instead.</p>
       <p class="ar-hint">Resuming a review? <button type="button" id="ar-resume-session" class="ar-link">Resume session</button>
       from a saved session <code>.json</code>.</p>

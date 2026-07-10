@@ -14,6 +14,7 @@
 // placeholder spec §5.3 requires and the reference impl doesn't implement at all).
 import { unzip, readEntry } from "../zip/reader.js";
 import { NS, wAttr, w14Attr, w15Attr, rAttr, kids, kid, basename, fmtDate, parseXml, parseRels } from "./parse.js";
+import { runPlainText } from "./runtext.js";
 
 /* ------------------------------------------------------------------ *
  * Composer: builds markdown text while tracking synthetic/locked/doc-text spans.
@@ -156,14 +157,18 @@ function renderThread(comments, childrenMap, id) {
 /* ------------------------------------------------------------------ *
  * Run / text extraction (ported)
  * ------------------------------------------------------------------ */
-function runText(r) {
-  let s = "";
-  for (const c of r.children) {
-    if (c.localName === "t" || c.localName === "delText") s += c.textContent;
-    else if (c.localName === "tab") s += " ";
-    else if (c.localName === "br" || c.localName === "cr") s += "  \n";
+const runText = runPlainText;
+
+// M4d structural preflight fence (F-2): true iff `body` contains ANY w:tab, w:br, w:cr, or
+// w:delText anywhere -- inject.js's splitRun only ever produces a plain w:t piece when it
+// re-splits a run, so a run containing one of these can't be repositioned safely yet.
+// load.js rejects such documents before export ever gets used for a real review.
+function hasStructuralHazard(body) {
+  for (const el of body.getElementsByTagName("*")) {
+    const ln = el.localName;
+    if (ln === "tab" || ln === "br" || ln === "cr" || ln === "delText") return true;
   }
-  return s;
+  return false;
 }
 function runEmph(r) {
   const rPr = kid(r, "rPr");
@@ -594,6 +599,7 @@ export async function exportDocx(docxBytes, options = {}) {
     sourceMap: { docHash, blocks: result.blocks, synthetic: result.synthetic, locked: result.locked },
     comments: result.comments,
     counts: result.counts,
+    structuralHazard: hasStructuralHazard(body),
   };
 }
 

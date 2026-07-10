@@ -29,10 +29,13 @@ describe("checkPreflight: issue #16 (reject pre-existing tracked changes/replies
     expect(checkPreflight({ counts: { ins: 0, del: 0, sub: 0 }, comments: {} }).ok).toBe(true);
   });
 
+  // M4d's broader annotation fence also fires on any pre-existing tracked change, so the
+  // message now carries both reasons (see tests/load.fences.test.js) -- this US-7 check
+  // (and its own wording) must still be present in there, unmodified.
   it("blocks on pre-existing insertions/deletions, reusing inject.js's D4 wording", () => {
     const result = checkPreflight({ counts: { ins: 1, del: 0, sub: 0 }, comments: {} });
     expect(result.ok).toBe(false);
-    expect(result.message).toBe(D4_ERROR_MESSAGE);
+    expect(result.message).toContain(D4_ERROR_MESSAGE);
   });
 
   it("blocks on a comment reply even with zero tracked changes", () => {
@@ -41,7 +44,7 @@ describe("checkPreflight: issue #16 (reject pre-existing tracked changes/replies
       comments: { c1: { id: "c1", parentId: null }, c2: { id: "c2", parentId: "c1" } },
     });
     expect(result.ok).toBe(false);
-    expect(result.message).toBe(COMMENT_REPLY_MESSAGE);
+    expect(result.message).toContain(COMMENT_REPLY_MESSAGE);
   });
 });
 
@@ -64,6 +67,6 @@ describe("loadDocxFromBytes: end-to-end against real fixtures", () => {
     const bytes = loadDocxBytes("tracked-changes");
     const result = await loadDocxFromBytes(bytes, { originalFilename: "tracked-changes.docx", DOMParserImpl: DOMParser });
     expect(result.ok).toBe(false);
-    expect(result.message).toBe(D4_ERROR_MESSAGE);
+    expect(result.message).toContain(D4_ERROR_MESSAGE);
   });
 });

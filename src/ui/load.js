@@ -14,6 +14,22 @@ export const COMMENT_REPLY_MESSAGE =
 
 export { D4_ERROR_MESSAGE };
 
+// M4d PR-2, F-2: structural fence. inject.js's splitRun can only reposition a plain w:t
+// run; a run containing a soft break, tab, or tracked deletion crashes it later with
+// "splitRun: invalid range". Stays until child-aware splitRun lands (v2 backlog) -- this is
+// NOT the temporary annotation fence below.
+export const STRUCTURAL_FENCE_MESSAGE =
+  "This document contains soft line breaks, tabs, or tracked deletions inside paragraphs, which this version cannot reposition safely. Remove them (Ctrl+Shift+8 in Word shows soft breaks as a bent arrow) or use a copy saved without them.";
+
+// M4d PR-2, F-3 (fenced, not fixed here): export.js renders pre-existing comments and
+// tracked changes AS CriticMarkup, which the validator can't yet tell apart from a model's
+// real edits (sentinelization is M6a scope, alongside the comment-reply export fix). Until
+// then, any pre-existing annotation at all is rejected at the door. Broader than -- and
+// TEMPORARY unlike -- the structural fence and the US-7 checks above: this is the first
+// thing M6a removes.
+export const ANNOTATION_FENCE_MESSAGE =
+  "This document already contains comments or tracked changes. This version reviews clean documents only; support for annotated documents is the next milestone.";
+
 export function baseName(filename) {
   return (filename || "document").replace(/\.docx$/i, "");
 }
@@ -32,14 +48,27 @@ export function checkFileExtension(filename) {
 // found pre-existing w:ins/w:del/substitution in the document (exportDocx renders those as
 // CriticMarkup for display, per spec §5.1 -- their presence here is exactly the "already
 // has tracked changes" signal); any comment with a parentId is a reply.
+//
+// M4d adds two more checks (F-2, F-3) and reports every applicable reason together, not
+// just the first hit, so a document failing multiple checks gets one complete dialog
+// instead of a fix-one-reload-hit-the-next loop.
 export function checkPreflight(exportResult) {
-  const { counts, comments } = exportResult;
-  if (counts.ins || counts.del || counts.sub) {
-    return { ok: false, message: D4_ERROR_MESSAGE };
+  const { counts, comments, structuralHazard } = exportResult;
+  const reasons = [];
+
+  if (structuralHazard) reasons.push(STRUCTURAL_FENCE_MESSAGE);
+
+  // US-7 (issue #16): kept as-is, even though the broader annotation fence below
+  // supersedes it in practice -- do not remove this check or its tests.
+  if (counts.ins || counts.del || counts.sub) reasons.push(D4_ERROR_MESSAGE);
+  if (Object.values(comments || {}).some((c) => c.parentId != null)) reasons.push(COMMENT_REPLY_MESSAGE);
+
+  // M4d annotation fence: ANY pre-existing comment or tracked change, replies or not.
+  if (counts.ins || counts.del || counts.sub || Object.keys(comments || {}).length > 0) {
+    reasons.push(ANNOTATION_FENCE_MESSAGE);
   }
-  if (Object.values(comments || {}).some((c) => c.parentId != null)) {
-    return { ok: false, message: COMMENT_REPLY_MESSAGE };
-  }
+
+  if (reasons.length) return { ok: false, message: reasons.join("\n\n") };
   return { ok: true };
 }
 

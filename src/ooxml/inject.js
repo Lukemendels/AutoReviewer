@@ -3,6 +3,7 @@
 // function at a time, each landing with the test file that drove it (see
 // docs/plans/m3b-plan.md's Implementation protocol).
 import { NS, kid, kids } from "./parse.js";
+import { runPlainText } from "./runtext.js";
 
 const XML_NS = "http://www.w3.org/XML/1998/namespace";
 
@@ -69,12 +70,6 @@ export function locateRun(p, runIndex) {
  * text starts or ends with whitespace. charStart === charEnd is a valid zero-width split
  * (the insertion-point case): before/after are produced with no core.
  * ------------------------------------------------------------------ */
-function runPlainText(run) {
-  let s = "";
-  for (const c of run.children) if (c.localName === "t") s += c.textContent;
-  return s;
-}
-
 function cloneRunPiece(doc, run, text) {
   const newRun = doc.createElementNS(NS.w, "w:r");
   const rPr = kid(run, "rPr");
