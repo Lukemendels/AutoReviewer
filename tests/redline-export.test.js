@@ -16,6 +16,9 @@ import { exportDocx } from "../src/ooxml/export.js";
 import { unzip, readEntry } from "../src/zip/reader.js";
 import { writeZip } from "../src/zip/writer.js";
 import { loadDocxBytes } from "./helpers/docx.js";
+import { buildAuditFixtureDocx } from "./helpers/auditFixture.js";
+import { extractObservations } from "../src/ooxml/observations.js";
+import { applyAuthorAliases, mergeAuthorsInto, passesFor, metadataStrippedWarning } from "../src/ui/redline-export.js";
 
 const DOCUMENT_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -109,5 +112,52 @@ describe("redline export (M6 first slice): tracked changes + comment reply + res
     const nodes = Object.values(comments);
     expect(nodes).toHaveLength(3);
     expect(nodes.filter((c) => c.parentId == null)).toHaveLength(2);
+  });
+});
+
+// Reviewer-pass-slicer step 4 (discovery table / merge affordance): pure-core helpers
+// only, per this file's own "do not test the DOM shell" convention above.
+describe("redline export: reviewer-pass discovery pure-core helpers", () => {
+  async function auditObservations() {
+    const bytes = await buildAuditFixtureDocx();
+    return (await extractObservations(bytes, { DOMParserImpl: DOMParser, filename: "audit-fixture" })).observations;
+  }
+
+  it("passesFor with no aliases reproduces clusterPasses's own grouping", async () => {
+    const observations = await auditObservations();
+    const { passes, metadataStripped } = passesFor(observations, new Map());
+    expect(metadataStripped).toBe(false);
+    expect(passes.map((p) => p.author)).toEqual(["Jim Smith", "Jim Smith", "Katie Chen"]);
+  });
+
+  it("mergeAuthorsInto folds two author names into the table under one reviewer", async () => {
+    const observations = await auditObservations();
+    const aliasMap = mergeAuthorsInto(new Map(), ["Jim Smith", "Katie Chen"]);
+    const { passes } = passesFor(observations, aliasMap);
+    // Both reviewers' timelines interleave within 48h of each other once merged into one
+    // identity, so they collapse to a single pass -- but every observation must still be
+    // present (merging authors must never drop data).
+    expect(passes.every((p) => p.author === "Jim Smith")).toBe(true);
+    const totalObservations = passes.reduce((sum, p) => sum + p.observations.length, 0);
+    expect(totalObservations).toBe(7);
+  });
+
+  it("mergeAuthorsInto composes with a prior merge instead of losing it", () => {
+    let aliasMap = mergeAuthorsInto(new Map(), ["Jim Smith", "J. Smith"]);
+    aliasMap = mergeAuthorsInto(aliasMap, ["Jim Smith", "jsmith"]);
+    expect(applyAuthorAliases([{ author: "J. Smith" }, { author: "jsmith" }], aliasMap)).toEqual([
+      { author: "Jim Smith" },
+      { author: "Jim Smith" },
+    ]);
+  });
+
+  it("mergeAuthorsInto is a no-op for fewer than two names", () => {
+    const aliasMap = new Map([["a", "b"]]);
+    expect(mergeAuthorsInto(aliasMap, ["a"])).toBe(aliasMap);
+    expect(mergeAuthorsInto(aliasMap, [])).toBe(aliasMap);
+  });
+
+  it("metadataStrippedWarning is plain-language and non-empty", () => {
+    expect(metadataStrippedWarning().length).toBeGreaterThan(20);
   });
 });
