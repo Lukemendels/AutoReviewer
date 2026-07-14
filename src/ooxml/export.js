@@ -461,6 +461,13 @@ function serializeSegsTracked(local, segs, ctx) {
       }
     }
     else if (s.t === "cstart") {
+      // cendAfter only looks within THIS paragraph's segs (buildSegments runs per
+      // paragraph) -- a comment range that legitimately spans multiple paragraphs lands
+      // here too, indistinguishable from a genuinely rangeless/malformed one. Either way
+      // commentObserved falls back to containingSentence() over this one paragraph's plain
+      // text, not the comment's true (possibly multi-paragraph) span. Known approximation:
+      // the slice renderer (later step) must not assume anchorText is always the complete
+      // anchor for a cross-paragraph comment.
       if (openId === null && cendAfter(segs, i, s.id)) { openId = s.id; anchorStart = plainPos; local.writeSynthetic("{=="); }
       else if (!ctx.emitted.has(s.id)) {
         local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
