@@ -5,6 +5,8 @@ import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { exportDocx } from "../src/ooxml/export.js";
 import { resolveRange, SourceMapError } from "../src/sourcemap.js";
+import { unzip } from "../src/zip/reader.js";
+import { writeZip } from "../src/zip/writer.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixturesDir = path.join(root, "fixtures");
@@ -231,5 +233,36 @@ describe("stressor.docx (perf/determinism at scale)", () => {
     expect(markdown.length).toBeGreaterThan(10000);
     expect(sourceMap.blocks.length).toBeGreaterThan(100);
     expect(counts.ins).toBeGreaterThan(0);
+  });
+});
+
+// Pins normalize()'s author/date-aware merge fix (reviewer-pass-slicer step 1): an
+// adjacent del+ins pair only collapses into one {~~sub~~} token when both sides share an
+// author AND date. Different authors means two independent tracked-change actions that
+// happen to sit next to each other, not one substitution -- merging them used to silently
+// attribute the whole edit to the insertion's author.
+const CROSS_AUTHOR_SUB_DOCUMENT_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:body>
+<w:p><w:r><w:t xml:space="preserve">The deadline is </w:t></w:r><w:del w:id="1" w:author="Reviewer A" w:date="2026-01-01T00:00:00Z"><w:r><w:delText>30 days</w:delText></w:r></w:del><w:ins w:id="2" w:author="Reviewer B" w:date="2026-01-02T00:00:00Z"><w:r><w:t>60 days</w:t></w:r></w:ins><w:r><w:t xml:space="preserve"> after publication.</w:t></w:r></w:p>
+<w:sectPr/>
+</w:body>
+</w:document>`;
+
+async function buildCrossAuthorSubBytes() {
+  const zip = await unzip(loadFixture("tracked-changes.docx"));
+  return writeZip(zip, { "word/document.xml": CROSS_AUTHOR_SUB_DOCUMENT_XML });
+}
+
+describe("normalize(): adjacent del+ins from different authors/dates", () => {
+  it("renders as separate deletion + insertion tokens, not a merged substitution", async () => {
+    const bytes = await buildCrossAuthorSubBytes();
+    const { markdown, counts } = await exportDocx(bytes, { DOMParserImpl: DOMParser, filename: "cross-author" });
+    expect(markdown).toContain("{--30 days--}{++60 days++}");
+    // The header's own CriticMarkup legend line contains a literal "{~~old~>new~~}"
+    // example, so assert against the specific token this pair would have collapsed into,
+    // not a bare /\{~~.*~~\}/ match against the whole markdown.
+    expect(markdown).not.toContain("{~~30 days~>60 days~~}");
+    expect(counts).toMatchObject({ ins: 1, del: 1, sub: 0 });
   });
 });

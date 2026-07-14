@@ -52,6 +52,19 @@
   }
   button.rl-primary{background:var(--accent); border-color:var(--accent); color:#fff}
   .rl-optional-hint{font-size:11.5px; color:var(--muted)}
+  #rl-passes{display:none}
+  #rl-passes h2{font-size:16px; margin:0 0 4px}
+  #rl-passes .rl-hint{margin:0 0 12px; color:var(--muted); font-size:13px}
+  .rl-passes-table{width:100%; border-collapse:collapse; margin-top:12px; font-size:13px}
+  .rl-passes-table th, .rl-passes-table td{
+    text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:middle;
+  }
+  .rl-passes-table th{color:var(--muted); font-weight:600; font-size:12px}
+  .rl-passes-table button{
+    font:inherit; font-size:12.5px; font-weight:600; padding:5px 10px; border-radius:7px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink); cursor:pointer;
+  }
+  .rl-passes-status{margin-top:10px; font-size:13px; color:var(--muted)}
   .foot{margin-top:26px; font-size:12px; color:var(--muted); text-align:center}
 </style>
 </head>
@@ -82,6 +95,37 @@
         <button type="button" id="rl-download-sourcemap">Download source map (.json)</button>
         <span class="rl-optional-hint">Source map is optional &mdash; not needed for the chat paste.</span>
       </div>
+    </div>
+
+    <div id="rl-passes" class="card">
+      <h2>Reviewer passes</h2>
+      <p class="rl-hint">
+        One row per reviewer per review pass (edits/comments grouped by author, split wherever a
+        reviewer's own timestamps jump by more than 48 hours). Export one slice, or all of them at
+        once into a folder.
+      </p>
+      <p class="rl-warning" id="rl-passes-warning"></p>
+      <div class="rl-error" id="rl-passes-error"></div>
+      <div class="rl-controls">
+        <button type="button" id="rl-export-all" class="rl-primary">Export all slices&hellip;</button>
+        <button type="button" id="rl-merge-selected">Merge selected reviewers</button>
+        <span class="rl-optional-hint">Same person under two names? Check their rows, then merge.</span>
+      </div>
+      <table class="rl-passes-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>Reviewer</th>
+            <th>Pass</th>
+            <th>Edits</th>
+            <th>Comments</th>
+            <th>Replies</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rl-passes-tbody"></tbody>
+      </table>
+      <p class="rl-passes-status" id="rl-passes-status"></p>
     </div>
   </div>
 
@@ -276,7 +320,7 @@
         if (cm.localName !== "comment") continue;
         const id = wAttr(cm, "id");
         const author = wAttr(cm, "author") || "Unknown";
-        const date = fmtDate(wAttr(cm, "date"));
+        const date = wAttr(cm, "date") || null;
         const ps = [];
         for (const p of cm.getElementsByTagName("*")) {
           if (p.localName === "p") {
@@ -286,7 +330,7 @@
           }
         }
         const text = ps.map((p) => collectRunsText(p).trim()).filter(Boolean).join(" ") || "(empty comment)";
-        comments[id] = { id, author, date, text, done: false, parentId: null };
+        comments[id] = { id, author, date, text, done: extXml ? false : null, parentId: null };
       }
     }
     if (extXml) {
@@ -313,7 +357,7 @@
   }
   function commentToken(c, depth) {
     const arrow = depth > 0 ? "\u21B3".repeat(depth) + " " : "";
-    const date = c.date ? " (" + c.date + ")" : "";
+    const date = c.date ? " (" + fmtDate(c.date) + ")" : "";
     const res = c.done ? " [resolved]" : "";
     return "{>>" + arrow + c.author + date + res + ": " + c.text + "<<}";
   }
@@ -329,6 +373,54 @@
     const c = comments[id];
     if (!c) return "";
     return commentToken(c, 0) + renderReplies(comments, childrenMap, id, 1);
+  }
+  function containingSentence(text, offset) {
+    if (!text) return "";
+    const before = text.slice(0, offset);
+    const after = text.slice(offset);
+    const lastBreak = [...before.matchAll(/[.!?]\s+/g)].pop();
+    const start = lastBreak ? lastBreak.index + lastBreak[0].length : 0;
+    const nextBreak = /[.!?](\s|$)/.exec(after);
+    const end = nextBreak ? offset + nextBreak.index + 1 : text.length;
+    return text.slice(start, end).trim();
+  }
+  function segPlainText(s) {
+    if (s.t === "text") return s.raw;
+    if (s.t === "locked" || s.t === "opaque") return s.s;
+    return "";
+  }
+  function pushReplyObservations(ctx, parentId, anchorText) {
+    for (const childId of ctx.childrenMap[parentId] || []) {
+      const c = ctx.comments[childId];
+      ctx.observations.push({
+        kind: "comment-reply",
+        author: c.author,
+        date: c.date,
+        anchorText,
+        text: c.text,
+        parentCommentId: parentId,
+        resolved: c.done,
+        docOrder: ctx.docOrder.next++,
+        commentId: childId
+      });
+      pushReplyObservations(ctx, childId, anchorText);
+    }
+  }
+  function pushThreadObservations(ctx, rootId, anchorText) {
+    const root = ctx.comments[rootId];
+    if (!root) return;
+    ctx.observations.push({
+      kind: "comment",
+      author: root.author,
+      date: root.date,
+      anchorText,
+      text: root.text,
+      parentCommentId: null,
+      resolved: root.done,
+      docOrder: ctx.docOrder.next++,
+      commentId: rootId
+    });
+    pushReplyObservations(ctx, rootId, anchorText);
   }
   function runText(r) {
     let s = "";
@@ -463,9 +555,9 @@
         const { b, i } = runEmph(c);
         if (raw) segs.push({ t: "text", raw, b, i, runIndex });
       } else if (ln === "ins") {
-        segs.push({ t: "ins", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date") });
+        segs.push({ t: "ins", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date"), id: wAttr(c, "id") });
       } else if (ln === "del") {
-        segs.push({ t: "del", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date") });
+        segs.push({ t: "del", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date"), id: wAttr(c, "id") });
       } else if (ln === "hyperlink") {
         const txt = collectRunsTextIndexed(c, runCounter);
         const url = rels[rAttr(c, "id")] || "";
@@ -478,14 +570,15 @@
     const merged = [];
     for (const s of segs) {
       const last = merged[merged.length - 1];
-      if (last && last.t === s.t && (s.t === "ins" || s.t === "del")) last.s += s.s;
-      else merged.push({ ...s });
+      if (last && last.t === s.t && (s.t === "ins" || s.t === "del") && last.author === s.author && last.date === s.date) {
+        last.s += s.s;
+      } else merged.push({ ...s });
     }
     const out = [];
     for (let i = 0; i < merged.length; i++) {
       const curr = merged[i], next = merged[i + 1];
-      if (curr.t === "del" && next && next.t === "ins") {
-        out.push({ t: "sub", del: curr.s, ins: next.s, author: next.author, date: next.date });
+      if (curr.t === "del" && next && next.t === "ins" && curr.author === next.author && curr.date === next.date) {
+        out.push({ t: "sub", del: curr.s, ins: next.s, author: next.author, date: next.date, delId: curr.id, insId: next.id });
         i++;
       } else out.push(curr);
     }
@@ -515,27 +608,93 @@
   }
   function serializeSegsTracked(local, segs, ctx) {
     let openId = null;
+    let anchorStart = 0;
+    let plainPos = 0;
+    const paraPlainText = ctx.observations ? segs.map(segPlainText).join("") : "";
+    function commentObserved(id, anchorText) {
+      if (!ctx.observations) return;
+      const text = anchorText && anchorText.trim() ? anchorText.trim() : containingSentence(paraPlainText, plainPos);
+      pushThreadObservations(ctx, id, text);
+    }
     for (let i = 0; i < segs.length; i++) {
       const s = segs[i];
-      if (s.t === "text") writeTextSegTracked(local, s);
-      else if (s.t === "locked") local.writeLocked(s.s);
-      else if (s.t === "opaque") local.writeSynthetic(s.s);
-      else if (s.t === "ins") {
+      if (s.t === "text") {
+        writeTextSegTracked(local, s);
+        plainPos += s.raw.length;
+      } else if (s.t === "locked") {
+        local.writeLocked(s.s);
+        plainPos += s.s.length;
+      } else if (s.t === "opaque") {
+        local.writeSynthetic(s.s);
+        plainPos += s.s.length;
+      } else if (s.t === "ins") {
         local.writeSynthetic("{++" + s.s + "++}" + authorTag(s, ctx.annotate));
         ctx.counts.ins++;
+        if (ctx.observations) {
+          ctx.observations.push({
+            kind: "insertion",
+            author: s.author || "Unknown",
+            date: s.date || null,
+            anchorText: null,
+            text: s.s,
+            parentCommentId: null,
+            resolved: null,
+            docOrder: ctx.docOrder.next++,
+            id: s.id || null
+          });
+        }
       } else if (s.t === "del") {
         local.writeSynthetic("{--" + s.s + "--}" + authorTag(s, ctx.annotate));
         ctx.counts.del++;
+        if (ctx.observations) {
+          ctx.observations.push({
+            kind: "deletion",
+            author: s.author || "Unknown",
+            date: s.date || null,
+            anchorText: null,
+            text: s.s,
+            parentCommentId: null,
+            resolved: null,
+            docOrder: ctx.docOrder.next++,
+            id: s.id || null
+          });
+        }
       } else if (s.t === "sub") {
         local.writeSynthetic("{~~" + s.del + "~>" + s.ins + "~~}" + authorTag(s, ctx.annotate));
         ctx.counts.sub++;
+        if (ctx.observations) {
+          ctx.observations.push({
+            kind: "deletion",
+            author: s.author || "Unknown",
+            date: s.date || null,
+            anchorText: null,
+            text: s.del,
+            parentCommentId: null,
+            resolved: null,
+            docOrder: ctx.docOrder.next++,
+            id: s.delId || null
+          });
+          ctx.observations.push({
+            kind: "insertion",
+            author: s.author || "Unknown",
+            date: s.date || null,
+            anchorText: null,
+            text: s.ins,
+            parentCommentId: null,
+            resolved: null,
+            docOrder: ctx.docOrder.next++,
+            id: s.insId || null
+          });
+        }
       } else if (s.t === "cstart") {
         if (openId === null && cendAfter(segs, i, s.id)) {
           openId = s.id;
+          anchorStart = plainPos;
           local.writeSynthetic("{==");
         } else if (!ctx.emitted.has(s.id)) {
           local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
           ctx.emitted.add(s.id);
+          commentObserved(s.id, "");
         }
       } else if (s.t === "cend") {
         if (openId === s.id) {
@@ -544,6 +703,7 @@
           if (!ctx.emitted.has(s.id)) {
             local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
             ctx.emitted.add(s.id);
+            commentObserved(s.id, paraPlainText.slice(anchorStart, plainPos));
           }
         }
       }
@@ -553,6 +713,7 @@
       if (!ctx.emitted.has(openId)) {
         local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, openId));
         ctx.emitted.add(openId);
+        commentObserved(openId, paraPlainText.slice(anchorStart, plainPos));
       }
     }
   }
@@ -726,8 +887,16 @@
     const summary = parts.length ? parts.join(" \xB7 ") : "no tracked changes or comments detected";
     return "<!-- Redline export from: " + filename + ".docx -->\n<!-- " + summary + " -->\n<!-- CriticMarkup legend: {++ins++} {--del--} {~~old~>new~~} {==highlighted==} {>>comment<<} -->";
   }
-  function render({ body, rels, comments, childrenMap, docDoc, filename }, annotate) {
-    const ctx = { comments, childrenMap, annotate, counts: { ins: 0, del: 0, sub: 0, fmt: 0 }, emitted: /* @__PURE__ */ new Set() };
+  function render({ body, rels, comments, childrenMap, docDoc, filename }, annotate, collectObservations) {
+    const ctx = {
+      comments,
+      childrenMap,
+      annotate,
+      counts: { ins: 0, del: 0, sub: 0, fmt: 0 },
+      emitted: /* @__PURE__ */ new Set(),
+      observations: collectObservations ? [] : null,
+      docOrder: { next: 0 }
+    };
     for (const e of docDoc.getElementsByTagName("*")) {
       if (e.localName === "rPrChange" || e.localName === "pPrChange") ctx.counts.fmt++;
     }
@@ -742,19 +911,28 @@
       final.writeSynthetic(
         "\n\n## Unanchored comments\n\n" + orphans.map((c) => {
           ctx.emitted.add(c.id);
+          if (ctx.observations) pushThreadObservations(ctx, c.id, null);
           return "- " + renderThread(ctx.comments, ctx.childrenMap, c.id);
         }).join("\n")
       );
     }
     final.writeSynthetic("\n");
-    return { markdown: final.out, blocks: final.blocks, synthetic: final.synthetic, locked: final.locked, comments: ctx.comments, counts: ctx.counts };
+    return {
+      markdown: final.out,
+      blocks: final.blocks,
+      synthetic: final.synthetic,
+      locked: final.locked,
+      comments: ctx.comments,
+      counts: ctx.counts,
+      observations: ctx.observations
+    };
   }
   async function sha256Hex(arrayBuffer) {
     const digest = await crypto.subtle.digest("SHA-256", arrayBuffer);
     return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
   async function exportDocx(docxBytes, options = {}) {
-    const { DOMParserImpl, annotate = false, filename = "document" } = options;
+    const { DOMParserImpl, annotate = false, filename = "document", collectObservations = false } = options;
     const zip = await unzip(docxBytes);
     const docXml = await readEntry(zip, "word/document.xml");
     if (!docXml) throw new Error("not a Word document (no word/document.xml)");
@@ -767,13 +945,14 @@
     const docDoc = parseXml(docXml, DOMParserImpl);
     const body = [...docDoc.documentElement.children].find((c) => c.localName === "body");
     if (!body) throw new Error("no document body found");
-    const result = render({ body, rels, comments, childrenMap, docDoc, filename }, annotate);
+    const result = render({ body, rels, comments, childrenMap, docDoc, filename }, annotate, collectObservations);
     const docHash = "sha256-" + await sha256Hex(docxBytes);
     return {
       markdown: result.markdown,
       sourceMap: { docHash, blocks: result.blocks, synthetic: result.synthetic, locked: result.locked },
       comments: result.comments,
-      counts: result.counts
+      counts: result.counts,
+      ...collectObservations ? { observations: result.observations } : {}
     };
   }
 
@@ -793,6 +972,269 @@
   // src/prompt.js
   var CHUNK_WORD_THRESHOLD = 12e3;
 
+  // src/passes.js
+  var PASS_GAP_HOURS = 48;
+  function plural(n, word) {
+    return `${n} ${word}${n === 1 ? "" : "s"}`;
+  }
+  function passCounts(observations) {
+    const insertions = observations.filter((o) => o.kind === "insertion").length;
+    const deletions = observations.filter((o) => o.kind === "deletion").length;
+    const comments = observations.filter((o) => o.kind === "comment").length;
+    const replies = observations.filter((o) => o.kind === "comment-reply").length;
+    return { insertions, deletions, comments, replies };
+  }
+  function buildPass(author, cluster, metadataStripped) {
+    const observations = [...cluster.dated, ...cluster.undated].sort((a, b) => a.docOrder - b.docOrder);
+    const dates = cluster.dated.map((o) => o.date);
+    const passDate = dates.length ? fmtDate(dates[0]) : null;
+    const windowStart = dates.length ? dates[0] : null;
+    const windowEnd = dates.length ? dates[dates.length - 1] : null;
+    const undated = dates.length === 0;
+    const counts = passCounts(observations);
+    const editCount = counts.insertions + counts.deletions;
+    const countsSuffix = `(${plural(editCount, "edit")}, ${plural(counts.comments, "comment")}, ${counts.replies} repl${counts.replies === 1 ? "y" : "ies"})`;
+    let label;
+    if (metadataStripped) label = `${author} (metadata stripped)`;
+    else if (undated) label = `${author} \u2014 undated ${countsSuffix}`;
+    else label = `${author} \u2014 ${passDate} ${countsSuffix}`;
+    return { author, passDate, windowStart, windowEnd, undated, observations, counts, label };
+  }
+  function clusterPasses(observations, options = {}) {
+    const gapMs = (options.gapHours ?? PASS_GAP_HOURS) * 3600 * 1e3;
+    const byAuthor = /* @__PURE__ */ new Map();
+    for (const obs of observations) {
+      const key = obs.author || "Unknown";
+      if (!byAuthor.has(key)) byAuthor.set(key, []);
+      byAuthor.get(key).push(obs);
+    }
+    const metadataStripped = observations.length > 0 && byAuthor.size === 1 && observations.every((o) => o.date == null);
+    const passes = [];
+    for (const [author, obsList] of byAuthor) {
+      const dated = obsList.filter((o) => o.date != null).sort((a, b) => new Date(a.date) - new Date(b.date));
+      const undated = obsList.filter((o) => o.date == null);
+      const clusters = [];
+      for (const obs of dated) {
+        const last = clusters[clusters.length - 1];
+        const prevDated = last && last.dated[last.dated.length - 1];
+        const gap = prevDated ? new Date(obs.date) - new Date(prevDated.date) : Infinity;
+        if (last && gap <= gapMs) last.dated.push(obs);
+        else clusters.push({ dated: [obs], undated: [] });
+      }
+      if (clusters.length === 0) {
+        clusters.push({ dated: [], undated: [...undated] });
+      } else if (clusters.length === 1) {
+        clusters[0].undated.push(...undated);
+      } else if (undated.length) {
+        clusters.push({ dated: [], undated: [...undated] });
+      }
+      for (const cluster of clusters) passes.push(buildPass(author, cluster, metadataStripped));
+    }
+    return { passes, metadataStripped };
+  }
+
+  // src/ooxml/slice.js
+  function paragraphStyle(p) {
+    const pPr = kid(p, "pPr");
+    let style = "", isList = false, ilvl = 0;
+    if (pPr) {
+      const ps = kid(pPr, "pStyle");
+      if (ps) style = wAttr(ps, "val") || "";
+      const np = kid(pPr, "numPr");
+      if (np) {
+        isList = true;
+        const il = kid(np, "ilvl");
+        if (il) ilvl = parseInt(wAttr(il, "val") || "0", 10) || 0;
+      }
+    }
+    return { style, isList, ilvl };
+  }
+  function paragraphPrefix({ style, isList, ilvl }) {
+    const h = /^Heading([1-6])$/.exec(style);
+    if (h) return "#".repeat(+h[1]) + " ";
+    if (style === "Title") return "# ";
+    if (isList) return "  ".repeat(ilvl) + "- ";
+    return "";
+  }
+  function threadIncludedIds(ctx, rootId) {
+    const included = /* @__PURE__ */ new Set();
+    function markAncestors(id) {
+      let cur = id;
+      while (cur != null && !included.has(cur)) {
+        included.add(cur);
+        cur = ctx.comments[cur] && ctx.comments[cur].parentId;
+      }
+    }
+    function walk(id) {
+      if (ctx.passCommentIds.has(id)) markAncestors(id);
+      for (const childId of ctx.childrenMap[id] || []) walk(childId);
+    }
+    walk(rootId);
+    return included;
+  }
+  function formatCommentToken(c, parent, context) {
+    const dateStr = c.date ? fmtDate(c.date) : "undated";
+    const resolvedTag = c.resolved ? " [resolved]" : "";
+    const contextTag = context ? ` (context: "${context}")` : "";
+    if (parent) {
+      return `{>>\u21B3 reply to ${parent.author} \u2014 ${c.author} [${dateStr}]${resolvedTag}${contextTag}: ${c.text}<<}`;
+    }
+    return `{>>${c.author} [${dateStr}]${resolvedTag}${contextTag}: ${c.text}<<}`;
+  }
+  function renderThreadTokens(ctx, rootId, included, isPoint, paraPlainText, pointPos) {
+    const context = isPoint ? containingSentence(paraPlainText, pointPos) : null;
+    let s = "";
+    function emitNode(id, parentId) {
+      if (included.has(id)) {
+        const c = { ...ctx.comments[id], resolved: ctx.comments[id].done };
+        const parent = parentId != null ? ctx.comments[parentId] : null;
+        s += formatCommentToken(c, parent, context);
+      }
+      for (const childId of ctx.childrenMap[id] || []) emitNode(childId, id);
+    }
+    emitNode(rootId, null);
+    return s;
+  }
+  function renderSliceSegs(segs, ctx) {
+    let out = "";
+    let openId = null;
+    let plainPos = 0;
+    let spanStartOutLen = 0;
+    const paraPlainText = segs.map(segPlainText).join("");
+    function closeSpan(id) {
+      const included = threadIncludedIds(ctx, id);
+      if (!included.size) return;
+      const spanContent = out.slice(spanStartOutLen);
+      const isPoint = spanContent === "";
+      out = out.slice(0, spanStartOutLen) + "{==" + (isPoint ? "\xB6" : spanContent) + "==}";
+      out += renderThreadTokens(ctx, id, included, isPoint, paraPlainText, plainPos);
+    }
+    for (let i = 0; i < segs.length; i++) {
+      const s = segs[i];
+      if (s.t === "text") {
+        out += emph(s.raw, { b: s.b, i: s.i });
+        plainPos += s.raw.length;
+      } else if (s.t === "locked" || s.t === "opaque") {
+        out += s.s;
+        plainPos += s.s.length;
+      } else if (s.t === "ins") {
+        out += ctx.passIds.has(s.id) ? "{++" + s.s + "++}" : s.s;
+      } else if (s.t === "del") {
+        if (ctx.passIds.has(s.id)) out += "{--" + s.s + "--}";
+      } else if (s.t === "sub") {
+        out += ctx.passIds.has(s.delId) || ctx.passIds.has(s.insId) ? "{~~" + s.del + "~>" + s.ins + "~~}" : s.ins;
+      } else if (s.t === "cstart") {
+        if (openId === null && cendAfter(segs, i, s.id)) {
+          openId = s.id;
+          spanStartOutLen = out.length;
+        } else {
+          closeSpan(s.id);
+        }
+      } else if (s.t === "cend") {
+        if (openId === s.id) {
+          closeSpan(s.id);
+          openId = null;
+        }
+      }
+    }
+    if (openId !== null) closeSpan(openId);
+    return out;
+  }
+  function renderSliceParagraph(p, rels, ctx) {
+    const { style, isList, ilvl } = paragraphStyle(p);
+    const runCounter = { next: 0 };
+    const segs = normalize(buildSegments(p, rels, runCounter));
+    const text = renderSliceSegs(segs, ctx).trim();
+    const h = /^Heading([1-6])$/.exec(style);
+    const forceKeep = !!h || style === "Title" || isList;
+    if (!text && !forceKeep) return null;
+    return paragraphPrefix({ style, isList, ilvl }) + text;
+  }
+  function renderSliceTable(tbl, rels, ctx) {
+    const rows = kids(tbl, "tr");
+    if (!rows.length) return null;
+    const matrix = rows.map(
+      (tr) => kids(tr, "tc").map((tc) => {
+        const cellText = kids(tc, "p").map((p) => renderSliceParagraph(p, rels, ctx)).filter(Boolean).join(" ");
+        return (cellText || " ").replace(/\|/g, "\\|");
+      })
+    );
+    const cols = Math.max(...matrix.map((r) => r.length));
+    const writeRow = (row) => "| " + Array.from({ length: cols }, (_, c) => row[c] ?? " ").join(" | ") + " |";
+    const lines = [writeRow(matrix[0]), "| " + Array(cols).fill("---").join(" | ") + " |"];
+    for (let r = 1; r < matrix.length; r++) lines.push(writeRow(matrix[r]));
+    return lines.join("\n");
+  }
+  function renderSliceBody(body, rels, ctx) {
+    const blocks = [];
+    for (const el of body.children) {
+      if (el.localName === "p") {
+        const rendered = renderSliceParagraph(el, rels, ctx);
+        if (rendered != null) blocks.push(rendered);
+      } else if (el.localName === "tbl") {
+        const rendered = renderSliceTable(el, rels, ctx);
+        if (rendered != null) blocks.push(rendered);
+      } else if (el.localName === "sdt") {
+        const content = kid(el, "sdtContent");
+        if (content) {
+          for (const ip of kids(content, "p")) {
+            const rendered = renderSliceParagraph(ip, rels, ctx);
+            if (rendered != null) blocks.push(rendered);
+          }
+        }
+      }
+    }
+    return blocks.join("\n\n");
+  }
+  function slugify(name) {
+    return String(name).trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "unknown";
+  }
+  function fmtWindow(iso) {
+    if (!iso) return null;
+    return iso.replace(/^(.*T\d{2}:\d{2}):\d{2}(Z?)$/, "$1$2");
+  }
+  function sliceFilename(docBaseName, pass) {
+    const dateSlug = pass.undated ? "undated" : pass.passDate;
+    return `${slugify(docBaseName)}_${slugify(pass.author)}_${dateSlug}.md`;
+  }
+  function buildFrontmatter({ docFilename, pass, generated }) {
+    const passField = pass.undated ? "undated" : pass.passDate;
+    const windowField = pass.undated ? "n/a" : `${fmtWindow(pass.windowStart)} \u2013 ${fmtWindow(pass.windowEnd)}`;
+    return [
+      "---",
+      `doc: ${docFilename}.docx`,
+      `reviewer: ${pass.author}`,
+      `pass: ${passField}`,
+      `pass_window: ${windowField}`,
+      `edits: ${pass.counts.insertions + pass.counts.deletions}`,
+      `comments: ${pass.counts.comments}`,
+      `replies: ${pass.counts.replies}`,
+      `generated: ${generated}`,
+      "---"
+    ].join("\n");
+  }
+  async function renderSlice(docxBytes, pass, options = {}) {
+    const { DOMParserImpl, filename = "document", generated = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) } = options;
+    const zip = await unzip(docxBytes);
+    const docXml = await readEntry(zip, "word/document.xml");
+    if (!docXml) throw new Error("not a Word document (no word/document.xml)");
+    const rels = parseRels(await readEntry(zip, "word/_rels/document.xml.rels"), DOMParserImpl);
+    const { comments, childrenMap } = buildCommentsData(
+      await readEntry(zip, "word/comments.xml"),
+      await readEntry(zip, "word/commentsExtended.xml"),
+      DOMParserImpl
+    );
+    const docDoc = parseXml(docXml, DOMParserImpl);
+    const body = [...docDoc.documentElement.children].find((c) => c.localName === "body");
+    if (!body) throw new Error("no document body found");
+    const passIds = new Set(pass.observations.filter((o) => o.id != null).map((o) => o.id));
+    const passCommentIds = new Set(pass.observations.filter((o) => o.commentId != null).map((o) => o.commentId));
+    const ctx = { comments, childrenMap, passIds, passCommentIds };
+    const bodyMd = renderSliceBody(body, rels, ctx);
+    const frontmatter = buildFrontmatter({ docFilename: filename, pass, generated });
+    return frontmatter + "\n\n" + bodyMd + "\n";
+  }
+
   // src/ui/redline-export.js
   function baseName(filename) {
     return (filename || "document").replace(/\.docx$/i, "");
@@ -805,12 +1247,12 @@
     const nodes = Object.values(comments || {});
     const total = nodes.length;
     const topLevel = nodes.filter((c) => c.parentId == null).length;
-    const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+    const plural2 = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
     const parts = [
-      plural(counts.ins, "insertion"),
-      plural(counts.del, "deletion"),
-      plural(counts.sub, "substitution"),
-      total === topLevel ? plural(total, "comment") : `${plural(topLevel, "comment thread")} (${total} total)`
+      plural2(counts.ins, "insertion"),
+      plural2(counts.del, "deletion"),
+      plural2(counts.sub, "substitution"),
+      total === topLevel ? plural2(total, "comment") : `${plural2(topLevel, "comment thread")} (${total} total)`
     ];
     return parts.join(" \xB7 ");
   }
@@ -818,6 +1260,29 @@
     const words = wordCount(markdown);
     if (words <= CHUNK_WORD_THRESHOLD) return null;
     return `This document is ${words.toLocaleString()} words, which is likely too long for a single chat paste. Consider splitting it by top-level heading before pasting.`;
+  }
+  function applyAuthorAliases(observations, aliasMap) {
+    if (!aliasMap || !aliasMap.size) return observations;
+    return observations.map((o) => {
+      const canonical = aliasMap.get(o.author);
+      return canonical && canonical !== o.author ? { ...o, author: canonical } : o;
+    });
+  }
+  function mergeAuthorsInto(aliasMap, authors) {
+    if (!authors || authors.length < 2) return aliasMap;
+    const canonical = authors[0];
+    const next = new Map(aliasMap);
+    for (const [orig, mapped] of aliasMap) {
+      if (authors.includes(mapped)) next.set(orig, canonical);
+    }
+    for (const a of authors) next.set(a, canonical);
+    return next;
+  }
+  function passesFor(observations, aliasMap) {
+    return clusterPasses(applyAuthorAliases(observations, aliasMap));
+  }
+  function metadataStrippedWarning() {
+    return 'Every tracked change and comment in this document shows the same author with no date (Word\u2019s "Remove personal information from file properties on save," or similar, strips this before you can separate reviewer passes). All edits and comments are shown below as a single group.';
   }
   async function readFileAsArrayBuffer(file) {
     if (typeof file.arrayBuffer === "function") return file.arrayBuffer();
@@ -862,6 +1327,22 @@
     }
     return Promise.resolve(legacyCopy(text));
   }
+  async function writeSlicesToDirectory(dirHandle, bytes, passes, options) {
+    let count = 0;
+    for (const pass of passes) {
+      const md = await renderSlice(bytes, pass, options);
+      const name = sliceFilename(options.filename, pass);
+      const fileHandle = await dirHandle.getFileHandle(name, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(md);
+      await writable.close();
+      count++;
+    }
+    return count;
+  }
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
   function attachDropZone(el, inputEl, { onFiles }) {
     const stop = (e) => {
       e.preventDefault();
@@ -901,17 +1382,73 @@
     const copyBtn = root.querySelector("#rl-copy");
     const downloadMdBtn = root.querySelector("#rl-download-md");
     const downloadSourceMapBtn = root.querySelector("#rl-download-sourcemap");
+    const passesCard = root.querySelector("#rl-passes");
+    const passesWarningEl = root.querySelector("#rl-passes-warning");
+    const passesTableBody = root.querySelector("#rl-passes-tbody");
+    const mergeBtn = root.querySelector("#rl-merge-selected");
+    const exportAllBtn = root.querySelector("#rl-export-all");
+    const passesStatusEl = root.querySelector("#rl-passes-status");
+    const passesErrorEl = root.querySelector("#rl-passes-error");
     let current = null;
+    let aliasMap = /* @__PURE__ */ new Map();
     function showError(message) {
       errorEl.textContent = message;
       errorEl.style.display = message ? "block" : "none";
     }
+    function showPassesError(message) {
+      passesErrorEl.textContent = message;
+      passesErrorEl.style.display = message ? "block" : "none";
+    }
     function reset() {
       current = null;
+      aliasMap = /* @__PURE__ */ new Map();
       resultsEl.style.display = "none";
       summaryEl.textContent = "";
       warningEl.textContent = "";
       outputEl.value = "";
+      passesCard.style.display = "none";
+      passesTableBody.innerHTML = "";
+      passesStatusEl.textContent = "";
+      showPassesError("");
+    }
+    function selectedAuthors() {
+      const checked = [...passesTableBody.querySelectorAll('input[type="checkbox"]:checked')];
+      return [...new Set(checked.map((cb) => cb.dataset.author))];
+    }
+    function renderPasses() {
+      if (!current) return;
+      const { passes, metadataStripped } = passesFor(current.observations, aliasMap);
+      current.passes = passes;
+      passesWarningEl.textContent = metadataStripped ? metadataStrippedWarning() : "";
+      passesWarningEl.style.display = metadataStripped ? "block" : "none";
+      passesTableBody.innerHTML = "";
+      passes.forEach((pass, idx) => {
+        const tr = document.createElement("tr");
+        const passLabel = pass.undated ? "undated" : pass.passDate;
+        tr.innerHTML = `
+        <td><input type="checkbox" data-author="${escapeHtml(pass.author)}"></td>
+        <td>${escapeHtml(pass.author)}</td>
+        <td>${escapeHtml(passLabel)}</td>
+        <td>${pass.counts.insertions + pass.counts.deletions}</td>
+        <td>${pass.counts.comments}</td>
+        <td>${pass.counts.replies}</td>
+        <td><button type="button" data-pass-idx="${idx}" class="rl-export-slice">Export slice</button></td>
+      `;
+        passesTableBody.appendChild(tr);
+      });
+      passesTableBody.querySelectorAll(".rl-export-slice").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          showPassesError("");
+          const pass = current.passes[Number(btn.dataset.passIdx)];
+          try {
+            const md = await renderSlice(current.bytes, pass, { DOMParserImpl: DOMParser, filename: current.filename });
+            downloadText(md, sliceFilename(current.filename, pass), "text/markdown");
+          } catch (err) {
+            showPassesError(`Could not render slice for ${pass.label}: ${err.message}`);
+          }
+        });
+      });
+      passesCard.style.display = "block";
     }
     async function handleFiles(files) {
       const file = files[0];
@@ -931,18 +1468,19 @@
       }
       let exported;
       try {
-        exported = await exportDocx(bytes, { DOMParserImpl: DOMParser, annotate: true, filename });
+        exported = await exportDocx(bytes, { DOMParserImpl: DOMParser, annotate: true, filename, collectObservations: true });
       } catch (err) {
         showError(err.message);
         return;
       }
-      current = { ...exported, filename };
+      current = { ...exported, filename, bytes };
       outputEl.value = exported.markdown;
       summaryEl.textContent = buildSummary(exported.counts, exported.comments);
       const warning = checkWordCountWarning(exported.markdown);
       warningEl.textContent = warning || "";
       warningEl.style.display = warning ? "block" : "none";
       resultsEl.style.display = "block";
+      renderPasses();
     }
     attachDropZone(dropzone, fileInput, { onFiles: handleFiles });
     copyBtn.addEventListener("click", async () => {
@@ -962,6 +1500,40 @@
       if (!current) return;
       const payload = { sourceMap: current.sourceMap, comments: current.comments };
       downloadText(JSON.stringify(payload, null, 2), `${current.filename}.sourcemap.json`, "application/json");
+    });
+    mergeBtn.addEventListener("click", () => {
+      if (!current) return;
+      showPassesError("");
+      const authors = selectedAuthors();
+      if (authors.length < 2) {
+        showPassesError("Select two or more reviewer rows (from different names) to merge them into one reviewer.");
+        return;
+      }
+      aliasMap = mergeAuthorsInto(aliasMap, authors);
+      renderPasses();
+    });
+    exportAllBtn.addEventListener("click", async () => {
+      if (!current || !current.passes || !current.passes.length) return;
+      showPassesError("");
+      if (typeof window.showDirectoryPicker !== "function") {
+        showPassesError(
+          'Export all slices needs the File System Access API, available in Chrome or Edge. Use "Export slice" on individual rows instead.'
+        );
+        return;
+      }
+      try {
+        const dirHandle = await window.showDirectoryPicker();
+        passesStatusEl.textContent = "Writing slices\u2026";
+        const count = await writeSlicesToDirectory(dirHandle, current.bytes, current.passes, {
+          DOMParserImpl: DOMParser,
+          filename: current.filename
+        });
+        passesStatusEl.textContent = `Wrote ${count} slice${count === 1 ? "" : "s"} to the selected folder.`;
+      } catch (err) {
+        passesStatusEl.textContent = "";
+        if (err && err.name === "AbortError") return;
+        showPassesError(`Could not write slices: ${err.message}`);
+      }
     });
   }
   function init() {
