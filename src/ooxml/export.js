@@ -205,6 +205,7 @@ function pushReplyObservations(ctx, parentId, anchorText) {
       parentCommentId: parentId,
       resolved: c.done,
       docOrder: ctx.docOrder.next++,
+      commentId: childId,
     });
     pushReplyObservations(ctx, childId, anchorText);
   }
@@ -221,6 +222,7 @@ function pushThreadObservations(ctx, rootId, anchorText) {
     parentCommentId: null,
     resolved: root.done,
     docOrder: ctx.docOrder.next++,
+    commentId: rootId,
   });
   pushReplyObservations(ctx, rootId, anchorText);
 }
@@ -351,9 +353,9 @@ function buildSegments(p, rels, runCounter) {
       const { b, i } = runEmph(c);
       if (raw) segs.push({ t: "text", raw, b, i, runIndex });
     } else if (ln === "ins") {
-      segs.push({ t: "ins", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date") });
+      segs.push({ t: "ins", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date"), id: wAttr(c, "id") });
     } else if (ln === "del") {
-      segs.push({ t: "del", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date") });
+      segs.push({ t: "del", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date"), id: wAttr(c, "id") });
     } else if (ln === "hyperlink") {
       const txt = collectRunsTextIndexed(c, runCounter);
       const url = rels[rAttr(c, "id")] || "";
@@ -383,7 +385,11 @@ function normalize(segs) {
   for (let i = 0; i < merged.length; i++) {
     const curr = merged[i], next = merged[i + 1];
     if (curr.t === "del" && next && next.t === "ins" && curr.author === next.author && curr.date === next.date) {
-      out.push({ t: "sub", del: curr.s, ins: next.s, author: next.author, date: next.date });
+      // delId/insId (both element w:ids, preserved through any earlier same-author/date
+      // merge above) let the slice renderer (reviewer-pass-slicer step 3) test pass
+      // membership without re-deriving it -- guaranteed to agree with each other since
+      // author+date already matched to form this pair.
+      out.push({ t: "sub", del: curr.s, ins: next.s, author: next.author, date: next.date, delId: curr.id, insId: next.id });
       i++;
     } else out.push(curr);
   }
@@ -430,6 +436,7 @@ function serializeSegsTracked(local, segs, ctx) {
         ctx.observations.push({
           kind: "insertion", author: s.author || "Unknown", date: s.date || null,
           anchorText: null, text: s.s, parentCommentId: null, resolved: null, docOrder: ctx.docOrder.next++,
+          id: s.id || null,
         });
       }
     }
@@ -440,6 +447,7 @@ function serializeSegsTracked(local, segs, ctx) {
         ctx.observations.push({
           kind: "deletion", author: s.author || "Unknown", date: s.date || null,
           anchorText: null, text: s.s, parentCommentId: null, resolved: null, docOrder: ctx.docOrder.next++,
+          id: s.id || null,
         });
       }
     }
@@ -453,10 +461,12 @@ function serializeSegsTracked(local, segs, ctx) {
         ctx.observations.push({
           kind: "deletion", author: s.author || "Unknown", date: s.date || null,
           anchorText: null, text: s.del, parentCommentId: null, resolved: null, docOrder: ctx.docOrder.next++,
+          id: s.delId || null,
         });
         ctx.observations.push({
           kind: "insertion", author: s.author || "Unknown", date: s.date || null,
           anchorText: null, text: s.ins, parentCommentId: null, resolved: null, docOrder: ctx.docOrder.next++,
+          id: s.insId || null,
         });
       }
     }
@@ -753,5 +763,12 @@ export async function exportDocx(docxBytes, options = {}) {
     ...(collectObservations ? { observations: result.observations } : {}),
   };
 }
+
+// Reused (not re-parsed) by src/ooxml/slice.js (reviewer-pass-slicer step 3): the raw
+// XML-to-segments extraction and its author/date merge rules are the risky, tested part
+// and must stay in exactly one place. The slice renderer's own body/table walk and
+// per-segment CriticMarkup emission are deliberately separate from serializeSegsTracked
+// above (different filtering rules), but never re-derive what a w:ins/w:del/comment IS.
+export { buildSegments, normalize, emph, cendAfter, segPlainText, containingSentence };
 
 export const _internal = { NS };

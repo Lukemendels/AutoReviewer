@@ -30,13 +30,13 @@ describe("clusterPasses: two-reviewer, two-pass audit fixture", () => {
   it("labels each pass with author, earliest date, and edit/comment counts", async () => {
     const { passes } = await clustersFor(buildAuditFixtureDocx);
     const pass1 = passes.find((p) => p.author === "Jim Smith" && p.passDate === "2026-05-14");
-    expect(pass1.label).toBe("Jim Smith — 2026-05-14 (1 edit, 1 comment)");
+    expect(pass1.label).toBe("Jim Smith — 2026-05-14 (1 edit, 1 comment, 0 replies)");
     expect(pass1.counts).toEqual({ insertions: 1, deletions: 0, comments: 1, replies: 0 });
 
     const katie = passes.find((p) => p.author === "Katie Chen");
     // insertion + point comment + reply to Jim's pass-1 thread, all one pass for Katie
     expect(katie.counts).toEqual({ insertions: 1, deletions: 0, comments: 1, replies: 1 });
-    expect(katie.label).toBe("Katie Chen — 2026-05-15 (1 edit, 2 comments)");
+    expect(katie.label).toBe("Katie Chen — 2026-05-15 (1 edit, 1 comment, 1 reply)");
   });
 
   it("keeps each pass's observations in document order, not date order", async () => {
@@ -86,7 +86,7 @@ describe("clusterPasses: undated observations for an author with dated passes", 
     const undatedAl = al.find((p) => p.undated);
     expect(undatedAl.observations).toHaveLength(1);
     expect(undatedAl.observations[0].kind).toBe("comment");
-    expect(undatedAl.label).toBe("Al — undated (0 edits, 1 comment)");
+    expect(undatedAl.label).toBe("Al — undated (0 edits, 1 comment, 0 replies)");
   });
 
   it("attaches an undated observation to the single existing pass when there's only one", async () => {

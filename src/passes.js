@@ -31,8 +31,9 @@ function buildPass(author, cluster, metadataStripped) {
 
   const counts = passCounts(observations);
   const editCount = counts.insertions + counts.deletions;
-  const commentCount = counts.comments + counts.replies;
-  const countsSuffix = `(${plural(editCount, "edit")}, ${plural(commentCount, "comment")})`;
+  const countsSuffix =
+    `(${plural(editCount, "edit")}, ${plural(counts.comments, "comment")}, ` +
+    `${counts.replies} repl${counts.replies === 1 ? "y" : "ies"})`;
 
   let label;
   if (metadataStripped) label = `${author} (metadata stripped)`;

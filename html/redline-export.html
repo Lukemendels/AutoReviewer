@@ -356,7 +356,8 @@
         text: c.text,
         parentCommentId: parentId,
         resolved: c.done,
-        docOrder: ctx.docOrder.next++
+        docOrder: ctx.docOrder.next++,
+        commentId: childId
       });
       pushReplyObservations(ctx, childId, anchorText);
     }
@@ -372,7 +373,8 @@
       text: root.text,
       parentCommentId: null,
       resolved: root.done,
-      docOrder: ctx.docOrder.next++
+      docOrder: ctx.docOrder.next++,
+      commentId: rootId
     });
     pushReplyObservations(ctx, rootId, anchorText);
   }
@@ -509,9 +511,9 @@
         const { b, i } = runEmph(c);
         if (raw) segs.push({ t: "text", raw, b, i, runIndex });
       } else if (ln === "ins") {
-        segs.push({ t: "ins", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date") });
+        segs.push({ t: "ins", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date"), id: wAttr(c, "id") });
       } else if (ln === "del") {
-        segs.push({ t: "del", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date") });
+        segs.push({ t: "del", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date"), id: wAttr(c, "id") });
       } else if (ln === "hyperlink") {
         const txt = collectRunsTextIndexed(c, runCounter);
         const url = rels[rAttr(c, "id")] || "";
@@ -532,7 +534,7 @@
     for (let i = 0; i < merged.length; i++) {
       const curr = merged[i], next = merged[i + 1];
       if (curr.t === "del" && next && next.t === "ins" && curr.author === next.author && curr.date === next.date) {
-        out.push({ t: "sub", del: curr.s, ins: next.s, author: next.author, date: next.date });
+        out.push({ t: "sub", del: curr.s, ins: next.s, author: next.author, date: next.date, delId: curr.id, insId: next.id });
         i++;
       } else out.push(curr);
     }
@@ -593,7 +595,8 @@
             text: s.s,
             parentCommentId: null,
             resolved: null,
-            docOrder: ctx.docOrder.next++
+            docOrder: ctx.docOrder.next++,
+            id: s.id || null
           });
         }
       } else if (s.t === "del") {
@@ -608,7 +611,8 @@
             text: s.s,
             parentCommentId: null,
             resolved: null,
-            docOrder: ctx.docOrder.next++
+            docOrder: ctx.docOrder.next++,
+            id: s.id || null
           });
         }
       } else if (s.t === "sub") {
@@ -623,7 +627,8 @@
             text: s.del,
             parentCommentId: null,
             resolved: null,
-            docOrder: ctx.docOrder.next++
+            docOrder: ctx.docOrder.next++,
+            id: s.delId || null
           });
           ctx.observations.push({
             kind: "insertion",
@@ -633,7 +638,8 @@
             text: s.ins,
             parentCommentId: null,
             resolved: null,
-            docOrder: ctx.docOrder.next++
+            docOrder: ctx.docOrder.next++,
+            id: s.insId || null
           });
         }
       } else if (s.t === "cstart") {
