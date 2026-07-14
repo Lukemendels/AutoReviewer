@@ -98,7 +98,9 @@ export function buildCommentsData(commentsXml, extXml, DOMParserImpl) {
       if (cm.localName !== "comment") continue;
       const id = wAttr(cm, "id");
       const author = wAttr(cm, "author") || "Unknown";
-      const date = fmtDate(wAttr(cm, "date"));
+      // Full ISO timestamp kept here (spec: reviewer-pass-slicer needs hour/minute precision
+      // for 48h-gap pass clustering); truncate to date-only only at render time (commentToken).
+      const date = wAttr(cm, "date") || null;
       const ps = [];
       for (const p of cm.getElementsByTagName("*")) {
         if (p.localName === "p") {
@@ -108,7 +110,10 @@ export function buildCommentsData(commentsXml, extXml, DOMParserImpl) {
         }
       }
       const text = ps.map((p) => collectRunsText(p).trim()).filter(Boolean).join(" ") || "(empty comment)";
-      comments[id] = { id, author, date, text, done: false, parentId: null };
+      // done stays null (unknown) rather than false when commentsExtended.xml itself is
+      // absent from the package -- "not resolved" and "no resolution data at all" are
+      // different facts the slicer's raw-observation model needs to keep apart.
+      comments[id] = { id, author, date, text, done: extXml ? false : null, parentId: null };
     }
   }
   if (extXml) {
@@ -135,7 +140,7 @@ export function buildCommentsData(commentsXml, extXml, DOMParserImpl) {
 }
 function commentToken(c, depth) {
   const arrow = depth > 0 ? "↳".repeat(depth) + " " : "";
-  const date = c.date ? " (" + c.date + ")" : "";
+  const date = c.date ? " (" + fmtDate(c.date) + ")" : "";
   const res = c.done ? " [resolved]" : "";
   return "{>>" + arrow + c.author + date + res + ": " + c.text + "<<}";
 }
@@ -151,6 +156,73 @@ function renderThread(comments, childrenMap, id) {
   const c = comments[id];
   if (!c) return "";
   return commentToken(c, 0) + renderReplies(comments, childrenMap, id, 1);
+}
+
+/* ------------------------------------------------------------------ *
+ * Raw observation collection (reviewer-pass-slicer step 1, spec-workbench.md).
+ * Woven into the same walk that builds the markdown -- see serializeSegsTracked below --
+ * so the slicer never diverges from the one canonical exporter. Only active when
+ * ctx.observations is non-null (exportDocx's collectObservations option).
+ * ------------------------------------------------------------------ */
+
+// Point comments (commentRangeStart immediately followed by commentRangeEnd, nothing
+// between) have no real span to quote -- approximate with the sentence containing the
+// point, found by nearest sentence-ending punctuation on each side. Good enough for the
+// audit table; not meant to handle abbreviations/decimals precisely.
+function containingSentence(text, offset) {
+  if (!text) return "";
+  const before = text.slice(0, offset);
+  const after = text.slice(offset);
+  const lastBreak = [...before.matchAll(/[.!?]\s+/g)].pop();
+  const start = lastBreak ? lastBreak.index + lastBreak[0].length : 0;
+  const nextBreak = /[.!?](\s|$)/.exec(after);
+  const end = nextBreak ? offset + nextBreak.index + 1 : text.length;
+  return text.slice(start, end).trim();
+}
+
+// Visible plain-text contribution of a segment, for anchor-text accumulation only --
+// deliberately excludes ins/del (a reviewer's own tracked edits aren't "the resolved text
+// being commented on"; true accepted-view resolution is deferred to the later
+// slice-rendering step, out of scope here).
+function segPlainText(s) {
+  if (s.t === "text") return s.raw;
+  if (s.t === "locked" || s.t === "opaque") return s.s;
+  return "";
+}
+
+// One raw observation per node in a comment thread (root + every reply, depth-first),
+// all sharing the root's anchorText since replies comment on the thread, not on a new
+// document span of their own.
+function pushReplyObservations(ctx, parentId, anchorText) {
+  for (const childId of ctx.childrenMap[parentId] || []) {
+    const c = ctx.comments[childId];
+    ctx.observations.push({
+      kind: "comment-reply",
+      author: c.author,
+      date: c.date,
+      anchorText,
+      text: c.text,
+      parentCommentId: parentId,
+      resolved: c.done,
+      docOrder: ctx.docOrder.next++,
+    });
+    pushReplyObservations(ctx, childId, anchorText);
+  }
+}
+function pushThreadObservations(ctx, rootId, anchorText) {
+  const root = ctx.comments[rootId];
+  if (!root) return;
+  ctx.observations.push({
+    kind: "comment",
+    author: root.author,
+    date: root.date,
+    anchorText,
+    text: root.text,
+    parentCommentId: null,
+    resolved: root.done,
+    docOrder: ctx.docOrder.next++,
+  });
+  pushReplyObservations(ctx, rootId, anchorText);
 }
 
 /* ------------------------------------------------------------------ *
@@ -299,13 +371,18 @@ function normalize(segs) {
   const merged = [];
   for (const s of segs) {
     const last = merged[merged.length - 1];
-    if (last && last.t === s.t && (s.t === "ins" || s.t === "del")) last.s += s.s;
-    else merged.push({ ...s });
+    // Only merge adjacent same-type runs when they share one author/date -- otherwise
+    // they're two distinct tracked-change actions that happen to be text-adjacent, and
+    // merging would silently discard whichever side's attribution didn't win (spec:
+    // reviewer-pass-slicer needs every edit's own author/date intact).
+    if (last && last.t === s.t && (s.t === "ins" || s.t === "del") && last.author === s.author && last.date === s.date) {
+      last.s += s.s;
+    } else merged.push({ ...s });
   }
   const out = [];
   for (let i = 0; i < merged.length; i++) {
     const curr = merged[i], next = merged[i + 1];
-    if (curr.t === "del" && next && next.t === "ins") {
+    if (curr.t === "del" && next && next.t === "ins" && curr.author === next.author && curr.date === next.date) {
       out.push({ t: "sub", del: curr.s, ins: next.s, author: next.author, date: next.date });
       i++;
     } else out.push(curr);
@@ -331,28 +408,84 @@ function writeTextSegTracked(local, seg) {
 }
 function serializeSegsTracked(local, segs, ctx) {
   let openId = null;
+  let anchorStart = 0;
+  let plainPos = 0;
+  const paraPlainText = ctx.observations ? segs.map(segPlainText).join("") : "";
+
+  function commentObserved(id, anchorText) {
+    if (!ctx.observations) return;
+    const text = anchorText && anchorText.trim() ? anchorText.trim() : containingSentence(paraPlainText, plainPos);
+    pushThreadObservations(ctx, id, text);
+  }
+
   for (let i = 0; i < segs.length; i++) {
     const s = segs[i];
-    if (s.t === "text") writeTextSegTracked(local, s);
-    else if (s.t === "locked") local.writeLocked(s.s);
-    else if (s.t === "opaque") local.writeSynthetic(s.s);
-    else if (s.t === "ins") { local.writeSynthetic("{++" + s.s + "++}" + authorTag(s, ctx.annotate)); ctx.counts.ins++; }
-    else if (s.t === "del") { local.writeSynthetic("{--" + s.s + "--}" + authorTag(s, ctx.annotate)); ctx.counts.del++; }
-    else if (s.t === "sub") { local.writeSynthetic("{~~" + s.del + "~>" + s.ins + "~~}" + authorTag(s, ctx.annotate)); ctx.counts.sub++; }
+    if (s.t === "text") { writeTextSegTracked(local, s); plainPos += s.raw.length; }
+    else if (s.t === "locked") { local.writeLocked(s.s); plainPos += s.s.length; }
+    else if (s.t === "opaque") { local.writeSynthetic(s.s); plainPos += s.s.length; }
+    else if (s.t === "ins") {
+      local.writeSynthetic("{++" + s.s + "++}" + authorTag(s, ctx.annotate));
+      ctx.counts.ins++;
+      if (ctx.observations) {
+        ctx.observations.push({
+          kind: "insertion", author: s.author || "Unknown", date: s.date || null,
+          anchorText: null, text: s.s, parentCommentId: null, resolved: null, docOrder: ctx.docOrder.next++,
+        });
+      }
+    }
+    else if (s.t === "del") {
+      local.writeSynthetic("{--" + s.s + "--}" + authorTag(s, ctx.annotate));
+      ctx.counts.del++;
+      if (ctx.observations) {
+        ctx.observations.push({
+          kind: "deletion", author: s.author || "Unknown", date: s.date || null,
+          anchorText: null, text: s.s, parentCommentId: null, resolved: null, docOrder: ctx.docOrder.next++,
+        });
+      }
+    }
+    else if (s.t === "sub") {
+      local.writeSynthetic("{~~" + s.del + "~>" + s.ins + "~~}" + authorTag(s, ctx.annotate));
+      ctx.counts.sub++;
+      // Raw observation model (spec-workbench.md) has no "substitution" kind -- a sub is
+      // just an adjacent del+ins pair the renderer merges into one CriticMarkup token, so
+      // unpack it back into its two constituent observations here.
+      if (ctx.observations) {
+        ctx.observations.push({
+          kind: "deletion", author: s.author || "Unknown", date: s.date || null,
+          anchorText: null, text: s.del, parentCommentId: null, resolved: null, docOrder: ctx.docOrder.next++,
+        });
+        ctx.observations.push({
+          kind: "insertion", author: s.author || "Unknown", date: s.date || null,
+          anchorText: null, text: s.ins, parentCommentId: null, resolved: null, docOrder: ctx.docOrder.next++,
+        });
+      }
+    }
     else if (s.t === "cstart") {
-      if (openId === null && cendAfter(segs, i, s.id)) { openId = s.id; local.writeSynthetic("{=="); }
-      else if (!ctx.emitted.has(s.id)) { local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id)); ctx.emitted.add(s.id); }
+      if (openId === null && cendAfter(segs, i, s.id)) { openId = s.id; anchorStart = plainPos; local.writeSynthetic("{=="); }
+      else if (!ctx.emitted.has(s.id)) {
+        local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
+        ctx.emitted.add(s.id);
+        commentObserved(s.id, "");
+      }
     } else if (s.t === "cend") {
       if (openId === s.id) {
         local.writeSynthetic("==}");
         openId = null;
-        if (!ctx.emitted.has(s.id)) { local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id)); ctx.emitted.add(s.id); }
+        if (!ctx.emitted.has(s.id)) {
+          local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
+          ctx.emitted.add(s.id);
+          commentObserved(s.id, paraPlainText.slice(anchorStart, plainPos));
+        }
       }
     }
   }
   if (openId !== null) {
     local.writeSynthetic("==}");
-    if (!ctx.emitted.has(openId)) { local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, openId)); ctx.emitted.add(openId); }
+    if (!ctx.emitted.has(openId)) {
+      local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, openId));
+      ctx.emitted.add(openId);
+      commentObserved(openId, paraPlainText.slice(anchorStart, plainPos));
+    }
   }
 }
 
@@ -532,8 +665,14 @@ function buildHeaderTracked(filename, comments, counts) {
     "<!-- CriticMarkup legend: {++ins++} {--del--} {~~old~>new~~} {==highlighted==} {>>comment<<} -->"
   );
 }
-function render({ body, rels, comments, childrenMap, docDoc, filename }, annotate) {
-  const ctx = { comments, childrenMap, annotate, counts: { ins: 0, del: 0, sub: 0, fmt: 0 }, emitted: new Set() };
+function render({ body, rels, comments, childrenMap, docDoc, filename }, annotate, collectObservations) {
+  const ctx = {
+    comments, childrenMap, annotate,
+    counts: { ins: 0, del: 0, sub: 0, fmt: 0 },
+    emitted: new Set(),
+    observations: collectObservations ? [] : null,
+    docOrder: { next: 0 },
+  };
   for (const e of docDoc.getElementsByTagName("*")) {
     if (e.localName === "rPrChange" || e.localName === "pPrChange") ctx.counts.fmt++;
   }
@@ -546,18 +685,28 @@ function render({ body, rels, comments, childrenMap, docDoc, filename }, annotat
   final.writeSynthetic("\n\n");
   final.mergeFrom(bodyComposer);
 
+  // Comments never reached via a commentRangeStart/End pair in the body walk (a data
+  // anomaly -- every Word-authored comment has both) get no real document position, so
+  // their observations (if collected) carry a null anchorText rather than a guessed one.
   const orphans = Object.values(ctx.comments).filter((c) => !c.parentId && !ctx.emitted.has(c.id));
   if (orphans.length) {
     final.writeSynthetic(
       "\n\n## Unanchored comments\n\n" +
         orphans
-          .map((c) => { ctx.emitted.add(c.id); return "- " + renderThread(ctx.comments, ctx.childrenMap, c.id); })
+          .map((c) => {
+            ctx.emitted.add(c.id);
+            if (ctx.observations) pushThreadObservations(ctx, c.id, null);
+            return "- " + renderThread(ctx.comments, ctx.childrenMap, c.id);
+          })
           .join("\n")
     );
   }
   final.writeSynthetic("\n");
 
-  return { markdown: final.out, blocks: final.blocks, synthetic: final.synthetic, locked: final.locked, comments: ctx.comments, counts: ctx.counts };
+  return {
+    markdown: final.out, blocks: final.blocks, synthetic: final.synthetic, locked: final.locked,
+    comments: ctx.comments, counts: ctx.counts, observations: ctx.observations,
+  };
 }
 
 async function sha256Hex(arrayBuffer) {
@@ -569,7 +718,7 @@ async function sha256Hex(arrayBuffer) {
  * Public API
  * ------------------------------------------------------------------ */
 export async function exportDocx(docxBytes, options = {}) {
-  const { DOMParserImpl, annotate = false, filename = "document" } = options;
+  const { DOMParserImpl, annotate = false, filename = "document", collectObservations = false } = options;
 
   const zip = await unzip(docxBytes);
   const docXml = await readEntry(zip, "word/document.xml");
@@ -586,7 +735,7 @@ export async function exportDocx(docxBytes, options = {}) {
   const body = [...docDoc.documentElement.children].find((c) => c.localName === "body");
   if (!body) throw new Error("no document body found");
 
-  const result = render({ body, rels, comments, childrenMap, docDoc, filename }, annotate);
+  const result = render({ body, rels, comments, childrenMap, docDoc, filename }, annotate, collectObservations);
   const docHash = "sha256-" + (await sha256Hex(docxBytes));
 
   return {
@@ -594,6 +743,7 @@ export async function exportDocx(docxBytes, options = {}) {
     sourceMap: { docHash, blocks: result.blocks, synthetic: result.synthetic, locked: result.locked },
     comments: result.comments,
     counts: result.counts,
+    ...(collectObservations ? { observations: result.observations } : {}),
   };
 }
 
