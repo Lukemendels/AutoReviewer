@@ -91,10 +91,10 @@ function buildCommentElement(doc, comment, paraId) {
   return commentEl;
 }
 
-function buildCommentExElement(doc, paraId, parentParaId) {
+function buildCommentExElement(doc, paraId, parentParaId, done = false) {
   const el = doc.createElementNS(W15_NS, "w15:commentEx");
   el.setAttributeNS(W15_NS, "w15:paraId", paraId);
-  el.setAttributeNS(W15_NS, "w15:done", "0");
+  el.setAttributeNS(W15_NS, "w15:done", done ? "1" : "0");
   if (parentParaId) el.setAttributeNS(W15_NS, "w15:paraIdParent", parentParaId);
   return el;
 }
@@ -160,7 +160,18 @@ export function upsertComments(existingParts, newComments, options = {}) {
     commentsDoc.documentElement.appendChild(buildCommentElement(commentsDoc, comment, paraId));
 
     const parentParaId = comment.parentId != null ? idToParaId[String(comment.parentId)] : null;
-    extDoc.documentElement.appendChild(buildCommentExElement(extDoc, paraId, parentParaId));
+    const done = !!comment.done;
+    extDoc.documentElement.appendChild(buildCommentExElement(extDoc, paraId, parentParaId, done));
+
+    if (comment.parentId != null && done) {
+      if (parentParaId) {
+        for (const el of extDoc.getElementsByTagName("*")) {
+          if (el.localName === "commentEx" && el.getAttributeNS(W15_NS, "paraId") === parentParaId) {
+            el.setAttributeNS(W15_NS, "w15:done", "1");
+          }
+        }
+      }
+    }
   }
 
   ensureRelationship(relsDoc, REL_TYPE_COMMENTS, "comments.xml");

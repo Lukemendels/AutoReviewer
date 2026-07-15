@@ -871,6 +871,118 @@ Proceed with the review content normally once the operator has the tool open.
     if (!textResult.ok) return textResult;
     return resolveEdits({ edits: textResult.edits, sourceMap, largestDeletionWords });
   }
+  function validateResponseBlock({ responseMarkdown, sourceMap }) {
+    const response = normalizeNewlines(responseMarkdown).trim();
+    const annotations = sourceMap?.annotations || {};
+    const expectedLabels = Object.keys(annotations);
+    if (expectedLabels.length === 0) {
+      return {
+        ok: false,
+        gate: "G2",
+        message: "The document does not contain any comments or tracked changes to respond to."
+      };
+    }
+    const regex = /\[(C\d+|R\d+)\]\s*\{\>\>([\s\S]*?)\<\<\}/g;
+    let match;
+    const parsed = {};
+    const duplicateLabels = /* @__PURE__ */ new Set();
+    const unknownLabels = [];
+    while ((match = regex.exec(response)) !== null) {
+      const label = match[1];
+      const rawContent = match[2];
+      if (parsed[label]) {
+        duplicateLabels.add(label);
+      }
+      if (!annotations[label]) {
+        unknownLabels.push(label);
+      }
+      const trimmed = rawContent.trim();
+      if (label.startsWith("R")) {
+        let decision = null;
+        let rationale = "";
+        if (trimmed.startsWith("[AR:accept]")) {
+          decision = "accept";
+          rationale = trimmed.slice("[AR:accept]".length).trim();
+        } else if (trimmed.startsWith("[AR:reject]")) {
+          decision = "reject";
+          rationale = trimmed.slice("[AR:reject]".length).trim();
+        } else if (trimmed.startsWith("[AR:discuss]")) {
+          decision = "discuss";
+          rationale = trimmed.slice("[AR:discuss]".length).trim();
+        }
+        parsed[label] = {
+          label,
+          type: "revision",
+          decision,
+          rationale,
+          raw: trimmed,
+          originalId: annotations[label]?.id || null,
+          originalType: annotations[label]?.type || null
+        };
+      } else {
+        let resolve = false;
+        let reply = trimmed;
+        if (trimmed.startsWith("[AR:resolve]")) {
+          resolve = true;
+          reply = trimmed.slice("[AR:resolve]".length).trim();
+        }
+        parsed[label] = {
+          label,
+          type: "comment",
+          resolve,
+          reply,
+          raw: trimmed,
+          originalId: annotations[label]?.id || null
+        };
+      }
+    }
+    if (duplicateLabels.size > 0) {
+      return {
+        ok: false,
+        gate: "G1",
+        message: `The following labels are addressed more than once: ${[...duplicateLabels].sort().join(", ")}`
+      };
+    }
+    if (unknownLabels.length > 0) {
+      return {
+        ok: false,
+        gate: "G1",
+        message: `The response contains unknown labels not present in the document: ${unknownLabels.sort().join(", ")}`
+      };
+    }
+    for (const label of expectedLabels) {
+      if (label.startsWith("R")) {
+        const entry = parsed[label];
+        if (entry && !entry.decision) {
+          return {
+            ok: false,
+            gate: "G1",
+            message: `Label ${label} has an invalid or missing decision prefix. Expected [AR:accept], [AR:reject], or [AR:discuss].`
+          };
+        }
+      }
+    }
+    const missingLabels = expectedLabels.filter((l) => !parsed[l]);
+    if (missingLabels.length > 0) {
+      return {
+        ok: false,
+        gate: "G2",
+        message: `The response is missing replies for the following labels: ${missingLabels.sort().join(", ")}`
+      };
+    }
+    for (const label of expectedLabels) {
+      const entry = parsed[label];
+      const text = entry.type === "revision" ? entry.rationale : entry.reply;
+      if (text && text.length > 1e3) {
+        return {
+          ok: false,
+          gate: "G1",
+          message: `Label ${label} exceeds the reply/rationale length cap of 1000 characters.`
+        };
+      }
+    }
+    return { ok: true, decisions: Object.values(parsed), decisionsMap: parsed };
+  }
 
   // src/chunk.js
   function isTopLevelHeading(block, exportedMarkdown) {
@@ -1150,6 +1262,31 @@ Comment conventions: ${persona.commentConventions}`;
       promptVersion: chunk ? CHUNK_PROMPT_TEMPLATE_VERSION : PROMPT_TEMPLATE_VERSION,
       documentWordCount: words,
       overThreshold: words > CHUNK_WORD_THRESHOLD,
+      filename
+    };
+  }
+  var RESPOND_PROMPT_TEMPLATE_VERSION = "m6b-respond-2026.07-1";
+  function buildRespondPrompt({ persona, exportedMarkdown, filename, sourceMap = null }) {
+    const p = persona || DEFAULT_PERSONA;
+    const personaSection = buildPersonaSection(p);
+    const taskText = "[TASK]\nYou are given an exported document below that contains pre-existing comments and tracked changes represented as double-bracketed sentinels:\n  - Revisions are labeled as \u27E6R1: ...\u27E7, \u27E6R2: ...\u27E7, etc.\n  - Comments are labeled as \u27E6C1: ... >> ...\u27E7, \u27E6C2: ... >> ...\u27E7, etc.\n\nYou must respond to every single comment and revision. Your response must consist ONLY of a structured response block (do not return the full document). Do not write any preamble, chatter, or postamble outside the fenced block.";
+    const grammarText = "[RESPOND GRAMMAR]\nFor every label C1...Cn and R1...Rn present in the document, you must output exactly one line in the following format:\n\nFor comments [Cn]:\n  [Cn] {>>reply text<<}                    <-- to reply to the comment\n  [Cn] {>>[AR:resolve] reply text<<}      <-- to reply and recommend resolving/closing the comment\n\nFor revisions [Rn]:\n  [Rn] {>>[AR:accept] rationale<<}         <-- to recommend accepting the tracked change\n  [Rn] {>>[AR:reject] rationale<<}         <-- to recommend rejecting the tracked change\n  [Rn] {>>[AR:discuss] rationale<<}        <-- to recommend discussing the tracked change\n\nConstraints:\n- You must address every single label exactly once. Zero skips, zero duplicates, zero invented labels.\n- Write your response inside CriticMarkup comments: {>>...<<}.\n- Rationale/reply texts must be concise, economic, and compliant with the persona above (max 1000 characters per reply).";
+    const examplesText = "[WORKED EXAMPLES]\nIf the document contains [C1], [C2], [R1], and [R2], your response must look exactly like this:\n```markdown\n[C1] {>>Agreed -- will clarify this in the next draft.<<}\n[C2] {>>[AR:resolve] Citation added in the bibliography.<<}\n[R1] {>>[AR:accept] This aligns with the updated statutory definitions.<<}\n[R2] {>>[AR:reject] The original phrasing is required by OMB guidelines.<<}\n```";
+    const docText = buildDocumentSection(exportedMarkdown);
+    const sections = [
+      personaSection,
+      taskText,
+      grammarText,
+      examplesText,
+      docText
+    ];
+    const text = sections.join("\n\n");
+    const words = wordCount2(exportedMarkdown);
+    return {
+      text,
+      tokenEstimate: estimateTokens(text),
+      promptVersion: RESPOND_PROMPT_TEMPLATE_VERSION,
+      documentWordCount: words,
       filename
     };
   }
@@ -3101,6 +3238,51 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     }
     return { newComments: commentState.newComments };
   }
+  function injectResponses(documentXmlDoc, ratifiedDecisions, sourceMap, opts = {}) {
+    const author = opts.author || "AutoReviewer";
+    const date = opts.date || (/* @__PURE__ */ new Date()).toISOString();
+    const commentState = { next: maxIdAmong(documentXmlDoc, COMMENT_MARKER_TAGS) + 1, newComments: [] };
+    for (const decision of ratifiedDecisions) {
+      if (decision.type === "comment") {
+        const commentId = commentState.next++;
+        commentState.newComments.push({
+          id: commentId,
+          parentId: decision.originalId,
+          author,
+          date,
+          text: decision.reply,
+          done: !!decision.resolve
+        });
+      } else if (decision.type === "revision") {
+        let revEl = null;
+        for (const el of documentXmlDoc.getElementsByTagName("*")) {
+          if ((el.localName === "ins" || el.localName === "del") && el.getAttributeNS(NS.w, "id") === String(decision.originalId)) {
+            revEl = el;
+            break;
+          }
+        }
+        if (!revEl) {
+          continue;
+        }
+        const commentId = commentState.next++;
+        commentState.newComments.push({
+          id: commentId,
+          author,
+          date,
+          text: `[AR:${decision.decision}] ${decision.rationale}`
+        });
+        const start = buildCommentMarker(documentXmlDoc, "commentRangeStart", commentId);
+        const end = buildCommentMarker(documentXmlDoc, "commentRangeEnd", commentId);
+        const ref = buildCommentReferenceRun(documentXmlDoc, commentId);
+        const parent = revEl.parentNode;
+        const next = revEl.nextSibling;
+        parent.insertBefore(start, next);
+        parent.insertBefore(end, next);
+        parent.insertBefore(ref, next);
+      }
+    }
+    return { newComments: commentState.newComments };
+  }
 
   // src/ui/load.js
   var STRUCTURAL_FENCE_MESSAGE = "This document contains soft line breaks, tabs, or tracked deletions inside paragraphs, which this version cannot reposition safely. Remove them (Ctrl+Shift+8 in Word shows soft breaks as a bent arrow) or use a copy saved without them.";
@@ -3134,7 +3316,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     const filename = baseName(originalFilename);
     let exported;
     try {
-      exported = await exportDocx(docxBytes, { filename, DOMParserImpl });
+      exported = await exportDocx(docxBytes, { filename, DOMParserImpl, sentinel: flowType === "respond-review" });
     } catch (err) {
       return { ok: false, message: `Could not read "${originalFilename}": ${err.message}` };
     }
@@ -3436,10 +3618,10 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     commentEl.appendChild(p);
     return commentEl;
   }
-  function buildCommentExElement(doc, paraId, parentParaId) {
+  function buildCommentExElement(doc, paraId, parentParaId, done = false) {
     const el = doc.createElementNS(W15_NS, "w15:commentEx");
     el.setAttributeNS(W15_NS, "w15:paraId", paraId);
-    el.setAttributeNS(W15_NS, "w15:done", "0");
+    el.setAttributeNS(W15_NS, "w15:done", done ? "1" : "0");
     if (parentParaId) el.setAttributeNS(W15_NS, "w15:paraIdParent", parentParaId);
     return el;
   }
@@ -3493,7 +3675,17 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       idToParaId[String(comment.id)] = paraId;
       commentsDoc.documentElement.appendChild(buildCommentElement(commentsDoc, comment, paraId));
       const parentParaId = comment.parentId != null ? idToParaId[String(comment.parentId)] : null;
-      extDoc.documentElement.appendChild(buildCommentExElement(extDoc, paraId, parentParaId));
+      const done = !!comment.done;
+      extDoc.documentElement.appendChild(buildCommentExElement(extDoc, paraId, parentParaId, done));
+      if (comment.parentId != null && done) {
+        if (parentParaId) {
+          for (const el of extDoc.getElementsByTagName("*")) {
+            if (el.localName === "commentEx" && el.getAttributeNS(W15_NS, "paraId") === parentParaId) {
+              el.setAttributeNS(W15_NS, "w15:done", "1");
+            }
+          }
+        }
+      }
     }
     ensureRelationship(relsDoc, REL_TYPE_COMMENTS, "comments.xml");
     ensureRelationship(relsDoc, REL_TYPE_COMMENTS_EXT, "commentsExtended.xml");
@@ -3531,6 +3723,8 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       panel.dataset.flow = flow.id;
       if (flow.id === "run-review") {
         renderRunReviewPanel(panel);
+      } else if (flow.id === "respond-review") {
+        renderRespondReviewPanel(panel);
       } else {
         panel.innerHTML = `<p class="ar-coming-soon">${flow.label} is not implemented yet.</p>`;
       }
@@ -3582,6 +3776,34 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     const zip = await unzip(docxBytes);
     const docDoc = parseXml(await readEntry(zip, "word/document.xml"), DOMParserImpl);
     const { newComments } = injectEdits(docDoc, acceptedEdits, sourceMap, { author, date });
+    const mutatedParts = { "word/document.xml": serializePart(docDoc, XMLSerializerImpl) };
+    if (newComments.length) {
+      const existingParts = {
+        commentsXml: await readEntry(zip, "word/comments.xml"),
+        commentsExtendedXml: await readEntry(zip, "word/commentsExtended.xml"),
+        relsXml: await readEntry(zip, "word/_rels/document.xml.rels"),
+        contentTypesXml: await readEntry(zip, "[Content_Types].xml")
+      };
+      const updated = upsertComments(existingParts, newComments, { DOMParserImpl, XMLSerializerImpl });
+      mutatedParts["word/comments.xml"] = updated.commentsXml;
+      mutatedParts["word/commentsExtended.xml"] = updated.commentsExtendedXml;
+      mutatedParts["word/_rels/document.xml.rels"] = updated.relsXml;
+      mutatedParts["[Content_Types].xml"] = updated.contentTypesXml;
+    }
+    return writeZip(zip, mutatedParts);
+  }
+  async function buildReviewedResponsesDocx({
+    docxBytes,
+    acceptedDecisions,
+    sourceMap,
+    author,
+    date,
+    DOMParserImpl,
+    XMLSerializerImpl
+  }) {
+    const zip = await unzip(docxBytes);
+    const docDoc = parseXml(await readEntry(zip, "word/document.xml"), DOMParserImpl);
+    const { newComments } = injectResponses(docDoc, acceptedDecisions, sourceMap, { author, date });
     const mutatedParts = { "word/document.xml": serializePart(docDoc, XMLSerializerImpl) };
     if (newComments.length) {
       const existingParts = {
@@ -4138,6 +4360,285 @@ ${fd.truncatedBefore ? "\u2026" : ""}${escapeHtml(fd.before)}<mark>${escapeHtml(
       const wrap = document.createElement("div");
       wrap.innerHTML = `
       <p class="ar-hint">Reviewed document downloaded. Open it in Word to check the tracked changes and comments.</p>
+      <button type="button" id="ar-new-review" class="ar-primary">Start a new review</button>
+    `;
+      container.appendChild(wrap);
+      wrap.querySelector("#ar-new-review").addEventListener("click", () => appState.reset());
+    }
+    appState.onChange(render2);
+    render2();
+  }
+  function renderRespondReviewPanel(panel) {
+    const appState = createAppState();
+    let loadError = null;
+    function regeneratePrompt(persona) {
+      const ctx = appState.context;
+      const built = buildRespondPrompt({
+        persona,
+        exportedMarkdown: ctx.exported.markdown,
+        filename: ctx.filename,
+        sourceMap: ctx.exported.sourceMap
+      });
+      appState.setPrompt(built);
+    }
+    async function handleDocFiles(files) {
+      const file = files[0];
+      if (!file) return;
+      loadError = null;
+      render2();
+      const statusEl = panel.querySelector("#ar-load-status");
+      if (statusEl) statusEl.textContent = `Reading "${file.name}"...`;
+      let bytes;
+      try {
+        bytes = await readFileAsArrayBuffer(file);
+      } catch (err) {
+        loadError = `Could not read "${file.name}": ${err.message}`;
+        render2();
+        return;
+      }
+      const result = await loadDocxFromBytes(bytes, { originalFilename: file.name, flowType: "respond-review" });
+      if (!result.ok) {
+        loadError = result.message;
+        render2();
+        return;
+      }
+      appState.loadDocument({ docxBytes: result.docxBytes, filename: result.filename, exported: result.exported });
+      regeneratePrompt(null);
+    }
+    async function handlePersonaFiles(files) {
+      const file = files[0];
+      if (!file) return;
+      if (!/\.md$/i.test(file.name)) {
+        loadError = `"${file.name}" is not a persona .md file.`;
+        render2();
+        return;
+      }
+      const text = await readFileAsText(file);
+      const persona = loadPersonaFromText(text, { filename: file.name });
+      appState.loadPersona(persona);
+      regeneratePrompt(persona);
+    }
+    function render2() {
+      panel.innerHTML = "";
+      const state = appState.state;
+      const ctx = appState.context;
+      if (state === STATES.EMPTY) {
+        renderLoadStep(panel);
+        return;
+      }
+      renderPersonaControls(panel, ctx);
+      renderModelField(panel, ctx);
+      if (state === STATES.DOC_LOADED || state === STATES.PROMPT_READY) {
+        renderPromptStep(panel, ctx);
+      } else if (state === STATES.AWAITING_RESPONSE || state === STATES.VALIDATION_FAILED) {
+        renderPromptStep(panel, ctx, { collapsed: true });
+        renderResponseStep(panel, ctx);
+      } else if (state === STATES.RATIFYING) {
+        renderRatifyStep(panel, ctx);
+      } else if (state === STATES.INJECTED) {
+        renderInjectedStep(panel, ctx);
+      }
+    }
+    function renderLoadStep(container) {
+      const wrap = document.createElement("div");
+      wrap.innerHTML = `
+      <p class="ar-hint">Drop a Word <code>.docx</code> document containing pre-existing tracked changes or comments to respond to.</p>
+      <div id="ar-dropzone" class="ar-dropzone" tabindex="0">
+        <p>Drop a <code>.docx</code> here, or click to browse.</p>
+      </div>
+      <input type="file" id="ar-doc-input" accept=".docx" style="display:none" />
+      <p id="ar-load-status" class="ar-hint">${loadError ? formatLoadError(loadError) : ""}</p>
+    `;
+      container.appendChild(wrap);
+      const dz = wrap.querySelector("#ar-dropzone");
+      const input = wrap.querySelector("#ar-doc-input");
+      attachDropZone(dz, input, { onFiles: handleDocFiles });
+    }
+    function renderPersonaControls(container, ctx) {
+      const wrap = document.createElement("div");
+      wrap.className = "ar-persona-controls";
+      const persona = ctx.persona;
+      wrap.innerHTML = `
+      <p class="ar-hint">
+        Persona: <strong>${escapeHtml(persona ? persona.name : "Default Persona (built-in)")}</strong>
+      </p>
+      <div id="ar-persona-dropzone" class="ar-dropzone ar-dropzone-small" tabindex="0">
+        <p>Drop a persona <code>.md</code> here, or click to browse.</p>
+      </div>
+      <input type="file" id="ar-persona-input" accept=".md" style="display:none" />
+    `;
+      container.appendChild(wrap);
+      const dz = wrap.querySelector("#ar-persona-dropzone");
+      const input = wrap.querySelector("#ar-persona-input");
+      attachDropZone(dz, input, { onFiles: handlePersonaFiles });
+    }
+    function renderModelField(container, ctx) {
+      const wrap = document.createElement("div");
+      wrap.className = "ar-model-field ar-field";
+      wrap.innerHTML = `
+      <label for="ar-model">Model (as shown in DHSChat)</label>
+      <input type="text" id="ar-model" class="ar-model" value="${escapeHtml(ctx.model || "")}" placeholder="e.g. GPT-5.5 (Standard)" />
+    `;
+      container.appendChild(wrap);
+      wrap.querySelector("#ar-model").addEventListener("input", (e) => {
+        ctx.model = e.target.value;
+      });
+    }
+    function renderPromptStep(container, ctx, { collapsed = false } = {}) {
+      const wrap = document.createElement("div");
+      wrap.className = "ar-prompt-step";
+      if (ctx.tokenEstimate == null) {
+        wrap.innerHTML = `<p class="ar-hint">Composing prompt...</p>`;
+        container.appendChild(wrap);
+        return;
+      }
+      if (collapsed) {
+        wrap.innerHTML = `
+        <details class="ar-prompt-details">
+          <summary>Composed prompt (${ctx.tokenEstimate} tokens) &mdash; click to re-view</summary>
+          <textarea class="ar-prompt-text" readonly>${escapeHtml(ctx.promptText)}</textarea>
+          <button type="button" id="ar-recopy-prompt" class="ar-primary">Copy prompt again</button>
+        </details>
+      `;
+        container.appendChild(wrap);
+        wrap.querySelector("#ar-recopy-prompt").addEventListener("click", (e) => {
+          if (typeof copyWithFeedback === "function") copyWithFeedback(e.currentTarget, ctx.promptText);
+        });
+        return;
+      }
+      wrap.innerHTML = `
+      <p class="ar-hint">Token estimate: ~${ctx.tokenEstimate} (prompt version ${escapeHtml(ctx.promptVersion)})</p>
+      <textarea class="ar-prompt-text" readonly>${escapeHtml(ctx.promptText)}</textarea>
+      <div class="ar-controls">
+        <button type="button" id="ar-copy-prompt" class="ar-primary">Copy prompt</button>
+      </div>
+      <p class="ar-hint">Paste this into DHSChat, copy the reply, then paste it below.</p>
+    `;
+      container.appendChild(wrap);
+      wrap.querySelector("#ar-copy-prompt").addEventListener("click", (e) => {
+        if (typeof copyWithFeedback === "function") copyWithFeedback(e.currentTarget, ctx.promptText);
+        appState.copyPrompt();
+      });
+    }
+    function renderResponseStep(container, ctx) {
+      const wrap = document.createElement("div");
+      wrap.className = "ar-response-step";
+      container.appendChild(wrap);
+      if (ctx.validation && !ctx.validation.ok) {
+        const box = document.createElement("div");
+        box.className = "ar-gate-failure";
+        box.innerHTML = `<p><strong>${ctx.validation.gate} failed:</strong> ${escapeHtml(ctx.validation.message)}</p>`;
+        wrap.appendChild(box);
+      }
+      const fieldWrap = document.createElement("div");
+      fieldWrap.innerHTML = `
+      <div class="ar-field">
+        <label for="ar-response">Response</label>
+        <textarea id="ar-response" class="ar-response" spellcheck="false"></textarea>
+      </div>
+      <div class="ar-controls">
+        <button type="button" id="ar-validate" class="ar-primary">Validate</button>
+      </div>
+      <div id="ar-picker"></div>
+    `;
+      wrap.appendChild(fieldWrap);
+      const responseEl = fieldWrap.querySelector("#ar-response");
+      const pickerEl = fieldWrap.querySelector("#ar-picker");
+      function runEnvelope(pastedText) {
+        const referenceLength = ctx.exported.markdown.length;
+        const { candidates, noFencesFound } = extractCandidates(pastedText, { exportedLength: referenceLength });
+        if (candidates.length === 1 && !noFencesFound) {
+          runValidation(candidates[0].content);
+          return;
+        }
+        if (!noFencesFound && candidates.length === 0) {
+          pickerEl.innerHTML = `<p class="ar-hint">No fenced code block was found -- using the entire paste.</p>`;
+          runValidation(pastedText);
+          return;
+        }
+        pickerEl.innerHTML = noFencesFound ? `<p class="ar-hint">No fenced code block was found -- using the entire paste.</p>` : `<p class="ar-hint">${candidates.length} fenced blocks were found -- pick the right one:</p>`;
+        if (!noFencesFound) {
+          candidates.forEach((c, i) => {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.textContent = `Use block ${i + 1} (${c.content.length} chars)`;
+            btn.addEventListener("click", () => runValidation(c.content));
+            pickerEl.appendChild(btn);
+          });
+        } else {
+          runValidation(pastedText);
+        }
+      }
+      function runValidation(responseText) {
+        pickerEl.innerHTML = "";
+        if (appState.state === STATES.VALIDATION_FAILED) appState.acknowledgeFailure();
+        appState.submitResponse(responseText);
+        const result = validateResponseBlock({ responseMarkdown: responseText, sourceMap: ctx.exported.sourceMap });
+        if (result.ok) appState.validationPassed(result);
+        else appState.validationFailed(result);
+      }
+      wrap.querySelector("#ar-validate").addEventListener("click", () => runEnvelope(responseEl.value));
+      responseEl.addEventListener("paste", () => {
+        setTimeout(() => runEnvelope(responseEl.value), 0);
+      });
+    }
+    function renderRatifyStep(container, ctx) {
+      const wrap = document.createElement("div");
+      container.appendChild(wrap);
+      const authorField = document.createElement("div");
+      authorField.className = "ar-field";
+      const personaName = ctx.persona ? ctx.persona.name : "Default Persona";
+      authorField.innerHTML = `
+      <label for="ar-author">Author (comment attribution)</label>
+      <input type="text" id="ar-author" class="ar-author" value="AutoReviewer \u2014 ${escapeHtml(personaName)}" />
+    `;
+      wrap.appendChild(authorField);
+      const authorEl = authorField.querySelector("#ar-author");
+      const ratifyContainer = document.createElement("div");
+      wrap.appendChild(ratifyContainer);
+      const syntheticEdits = ctx.validation.decisions.map((dec) => {
+        const mdPos = ctx.exported.markdown.indexOf(`\u27E6${dec.label}:`);
+        return {
+          type: "comment",
+          commentText: dec.type === "comment" ? (dec.resolve ? "[AR:resolve] " : "") + dec.reply : `[AR:${dec.decision}] ` + dec.rationale,
+          mdStart: mdPos !== -1 ? mdPos : 0,
+          mdEnd: mdPos !== -1 ? mdPos + `\u27E6${dec.label}:`.length : 0,
+          decisionObj: dec
+        };
+      });
+      const state = createRatificationState(syntheticEdits);
+      renderRatificationUI(ratifyContainer, state, { sourceText: ctx.exported.markdown });
+      const statusEl = document.createElement("p");
+      statusEl.className = "ar-hint";
+      wrap.appendChild(statusEl);
+      const injectBtn = ratifyContainer.querySelector('[data-action="inject"]');
+      if (injectBtn) {
+        injectBtn.addEventListener("click", async () => {
+          injectBtn.disabled = true;
+          statusEl.textContent = "Injecting replies...";
+          const author = authorEl.value.trim() || "AutoReviewer";
+          try {
+            const acceptedDecisions = state.acceptedEdits().map((edit) => edit.decisionObj);
+            const rewritten = await buildReviewedResponsesDocx({
+              docxBytes: ctx.docxBytes,
+              acceptedDecisions,
+              sourceMap: ctx.exported.sourceMap,
+              author,
+              date: (/* @__PURE__ */ new Date()).toISOString()
+            });
+            downloadBlob(rewritten, `${ctx.filename} \u2014 responded.docx`);
+            appState.inject();
+          } catch (err) {
+            statusEl.textContent = `Injection failed: ${err.message}`;
+            injectBtn.disabled = false;
+          }
+        });
+      }
+    }
+    function renderInjectedStep(container) {
+      const wrap = document.createElement("div");
+      wrap.innerHTML = `
+      <p class="ar-hint">Responded document downloaded. Open it in Word to check the comment thread replies.</p>
       <button type="button" id="ar-new-review" class="ar-primary">Start a new review</button>
     `;
       container.appendChild(wrap);

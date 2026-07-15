@@ -200,3 +200,20 @@ describe("upsertComments: round-trips through the reader", () => {
     expect(childrenMap["0"]).toEqual(["1"]);
   });
 });
+
+describe("upsertComments: comment resolution", () => {
+  it("sets w15:done to 1 for resolved comments and propagates to parent", () => {
+    const result = upsertComments(
+      {},
+      [
+        { id: 0, author: "Reviewer A", date: "2026-01-01T00:00:00Z", text: "Top-level comment." },
+        { id: 1, author: "Reviewer B", date: "2026-01-01T00:00:00Z", text: "Agreed -- resolved.", parentId: 0, done: true },
+      ],
+      OPTS
+    );
+    const exes = commentExesIn(result.commentsExtendedXml);
+    expect(exes).toHaveLength(2);
+    expect(exes[1].getAttribute("w15:done")).toBe("1");
+    expect(exes[0].getAttribute("w15:done")).toBe("1");
+  });
+});
