@@ -1937,7 +1937,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
         if (cm.localName !== "comment") continue;
         const id = wAttr(cm, "id");
         const author = wAttr(cm, "author") || "Unknown";
-        const date = fmtDate(wAttr(cm, "date"));
+        const date = wAttr(cm, "date") || null;
         const ps = [];
         for (const p of cm.getElementsByTagName("*")) {
           if (p.localName === "p") {
@@ -1947,7 +1947,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
           }
         }
         const text = ps.map((p) => collectRunsText(p).trim()).filter(Boolean).join(" ") || "(empty comment)";
-        comments[id] = { id, author, date, text, done: false, parentId: null };
+        comments[id] = { id, author, date, text, done: extXml ? false : null, parentId: null };
       }
     }
     if (extXml) {
@@ -1974,7 +1974,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
   }
   function commentToken(c, depth) {
     const arrow = depth > 0 ? "\u21B3".repeat(depth) + " " : "";
-    const date = c.date ? " (" + c.date + ")" : "";
+    const date = c.date ? " (" + fmtDate(c.date) + ")" : "";
     const res = c.done ? " [resolved]" : "";
     return "{>>" + arrow + c.author + date + res + ": " + c.text + "<<}";
   }
@@ -1990,6 +1990,54 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     const c = comments[id];
     if (!c) return "";
     return commentToken(c, 0) + renderReplies(comments, childrenMap, id, 1);
+  }
+  function containingSentence(text, offset) {
+    if (!text) return "";
+    const before = text.slice(0, offset);
+    const after = text.slice(offset);
+    const lastBreak = [...before.matchAll(/[.!?]\s+/g)].pop();
+    const start = lastBreak ? lastBreak.index + lastBreak[0].length : 0;
+    const nextBreak = /[.!?](\s|$)/.exec(after);
+    const end = nextBreak ? offset + nextBreak.index + 1 : text.length;
+    return text.slice(start, end).trim();
+  }
+  function segPlainText(s) {
+    if (s.t === "text") return s.raw;
+    if (s.t === "locked" || s.t === "opaque") return s.s;
+    return "";
+  }
+  function pushReplyObservations(ctx, parentId, anchorText) {
+    for (const childId of ctx.childrenMap[parentId] || []) {
+      const c = ctx.comments[childId];
+      ctx.observations.push({
+        kind: "comment-reply",
+        author: c.author,
+        date: c.date,
+        anchorText,
+        text: c.text,
+        parentCommentId: parentId,
+        resolved: c.done,
+        docOrder: ctx.docOrder.next++,
+        commentId: childId
+      });
+      pushReplyObservations(ctx, childId, anchorText);
+    }
+  }
+  function pushThreadObservations(ctx, rootId, anchorText) {
+    const root = ctx.comments[rootId];
+    if (!root) return;
+    ctx.observations.push({
+      kind: "comment",
+      author: root.author,
+      date: root.date,
+      anchorText,
+      text: root.text,
+      parentCommentId: null,
+      resolved: root.done,
+      docOrder: ctx.docOrder.next++,
+      commentId: rootId
+    });
+    pushReplyObservations(ctx, rootId, anchorText);
   }
   var runText = runPlainText;
   function hasStructuralHazard(body) {
@@ -2123,9 +2171,9 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
         const { b, i } = runEmph(c);
         if (raw) segs.push({ t: "text", raw, b, i, runIndex });
       } else if (ln === "ins") {
-        segs.push({ t: "ins", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date") });
+        segs.push({ t: "ins", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date"), id: wAttr(c, "id") });
       } else if (ln === "del") {
-        segs.push({ t: "del", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date") });
+        segs.push({ t: "del", s: collectRunsTextIndexed(c, runCounter), author: wAttr(c, "author"), date: wAttr(c, "date"), id: wAttr(c, "id") });
       } else if (ln === "hyperlink") {
         const txt = collectRunsTextIndexed(c, runCounter);
         const url = rels[rAttr(c, "id")] || "";
@@ -2138,14 +2186,15 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     const merged = [];
     for (const s of segs) {
       const last = merged[merged.length - 1];
-      if (last && last.t === s.t && (s.t === "ins" || s.t === "del")) last.s += s.s;
-      else merged.push({ ...s });
+      if (last && last.t === s.t && (s.t === "ins" || s.t === "del") && last.author === s.author && last.date === s.date) {
+        last.s += s.s;
+      } else merged.push({ ...s });
     }
     const out = [];
     for (let i = 0; i < merged.length; i++) {
       const curr = merged[i], next = merged[i + 1];
-      if (curr.t === "del" && next && next.t === "ins") {
-        out.push({ t: "sub", del: curr.s, ins: next.s, author: next.author, date: next.date });
+      if (curr.t === "del" && next && next.t === "ins" && curr.author === next.author && curr.date === next.date) {
+        out.push({ t: "sub", del: curr.s, ins: next.s, author: next.author, date: next.date, delId: curr.id, insId: next.id });
         i++;
       } else out.push(curr);
     }
@@ -2175,27 +2224,93 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
   }
   function serializeSegsTracked(local, segs, ctx) {
     let openId = null;
+    let anchorStart = 0;
+    let plainPos = 0;
+    const paraPlainText = ctx.observations ? segs.map(segPlainText).join("") : "";
+    function commentObserved(id, anchorText) {
+      if (!ctx.observations) return;
+      const text = anchorText && anchorText.trim() ? anchorText.trim() : containingSentence(paraPlainText, plainPos);
+      pushThreadObservations(ctx, id, text);
+    }
     for (let i = 0; i < segs.length; i++) {
       const s = segs[i];
-      if (s.t === "text") writeTextSegTracked(local, s);
-      else if (s.t === "locked") local.writeLocked(s.s);
-      else if (s.t === "opaque") local.writeSynthetic(s.s);
-      else if (s.t === "ins") {
+      if (s.t === "text") {
+        writeTextSegTracked(local, s);
+        plainPos += s.raw.length;
+      } else if (s.t === "locked") {
+        local.writeLocked(s.s);
+        plainPos += s.s.length;
+      } else if (s.t === "opaque") {
+        local.writeSynthetic(s.s);
+        plainPos += s.s.length;
+      } else if (s.t === "ins") {
         local.writeSynthetic("{++" + s.s + "++}" + authorTag(s, ctx.annotate));
         ctx.counts.ins++;
+        if (ctx.observations) {
+          ctx.observations.push({
+            kind: "insertion",
+            author: s.author || "Unknown",
+            date: s.date || null,
+            anchorText: null,
+            text: s.s,
+            parentCommentId: null,
+            resolved: null,
+            docOrder: ctx.docOrder.next++,
+            id: s.id || null
+          });
+        }
       } else if (s.t === "del") {
         local.writeSynthetic("{--" + s.s + "--}" + authorTag(s, ctx.annotate));
         ctx.counts.del++;
+        if (ctx.observations) {
+          ctx.observations.push({
+            kind: "deletion",
+            author: s.author || "Unknown",
+            date: s.date || null,
+            anchorText: null,
+            text: s.s,
+            parentCommentId: null,
+            resolved: null,
+            docOrder: ctx.docOrder.next++,
+            id: s.id || null
+          });
+        }
       } else if (s.t === "sub") {
         local.writeSynthetic("{~~" + s.del + "~>" + s.ins + "~~}" + authorTag(s, ctx.annotate));
         ctx.counts.sub++;
+        if (ctx.observations) {
+          ctx.observations.push({
+            kind: "deletion",
+            author: s.author || "Unknown",
+            date: s.date || null,
+            anchorText: null,
+            text: s.del,
+            parentCommentId: null,
+            resolved: null,
+            docOrder: ctx.docOrder.next++,
+            id: s.delId || null
+          });
+          ctx.observations.push({
+            kind: "insertion",
+            author: s.author || "Unknown",
+            date: s.date || null,
+            anchorText: null,
+            text: s.ins,
+            parentCommentId: null,
+            resolved: null,
+            docOrder: ctx.docOrder.next++,
+            id: s.insId || null
+          });
+        }
       } else if (s.t === "cstart") {
         if (openId === null && cendAfter(segs, i, s.id)) {
           openId = s.id;
+          anchorStart = plainPos;
           local.writeSynthetic("{==");
         } else if (!ctx.emitted.has(s.id)) {
           local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
           ctx.emitted.add(s.id);
+          commentObserved(s.id, "");
         }
       } else if (s.t === "cend") {
         if (openId === s.id) {
@@ -2204,6 +2319,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
           if (!ctx.emitted.has(s.id)) {
             local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
             ctx.emitted.add(s.id);
+            commentObserved(s.id, paraPlainText.slice(anchorStart, plainPos));
           }
         }
       }
@@ -2213,6 +2329,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       if (!ctx.emitted.has(openId)) {
         local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, openId));
         ctx.emitted.add(openId);
+        commentObserved(openId, paraPlainText.slice(anchorStart, plainPos));
       }
     }
   }
@@ -2386,8 +2503,16 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     const summary = parts.length ? parts.join(" \xB7 ") : "no tracked changes or comments detected";
     return "<!-- Redline export from: " + filename + ".docx -->\n<!-- " + summary + " -->\n<!-- CriticMarkup legend: {++ins++} {--del--} {~~old~>new~~} {==highlighted==} {>>comment<<} -->";
   }
-  function render({ body, rels, comments, childrenMap, docDoc, filename }, annotate) {
-    const ctx = { comments, childrenMap, annotate, counts: { ins: 0, del: 0, sub: 0, fmt: 0 }, emitted: /* @__PURE__ */ new Set() };
+  function render({ body, rels, comments, childrenMap, docDoc, filename }, annotate, collectObservations) {
+    const ctx = {
+      comments,
+      childrenMap,
+      annotate,
+      counts: { ins: 0, del: 0, sub: 0, fmt: 0 },
+      emitted: /* @__PURE__ */ new Set(),
+      observations: collectObservations ? [] : null,
+      docOrder: { next: 0 }
+    };
     for (const e of docDoc.getElementsByTagName("*")) {
       if (e.localName === "rPrChange" || e.localName === "pPrChange") ctx.counts.fmt++;
     }
@@ -2402,19 +2527,28 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
       final.writeSynthetic(
         "\n\n## Unanchored comments\n\n" + orphans.map((c) => {
           ctx.emitted.add(c.id);
+          if (ctx.observations) pushThreadObservations(ctx, c.id, null);
           return "- " + renderThread(ctx.comments, ctx.childrenMap, c.id);
         }).join("\n")
       );
     }
     final.writeSynthetic("\n");
-    return { markdown: final.out, blocks: final.blocks, synthetic: final.synthetic, locked: final.locked, comments: ctx.comments, counts: ctx.counts };
+    return {
+      markdown: final.out,
+      blocks: final.blocks,
+      synthetic: final.synthetic,
+      locked: final.locked,
+      comments: ctx.comments,
+      counts: ctx.counts,
+      observations: ctx.observations
+    };
   }
   async function sha256Hex2(arrayBuffer) {
     const digest = await crypto.subtle.digest("SHA-256", arrayBuffer);
     return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
   async function exportDocx(docxBytes, options = {}) {
-    const { DOMParserImpl, annotate = false, filename = "document" } = options;
+    const { DOMParserImpl, annotate = false, filename = "document", collectObservations = false } = options;
     const zip = await unzip(docxBytes);
     const docXml = await readEntry(zip, "word/document.xml");
     if (!docXml) throw new Error("not a Word document (no word/document.xml)");
@@ -2427,14 +2561,15 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     const docDoc = parseXml(docXml, DOMParserImpl);
     const body = [...docDoc.documentElement.children].find((c) => c.localName === "body");
     if (!body) throw new Error("no document body found");
-    const result = render({ body, rels, comments, childrenMap, docDoc, filename }, annotate);
+    const result = render({ body, rels, comments, childrenMap, docDoc, filename }, annotate, collectObservations);
     const docHash = "sha256-" + await sha256Hex2(docxBytes);
     return {
       markdown: result.markdown,
       sourceMap: { docHash, blocks: result.blocks, synthetic: result.synthetic, locked: result.locked },
       comments: result.comments,
       counts: result.counts,
-      structuralHazard: hasStructuralHazard(body)
+      structuralHazard: hasStructuralHazard(body),
+      ...collectObservations ? { observations: result.observations } : {}
     };
   }
 

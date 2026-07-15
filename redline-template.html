@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoReviewer &mdash; Redline Export</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#0f172a; --muted:#64748b;
+    --line:#d7dce3; --accent:#4f46e5; --accent-soft:#eef2ff;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  .wrap{max-width:900px; margin:0 auto; padding:32px 20px 60px}
+  header h1{font-size:22px; margin:0 0 4px; letter-spacing:-0.01em}
+  header p{margin:0; color:var(--muted); font-size:13.5px}
+  .rl-note{
+    margin-top:14px; padding:10px 14px; border:1px solid var(--line); border-radius:10px;
+    background:var(--accent-soft); color:var(--ink); font-size:13px; font-weight:600;
+  }
+  .card{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:18px; margin-top:20px;
+  }
+  .rl-dropzone{
+    border:2px dashed var(--line); border-radius:12px; padding:28px 16px; text-align:center;
+    color:var(--muted); cursor:pointer; margin-top:8px;
+  }
+  .rl-dropzone.ar-drag-over{border-color:var(--accent); background:var(--accent-soft); color:var(--ink)}
+  .rl-error{
+    display:none; margin-top:14px; padding:12px 14px; border:1px solid #fecaca; background:#fef2f2;
+    border-radius:10px; color:#991b1b; font-size:13.5px; white-space:pre-wrap;
+  }
+  #rl-results{display:none}
+  .rl-summary{font-size:13.5px; color:var(--muted); margin-top:14px}
+  .rl-warning{
+    display:none; margin-top:10px; padding:10px 14px; border:1px solid #fde68a; background:#fffbeb;
+    border-radius:10px; color:#92400e; font-size:13px;
+  }
+  .rl-output{
+    width:100%; height:420px; resize:vertical; font:12.5px/1.5 "SF Mono",Menlo,Consolas,monospace;
+    padding:12px; border:1px solid var(--line); border-radius:10px; background:#fcfdff; color:var(--ink);
+    white-space:pre; tab-size:2; margin-top:12px;
+  }
+  .rl-controls{display:flex; align-items:center; gap:10px; margin-top:12px; flex-wrap:wrap}
+  .rl-controls button{
+    font:inherit; font-size:13px; font-weight:600; padding:7px 13px; border-radius:8px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink); cursor:pointer;
+  }
+  button.rl-primary{background:var(--accent); border-color:var(--accent); color:#fff}
+  .rl-optional-hint{font-size:11.5px; color:var(--muted)}
+  #rl-passes{display:none}
+  #rl-passes h2{font-size:16px; margin:0 0 4px}
+  #rl-passes .rl-hint{margin:0 0 12px; color:var(--muted); font-size:13px}
+  .rl-passes-table{width:100%; border-collapse:collapse; margin-top:12px; font-size:13px}
+  .rl-passes-table th, .rl-passes-table td{
+    text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:middle;
+  }
+  .rl-passes-table th{color:var(--muted); font-weight:600; font-size:12px}
+  .rl-passes-table button{
+    font:inherit; font-size:12.5px; font-weight:600; padding:5px 10px; border-radius:7px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink); cursor:pointer;
+  }
+  .rl-passes-status{margin-top:10px; font-size:13px; color:var(--muted)}
+  .foot{margin-top:26px; font-size:12px; color:var(--muted); text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>AutoReviewer &mdash; Redline Export</h1>
+    <p>Convert a .docx with tracked changes and comments into CriticMarkup markdown you can paste into an LLM chat.</p>
+  </header>
+
+  <p class="rl-note">Read-only. This tool does not modify your document.</p>
+
+  <div id="rl-app" class="card">
+    <div class="rl-dropzone" id="rl-dropzone">
+      Drop a .docx file here, or click to choose one.
+      <input type="file" id="rl-file" accept=".docx" style="display:none">
+    </div>
+
+    <div class="rl-error" id="rl-error"></div>
+
+    <div id="rl-results">
+      <p class="rl-summary" id="rl-summary"></p>
+      <p class="rl-warning" id="rl-warning"></p>
+      <textarea class="rl-output" id="rl-output" readonly></textarea>
+      <div class="rl-controls">
+        <button type="button" id="rl-copy" class="rl-primary">Copy markdown</button>
+        <button type="button" id="rl-download-md">Download .md</button>
+        <button type="button" id="rl-download-sourcemap">Download source map (.json)</button>
+        <span class="rl-optional-hint">Source map is optional &mdash; not needed for the chat paste.</span>
+      </div>
+    </div>
+
+    <div id="rl-passes" class="card">
+      <h2>Reviewer passes</h2>
+      <p class="rl-hint">
+        One row per reviewer per review pass (edits/comments grouped by author, split wherever a
+        reviewer's own timestamps jump by more than 48 hours). Export one slice, or all of them at
+        once into a folder.
+      </p>
+      <p class="rl-warning" id="rl-passes-warning"></p>
+      <div class="rl-error" id="rl-passes-error"></div>
+      <div class="rl-controls">
+        <button type="button" id="rl-export-all" class="rl-primary">Export all slices&hellip;</button>
+        <button type="button" id="rl-merge-selected">Merge selected reviewers</button>
+        <span class="rl-optional-hint">Same person under two names? Check their rows, then merge.</span>
+      </div>
+      <table class="rl-passes-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>Reviewer</th>
+            <th>Pass</th>
+            <th>Edits</th>
+            <th>Comments</th>
+            <th>Replies</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rl-passes-tbody"></tbody>
+      </table>
+      <p class="rl-passes-status" id="rl-passes-status"></p>
+    </div>
+  </div>
+
+  <div class="foot">Offline &middot; no dependencies &middot; no data leaves this page</div>
+</div>
+
+<!-- Tool bundle (esbuild output, inlined by build/build-redline.js) -->
+<script>
+__BUNDLE_JS__
+</script>
+</body>
+</html>
