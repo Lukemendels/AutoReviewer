@@ -3316,7 +3316,7 @@ This edit touches locked content (text inside \u27E6\u2026\u27E7 or an [image: \
     const filename = baseName(originalFilename);
     let exported;
     try {
-      exported = await exportDocx(docxBytes, { filename, DOMParserImpl, sentinel: flowType === "respond-review" });
+      exported = await exportDocx(docxBytes, { filename, DOMParserImpl, sentinel: true });
     } catch (err) {
       return { ok: false, message: `Could not read "${originalFilename}": ${err.message}` };
     }

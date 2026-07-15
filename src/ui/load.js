@@ -85,7 +85,7 @@ export async function loadDocxFromBytes(docxBytes, { originalFilename, DOMParser
   const filename = baseName(originalFilename);
   let exported;
   try {
-    exported = await exportDocx(docxBytes, { filename, DOMParserImpl, sentinel: flowType === "respond-review" });
+    exported = await exportDocx(docxBytes, { filename, DOMParserImpl, sentinel: true });
   } catch (err) {
     return { ok: false, message: `Could not read "${originalFilename}": ${err.message}` };
   }

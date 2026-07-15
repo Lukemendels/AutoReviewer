@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { exportDocx } from "../src/ooxml/export.js";
+import { loadDocxFromBytes } from "../src/ui/load.js";
 import { validate, validateResponseBlock } from "../src/validate.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -308,6 +309,35 @@ describe("sentinel validation (M6a)", () => {
     const result = validate({ responseMarkdown: exported.markdown, exportedMarkdown: exported.markdown, sourceMap: exported.sourceMap });
     expect(result.ok).toBe(true);
     expect(result.edits).toHaveLength(0);
+  });
+
+  it("Run Review's load path sentinelizes annotated documents (regression: M6a dropped the preflight fence for run-review, but load.js still passed sentinel: flowType === 'respond-review', so Run Review loaded annotated docs with sentinelization off)", async () => {
+    const bytes = loadDocx("comments-threaded-nested");
+    const result = await loadDocxFromBytes(bytes, {
+      originalFilename: "comments-threaded-nested.docx",
+      DOMParserImpl: DOMParser,
+      flowType: "run-review",
+    });
+    expect(result.ok).toBe(true);
+    const { exported } = result;
+    const echoResult = validate({ responseMarkdown: exported.markdown, exportedMarkdown: exported.markdown, sourceMap: exported.sourceMap });
+    expect(echoResult.ok).toBe(true);
+    expect(echoResult.edits).toHaveLength(0);
+  });
+
+  it("a real model edit on top of a sentinelized Run Review export still parses as exactly one edit (sentinels must not swallow real edits)", async () => {
+    const bytes = loadDocx("comments-threaded-nested");
+    const result = await loadDocxFromBytes(bytes, {
+      originalFilename: "comments-threaded-nested.docx",
+      DOMParserImpl: DOMParser,
+      flowType: "run-review",
+    });
+    expect(result.ok).toBe(true);
+    const { exported } = result;
+    const editedMarkdown = `${exported.markdown}{++ inserted by model ++}`;
+    const editResult = validate({ responseMarkdown: editedMarkdown, exportedMarkdown: exported.markdown, sourceMap: exported.sourceMap });
+    expect(editResult.ok).toBe(true);
+    expect(editResult.edits).toHaveLength(1);
   });
 });
 
