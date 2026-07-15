@@ -159,6 +159,26 @@ function renderThread(comments, childrenMap, id) {
   return commentToken(c, 0) + renderReplies(comments, childrenMap, id, 1);
 }
 
+function commentTokenSentinel(c, depth) {
+  const arrow = depth > 0 ? "↳".repeat(depth) + " " : "";
+  const date = c.date ? " (" + fmtDate(c.date) + ")" : "";
+  const res = c.done ? " [resolved]" : "";
+  return arrow + c.author + date + res + ": " + c.text;
+}
+function renderRepliesSentinel(comments, childrenMap, parentId, depth) {
+  let s = "";
+  for (const childId of childrenMap[parentId] || []) {
+    s += " " + commentTokenSentinel(comments[childId], depth);
+    s += renderRepliesSentinel(comments, childrenMap, childId, depth + 1);
+  }
+  return s;
+}
+function renderThreadSentinel(comments, childrenMap, id) {
+  const c = comments[id];
+  if (!c) return "";
+  return commentTokenSentinel(c, 0) + renderRepliesSentinel(comments, childrenMap, id, 1);
+}
+
 /* ------------------------------------------------------------------ *
  * Raw observation collection (reviewer-pass-slicer step 1, spec-workbench.md).
  * Woven into the same walk that builds the markdown -- see serializeSegsTracked below --
@@ -408,16 +428,37 @@ function cendAfter(segs, i, id) {
   return false;
 }
 
+function writeDocTextEscaped(local, str, runIndex, charOffset) {
+  let pos = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    if (char === "⟦" || char === "⟧") {
+      if (i > pos) {
+        local.writeDocText(str.slice(pos, i), runIndex, charOffset + pos);
+      }
+      local.writeSynthetic("\\");
+      local.writeDocText(char, runIndex, charOffset + i);
+      pos = i + 1;
+    }
+  }
+  if (pos < str.length) {
+    local.writeDocText(str.slice(pos), runIndex, charOffset + pos);
+  }
+}
+
 function writeTextSegTracked(local, seg) {
   const { lead, core, trail, openMark, closeMark } = emphParts(seg.raw, { b: seg.b, i: seg.i });
   let charOffset = 0;
-  if (lead) { local.writeDocText(lead, seg.runIndex, charOffset); charOffset += lead.length; }
+  if (lead) { writeDocTextEscaped(local, lead, seg.runIndex, charOffset); charOffset += lead.length; }
   if (openMark) local.writeSynthetic(openMark);
-  if (core) { local.writeDocText(core, seg.runIndex, charOffset); charOffset += core.length; }
+  if (core) { writeDocTextEscaped(local, core, seg.runIndex, charOffset); charOffset += core.length; }
   if (closeMark) local.writeSynthetic(closeMark);
-  if (trail) local.writeDocText(trail, seg.runIndex, charOffset);
+  if (trail) writeDocTextEscaped(local, trail, seg.runIndex, charOffset);
 }
+
 function serializeSegsTracked(local, segs, ctx) {
+  ctx.revCounter = ctx.revCounter || 0;
+  ctx.commentCounter = ctx.commentCounter || 0;
   let openId = null;
   let anchorStart = 0;
   let plainPos = 0;
@@ -431,11 +472,25 @@ function serializeSegsTracked(local, segs, ctx) {
 
   for (let i = 0; i < segs.length; i++) {
     const s = segs[i];
-    if (s.t === "text") { writeTextSegTracked(local, s); plainPos += s.raw.length; }
-    else if (s.t === "locked") { local.writeLocked(s.s); plainPos += s.s.length; }
-    else if (s.t === "opaque") { local.writeSynthetic(s.s); plainPos += s.s.length; }
-    else if (s.t === "ins") {
-      local.writeSynthetic("{++" + s.s + "++}" + authorTag(s, ctx.annotate));
+    if (s.t === "text") {
+      writeTextSegTracked(local, s);
+      plainPos += s.raw.length;
+    } else if (s.t === "locked") {
+      local.writeLocked(s.s);
+      plainPos += s.s.length;
+    } else if (s.t === "opaque") {
+      local.writeSynthetic(s.s);
+      plainPos += s.s.length;
+    } else if (s.t === "ins") {
+      if (ctx.sentinel) {
+        const label = "R" + (++ctx.revCounter);
+        local.writeLocked("⟦" + label + ": +" + s.s + "+⟧");
+        if (ctx.annotations) {
+          ctx.annotations[label] = { type: "ins", id: s.id, author: s.author, date: s.date };
+        }
+      } else {
+        local.writeSynthetic("{++" + s.s + "++}" + authorTag(s, ctx.annotate));
+      }
       ctx.counts.ins++;
       if (ctx.observations) {
         ctx.observations.push({
@@ -444,9 +499,16 @@ function serializeSegsTracked(local, segs, ctx) {
           id: s.id || null,
         });
       }
-    }
-    else if (s.t === "del") {
-      local.writeSynthetic("{--" + s.s + "--}" + authorTag(s, ctx.annotate));
+    } else if (s.t === "del") {
+      if (ctx.sentinel) {
+        const label = "R" + (++ctx.revCounter);
+        local.writeLocked("⟦" + label + ": -" + s.s + "-⟧");
+        if (ctx.annotations) {
+          ctx.annotations[label] = { type: "del", id: s.id, author: s.author, date: s.date };
+        }
+      } else {
+        local.writeSynthetic("{--" + s.s + "--}" + authorTag(s, ctx.annotate));
+      }
       ctx.counts.del++;
       if (ctx.observations) {
         ctx.observations.push({
@@ -455,13 +517,17 @@ function serializeSegsTracked(local, segs, ctx) {
           id: s.id || null,
         });
       }
-    }
-    else if (s.t === "sub") {
-      local.writeSynthetic("{~~" + s.del + "~>" + s.ins + "~~}" + authorTag(s, ctx.annotate));
+    } else if (s.t === "sub") {
+      if (ctx.sentinel) {
+        const label = "R" + (++ctx.revCounter);
+        local.writeLocked("⟦" + label + ": ~" + s.del + "~>" + s.ins + "~⟧");
+        if (ctx.annotations) {
+          ctx.annotations[label] = { type: "sub", id: s.insId || s.delId, delId: s.delId, insId: s.insId, author: s.author, date: s.date };
+        }
+      } else {
+        local.writeSynthetic("{~~" + s.del + "~>" + s.ins + "~~}" + authorTag(s, ctx.annotate));
+      }
       ctx.counts.sub++;
-      // Raw observation model (spec-workbench.md) has no "substitution" kind -- a sub is
-      // just an adjacent del+ins pair the renderer merges into one CriticMarkup token, so
-      // unpack it back into its two constituent observations here.
       if (ctx.observations) {
         ctx.observations.push({
           kind: "deletion", author: s.author || "Unknown", date: s.date || null,
@@ -474,34 +540,86 @@ function serializeSegsTracked(local, segs, ctx) {
           id: s.insId || null,
         });
       }
-    }
-    else if (s.t === "cstart") {
-      // cendAfter only looks within THIS paragraph's segs (buildSegments runs per
-      // paragraph) -- a comment range that legitimately spans multiple paragraphs lands
-      // here too, indistinguishable from a genuinely rangeless/malformed one. Either way
-      // commentObserved falls back to containingSentence() over this one paragraph's plain
-      // text, not the comment's true (possibly multi-paragraph) span. Known approximation:
-      // the slice renderer (later step) must not assume anchorText is always the complete
-      // anchor for a cross-paragraph comment.
-      if (openId === null && cendAfter(segs, i, s.id)) { openId = s.id; anchorStart = plainPos; local.writeSynthetic("{=="); }
-      else if (!ctx.emitted.has(s.id)) {
-        local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
-        ctx.emitted.add(s.id);
-        commentObserved(s.id, "");
-      }
-    } else if (s.t === "cend") {
-      if (openId === s.id) {
-        local.writeSynthetic("==}");
-        openId = null;
-        if (!ctx.emitted.has(s.id)) {
+    } else if (s.t === "cstart") {
+      if (ctx.sentinel) {
+        let j = -1;
+        for (let k = i + 1; k < segs.length; k++) {
+          if (segs[k].t === "cend" && segs[k].id === s.id) {
+            j = k;
+            break;
+          }
+        }
+        if (j !== -1) {
+          const comment = ctx.comments[s.id];
+          if (comment && comment.parentId === null) {
+            const label = "C" + (++ctx.commentCounter);
+            const innerSegs = segs.slice(i + 1, j);
+            const innerLocal = new Composer();
+            serializeSegsTracked(innerLocal, innerSegs, ctx);
+            const threadText = renderThreadSentinel(ctx.comments, ctx.childrenMap, s.id);
+            local.writeLocked("⟦" + label + ": " + innerLocal.out + " >> " + threadText + "⟧");
+            ctx.emitted.add(s.id);
+            const markEmitted = (parentId) => {
+              for (const childId of ctx.childrenMap[parentId] || []) {
+                ctx.emitted.add(childId);
+                markEmitted(childId);
+              }
+            };
+            markEmitted(s.id);
+
+            if (ctx.annotations) {
+              ctx.annotations[label] = { type: "comment", id: s.id, author: comment.author, date: comment.date };
+            }
+            if (ctx.observations) {
+              const anchorText = innerSegs.map(segPlainText).join("");
+              const text = anchorText && anchorText.trim() ? anchorText.trim() : containingSentence(paraPlainText, plainPos);
+              pushThreadObservations(ctx, s.id, text);
+            }
+
+            i = j;
+            for (const innerSeg of innerSegs) {
+              if (innerSeg.t === "text") plainPos += innerSeg.raw.length;
+              else if (innerSeg.t === "locked" || innerSeg.t === "opaque") plainPos += innerSeg.s.length;
+            }
+          } else {
+            if (!ctx.emitted.has(s.id)) {
+              const threadText = renderThreadSentinel(ctx.comments, ctx.childrenMap, s.id);
+              local.writeSynthetic(threadText);
+              ctx.emitted.add(s.id);
+              commentObserved(s.id, "");
+            }
+          }
+        }
+      } else {
+        if (openId === null && cendAfter(segs, i, s.id)) { openId = s.id; anchorStart = plainPos; local.writeSynthetic("{=="); }
+        else if (!ctx.emitted.has(s.id)) {
           local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
           ctx.emitted.add(s.id);
-          commentObserved(s.id, paraPlainText.slice(anchorStart, plainPos));
+          commentObserved(s.id, "");
+        }
+      }
+    } else if (s.t === "cend") {
+      if (ctx.sentinel) {
+        if (!ctx.emitted.has(s.id)) {
+          const threadText = renderThreadSentinel(ctx.comments, ctx.childrenMap, s.id);
+          local.writeSynthetic(threadText);
+          ctx.emitted.add(s.id);
+          commentObserved(s.id, "");
+        }
+      } else {
+        if (openId === s.id) {
+          local.writeSynthetic("==}");
+          openId = null;
+          if (!ctx.emitted.has(s.id)) {
+            local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, s.id));
+            ctx.emitted.add(s.id);
+            commentObserved(s.id, paraPlainText.slice(anchorStart, plainPos));
+          }
         }
       }
     }
   }
-  if (openId !== null) {
+  if (!ctx.sentinel && openId !== null) {
     local.writeSynthetic("==}");
     if (!ctx.emitted.has(openId)) {
       local.writeSynthetic(renderThread(ctx.comments, ctx.childrenMap, openId));
@@ -687,13 +805,17 @@ function buildHeaderTracked(filename, comments, counts) {
     "<!-- CriticMarkup legend: {++ins++} {--del--} {~~old~>new~~} {==highlighted==} {>>comment<<} -->"
   );
 }
-function render({ body, rels, comments, childrenMap, docDoc, filename }, annotate, collectObservations) {
+function render({ body, rels, comments, childrenMap, docDoc, filename }, annotate, collectObservations, sentinel) {
   const ctx = {
     comments, childrenMap, annotate,
     counts: { ins: 0, del: 0, sub: 0, fmt: 0 },
     emitted: new Set(),
     observations: collectObservations ? [] : null,
     docOrder: { next: 0 },
+    annotations: {},
+    revCounter: 0,
+    commentCounter: 0,
+    sentinel,
   };
   for (const e of docDoc.getElementsByTagName("*")) {
     if (e.localName === "rPrChange" || e.localName === "pPrChange") ctx.counts.fmt++;
@@ -712,22 +834,31 @@ function render({ body, rels, comments, childrenMap, docDoc, filename }, annotat
   // their observations (if collected) carry a null anchorText rather than a guessed one.
   const orphans = Object.values(ctx.comments).filter((c) => !c.parentId && !ctx.emitted.has(c.id));
   if (orphans.length) {
-    final.writeSynthetic(
-      "\n\n## Unanchored comments\n\n" +
-        orphans
-          .map((c) => {
-            ctx.emitted.add(c.id);
-            if (ctx.observations) pushThreadObservations(ctx, c.id, null);
-            return "- " + renderThread(ctx.comments, ctx.childrenMap, c.id);
-          })
-          .join("\n")
-    );
+    final.writeSynthetic("\n\n## Unanchored comments\n\n");
+    orphans.forEach((c, idx) => {
+      ctx.emitted.add(c.id);
+      if (ctx.observations) pushThreadObservations(ctx, c.id, null);
+      if (ctx.sentinel) {
+        const label = "C" + (++ctx.commentCounter);
+        if (ctx.annotations) {
+          ctx.annotations[label] = { type: "comment", id: c.id, author: c.author, date: c.date };
+        }
+        const threadText = renderThreadSentinel(ctx.comments, ctx.childrenMap, c.id);
+        if (idx > 0) final.writeSynthetic("\n");
+        final.writeSynthetic("- ");
+        final.writeLocked("⟦" + label + ": >> " + threadText + " ⟧");
+      } else {
+        if (idx > 0) final.writeSynthetic("\n");
+        final.writeSynthetic("- " + renderThread(ctx.comments, ctx.childrenMap, c.id));
+      }
+    });
   }
   final.writeSynthetic("\n");
 
   return {
     markdown: final.out, blocks: final.blocks, synthetic: final.synthetic, locked: final.locked,
     comments: ctx.comments, counts: ctx.counts, observations: ctx.observations,
+    annotations: ctx.annotations,
   };
 }
 
@@ -740,7 +871,7 @@ async function sha256Hex(arrayBuffer) {
  * Public API
  * ------------------------------------------------------------------ */
 export async function exportDocx(docxBytes, options = {}) {
-  const { DOMParserImpl, annotate = false, filename = "document", collectObservations = false } = options;
+  const { DOMParserImpl, annotate = false, filename = "document", collectObservations = false, sentinel = false } = options;
 
   const zip = await unzip(docxBytes);
   const docXml = await readEntry(zip, "word/document.xml");
@@ -757,12 +888,18 @@ export async function exportDocx(docxBytes, options = {}) {
   const body = [...docDoc.documentElement.children].find((c) => c.localName === "body");
   if (!body) throw new Error("no document body found");
 
-  const result = render({ body, rels, comments, childrenMap, docDoc, filename }, annotate, collectObservations);
+  const result = render({ body, rels, comments, childrenMap, docDoc, filename }, annotate, collectObservations, sentinel);
   const docHash = "sha256-" + (await sha256Hex(docxBytes));
 
   return {
     markdown: result.markdown,
-    sourceMap: { docHash, blocks: result.blocks, synthetic: result.synthetic, locked: result.locked },
+    sourceMap: {
+      docHash,
+      blocks: result.blocks,
+      synthetic: result.synthetic,
+      locked: result.locked,
+      annotations: result.annotations,
+    },
     comments: result.comments,
     counts: result.counts,
     structuralHazard: hasStructuralHazard(body),

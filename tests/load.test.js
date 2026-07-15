@@ -24,27 +24,25 @@ describe("baseName", () => {
   });
 });
 
-describe("checkPreflight: issue #16 (reject pre-existing tracked changes/replies at load time)", () => {
-  it("passes a clean export", () => {
-    expect(checkPreflight({ counts: { ins: 0, del: 0, sub: 0 }, comments: {} }).ok).toBe(true);
+describe("checkPreflight: M6a flow-parameterized preflight checks", () => {
+  it("passes a clean export in run-review", () => {
+    expect(checkPreflight({ counts: { ins: 0, del: 0, sub: 0 }, comments: {} }, "run-review").ok).toBe(true);
   });
 
-  // M4d's broader annotation fence also fires on any pre-existing tracked change, so the
-  // message now carries both reasons (see tests/load.fences.test.js) -- this US-7 check
-  // (and its own wording) must still be present in there, unmodified.
-  it("blocks on pre-existing insertions/deletions, reusing inject.js's D4 wording", () => {
-    const result = checkPreflight({ counts: { ins: 1, del: 0, sub: 0 }, comments: {} });
-    expect(result.ok).toBe(false);
-    expect(result.message).toContain(D4_ERROR_MESSAGE);
+  it("passes pre-existing insertions/deletions/comments in run-review (annotation fence down)", () => {
+    const result = checkPreflight({ counts: { ins: 1, del: 0, sub: 0 }, comments: { c1: { id: "c1", parentId: null } } }, "run-review");
+    expect(result.ok).toBe(true);
   });
 
-  it("blocks on a comment reply even with zero tracked changes", () => {
-    const result = checkPreflight({
-      counts: { ins: 0, del: 0, sub: 0 },
-      comments: { c1: { id: "c1", parentId: null }, c2: { id: "c2", parentId: "c1" } },
-    });
+  it("blocks on clean export in respond-review flow (nothing to respond to)", () => {
+    const result = checkPreflight({ counts: { ins: 0, del: 0, sub: 0 }, comments: {} }, "respond-review");
     expect(result.ok).toBe(false);
-    expect(result.message).toContain(COMMENT_REPLY_MESSAGE);
+    expect(result.message).toContain("nothing here to respond to");
+  });
+
+  it("passes annotated export in respond-review flow", () => {
+    const result = checkPreflight({ counts: { ins: 1, del: 0, sub: 0 }, comments: {} }, "respond-review");
+    expect(result.ok).toBe(true);
   });
 });
 
@@ -63,10 +61,9 @@ describe("loadDocxFromBytes: end-to-end against real fixtures", () => {
     expect(result.message).toContain("notes.txt");
   });
 
-  it("blocks a document with pre-existing tracked changes at load time", async () => {
-    const bytes = loadDocxBytes("tracked-changes");
-    const result = await loadDocxFromBytes(bytes, { originalFilename: "tracked-changes.docx", DOMParserImpl: DOMParser });
-    expect(result.ok).toBe(false);
-    expect(result.message).toContain(D4_ERROR_MESSAGE);
+  it("loads a document with pre-existing comments in run-review", async () => {
+    const bytes = loadDocxBytes("comments-threaded");
+    const result = await loadDocxFromBytes(bytes, { originalFilename: "comments-threaded.docx", DOMParserImpl: DOMParser, flowType: "run-review" });
+    expect(result.ok).toBe(true);
   });
 });

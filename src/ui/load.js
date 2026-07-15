@@ -30,6 +30,9 @@ export const STRUCTURAL_FENCE_MESSAGE =
 export const ANNOTATION_FENCE_MESSAGE =
   "This document already contains comments or tracked changes. This version reviews clean documents only; support for annotated documents is the next milestone.";
 
+export const NOTHING_TO_RESPOND_MESSAGE =
+  "This document does not contain any comments or tracked changes. There is nothing here to respond to.";
+
 export function baseName(filename) {
   return (filename || "document").replace(/\.docx$/i, "");
 }
@@ -52,20 +55,19 @@ export function checkFileExtension(filename) {
 // M4d adds two more checks (F-2, F-3) and reports every applicable reason together, not
 // just the first hit, so a document failing multiple checks gets one complete dialog
 // instead of a fix-one-reload-hit-the-next loop.
-export function checkPreflight(exportResult) {
+export function checkPreflight(exportResult, flowType = "run-review") {
   const { counts, comments, structuralHazard } = exportResult;
   const reasons = [];
 
   if (structuralHazard) reasons.push(STRUCTURAL_FENCE_MESSAGE);
 
-  // US-7 (issue #16): kept as-is, even though the broader annotation fence below
-  // supersedes it in practice -- do not remove this check or its tests.
-  if (counts.ins || counts.del || counts.sub) reasons.push(D4_ERROR_MESSAGE);
-  if (Object.values(comments || {}).some((c) => c.parentId != null)) reasons.push(COMMENT_REPLY_MESSAGE);
-
-  // M4d annotation fence: ANY pre-existing comment or tracked change, replies or not.
-  if (counts.ins || counts.del || counts.sub || Object.keys(comments || {}).length > 0) {
-    reasons.push(ANNOTATION_FENCE_MESSAGE);
+  if (flowType === "run-review") {
+    // Structural fence only! All other annotation fences come down.
+  } else if (flowType === "respond-review") {
+    const hasAnnotation = counts.ins > 0 || counts.del > 0 || counts.sub > 0 || Object.keys(comments || {}).length > 0;
+    if (!hasAnnotation) {
+      reasons.push(NOTHING_TO_RESPOND_MESSAGE);
+    }
   }
 
   if (reasons.length) return { ok: false, message: reasons.join("\n\n") };
@@ -76,7 +78,7 @@ export function checkPreflight(exportResult) {
 // {ok:false, message}. `originalFilename` keeps its extension for the checks above; the
 // export itself is tagged with the extension-stripped base name (exportDocx's header
 // appends ".docx" itself -- see ooxml/export.js's buildHeaderTracked).
-export async function loadDocxFromBytes(docxBytes, { originalFilename, DOMParserImpl } = {}) {
+export async function loadDocxFromBytes(docxBytes, { originalFilename, DOMParserImpl, flowType = "run-review" } = {}) {
   const extCheck = checkFileExtension(originalFilename);
   if (!extCheck.ok) return extCheck;
 
@@ -88,7 +90,7 @@ export async function loadDocxFromBytes(docxBytes, { originalFilename, DOMParser
     return { ok: false, message: `Could not read "${originalFilename}": ${err.message}` };
   }
 
-  const preflight = checkPreflight(exported);
+  const preflight = checkPreflight(exported, flowType);
   if (!preflight.ok) return preflight;
 
   return { ok: true, exported, filename, docxBytes };

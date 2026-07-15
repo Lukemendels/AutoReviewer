@@ -28,6 +28,7 @@ describe("fixture corpus", () => {
     expect(fixtureNames.sort()).toEqual(
       [
         "bold-italic.docx",
+        "comments-threaded-nested.docx",
         "comments-threaded.docx",
         "fields-and-content-controls.docx",
         "headings-and-lists.docx",
@@ -147,6 +148,16 @@ describe("comments-threaded.docx", () => {
     expect(markdown).toContain("Agreed -- flagged for legal review.");
     expect(markdown).toContain("[resolved]");
     expect(markdown).toContain("Please cite the authority here.");
+  });
+});
+
+describe("comments-threaded-nested.docx", () => {
+  it("renders a nested reply thread and the tracked insertion", async () => {
+    const { markdown } = await exportFixture("comments-threaded-nested.docx");
+    expect(markdown).toContain("Is this the right threshold?");
+    expect(markdown).toContain("↳ Reviewer B");
+    expect(markdown).toContain("↳↳ Reviewer C");
+    expect(markdown).toContain("{++ (with mixed changes)++}");
   });
 });
 

@@ -300,3 +300,13 @@ describe("G5 -- sanity report (warns, never blocks)", () => {
     expect(result.warnings.some((w) => w.code === "duplicate-comment")).toBe(true);
   });
 });
+
+describe("sentinel validation (M6a)", () => {
+  it("validates a byte-perfect echo of a sentinelized document with zero edits", async () => {
+    const bytes = loadDocx("comments-threaded-nested");
+    const exported = await exportDocx(bytes, { DOMParserImpl: DOMParser, filename: "comments-threaded-nested", sentinel: true });
+    const result = validate({ responseMarkdown: exported.markdown, exportedMarkdown: exported.markdown, sourceMap: exported.sourceMap });
+    expect(result.ok).toBe(true);
+    expect(result.edits).toHaveLength(0);
+  });
+});
