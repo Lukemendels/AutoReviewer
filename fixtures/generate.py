@@ -160,6 +160,7 @@ def add_comment_threading(path, thread_spec):
         pid = format(0x10000000 + int(cid), "08X")
         p_el.set(f"{{{W14_NS}}}paraId", pid)
         para_ids[cid] = pid
+        comment_el.set(f"{{{W_NS}}}date", "2026-07-02T00:00:00Z")
     comments_xml = etree.tostring(comments_root, xml_declaration=True, encoding="UTF-8", standalone=True)
 
     ext_root = etree.Element(f"{{{W15_NS}}}commentsEx", nsmap={"w15": W15_NS})
@@ -347,6 +348,51 @@ def comments_threaded():
     )
 
 
+def comments_threaded_nested():
+    """A deeply threaded discussion thread (up to depth 2) alongside a tracked change in the same paragraph."""
+    doc = Document()
+    p1 = doc.add_paragraph("This sentence has a discussion thread attached to it.")
+    doc.add_comment(p1.runs[0], text="Is this the right threshold?", author="Reviewer A")
+    p2 = doc.add_paragraph("This sentence has a resolved comment attached to it.")
+    doc.add_comment(p2.runs[0], text="Please cite the authority here.", author="Reviewer B")
+
+    path = os.path.join(FIXTURES_DIR, "comments-threaded-nested.docx")
+    doc.save(path)
+    add_comment_threading(
+        path,
+        {
+            "0": {},
+            "1": {"done": True},
+        },
+    )
+    doc2 = Document(path)
+    p1_reopened = doc2.paragraphs[0]
+    doc2.add_comment(p1_reopened.runs[0], text="Agreed -- flagged for legal review.", author="Reviewer B")
+    doc2.save(path)
+    add_comment_threading(
+        path,
+        {
+            "0": {},
+            "1": {"done": True},
+            "2": {"parent": "0"},
+        },
+    )
+    doc3 = Document(path)
+    p1_reopened3 = doc3.paragraphs[0]
+    add_tracked_insertion(p1_reopened3, " (with mixed changes)")
+    doc3.add_comment(p1_reopened3.runs[0], text="Yes, let's verify.", author="Reviewer C")
+    doc3.save(path)
+    add_comment_threading(
+        path,
+        {
+            "0": {},
+            "1": {"done": True},
+            "2": {"parent": "0"},
+            "3": {"parent": "2"},
+        },
+    )
+
+
 def fields_and_content_controls():
     """A simple field (PAGE, with cached display text) and an inline content control,
     exercising the exporter's locked ⟦field: ...⟧ / content-control placeholders."""
@@ -396,6 +442,7 @@ FIXTURES = [
     bold_italic,
     tracked_changes,
     comments_threaded,
+    comments_threaded_nested,
     fields_and_content_controls,
     stressor,
 ]

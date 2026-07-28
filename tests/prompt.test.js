@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPrompt, PROMPT_TEMPLATE_VERSION, CHUNK_PROMPT_TEMPLATE_VERSION, CHUNK_WORD_THRESHOLD } from "../src/prompt.js";
+import { buildPrompt, buildRespondPrompt, PROMPT_TEMPLATE_VERSION, CHUNK_PROMPT_TEMPLATE_VERSION, CHUNK_WORD_THRESHOLD, RESPOND_PROMPT_TEMPLATE_VERSION } from "../src/prompt.js";
 import { parsePersona, DEFAULT_PERSONA } from "../src/persona.js";
 
 const EXPORTED = [
@@ -215,5 +215,23 @@ describe("buildPrompt: M4d PR-3 (F-6, header derivation hardened against drift)"
     const hardConstraints = text.slice(text.indexOf("[HARD CONSTRAINTS]"), text.indexOf("[DOCUMENT]"));
     expect(hardConstraints).toContain("<!-- Redline export from: policy-draft.docx -->");
     expect(hardConstraints).toContain("<!-- CriticMarkup legend:");
+  });
+});
+
+describe("buildRespondPrompt: structured reply block assembly (M6b)", () => {
+  it("assembles sections with the correct version and instruction tags", () => {
+    const { text, promptVersion } = buildRespondPrompt({
+      persona: null,
+      exportedMarkdown: EXPORTED,
+      filename: "policy-draft",
+      sourceMap: { annotations: { C1: { type: "comment", id: "0" } } },
+    });
+    expect(promptVersion).toBe(RESPOND_PROMPT_TEMPLATE_VERSION);
+    expect(text).toContain("[PERSONA]");
+    expect(text).toContain("[TASK]");
+    expect(text).toContain("[RESPOND GRAMMAR]");
+    expect(text).toContain("[WORKED EXAMPLES]");
+    expect(text).toContain("[DOCUMENT]");
+    expect(text).toContain("policy-draft.docx");
   });
 });

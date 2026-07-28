@@ -312,3 +312,134 @@ export function validate({ responseMarkdown, exportedMarkdown, sourceMap, larges
   if (!textResult.ok) return textResult;
   return resolveEdits({ edits: textResult.edits, sourceMap, largestDeletionWords });
 }
+
+export function validateResponseBlock({ responseMarkdown, sourceMap }) {
+  const response = normalizeNewlines(responseMarkdown).trim();
+  const annotations = sourceMap?.annotations || {};
+  const expectedLabels = Object.keys(annotations);
+
+  if (expectedLabels.length === 0) {
+    return {
+      ok: false,
+      gate: "G2",
+      message: "The document does not contain any comments or tracked changes to respond to.",
+    };
+  }
+
+  const regex = /\[(C\d+|R\d+)\]\s*\{\>\>([\s\S]*?)\<\<\}/g;
+  let match;
+  const parsed = {};
+  const duplicateLabels = new Set();
+  const unknownLabels = [];
+
+  while ((match = regex.exec(response)) !== null) {
+    const label = match[1];
+    const rawContent = match[2];
+
+    if (parsed[label]) {
+      duplicateLabels.add(label);
+    }
+    if (!annotations[label]) {
+      unknownLabels.push(label);
+    }
+
+    const trimmed = rawContent.trim();
+    if (label.startsWith("R")) {
+      let decision = null;
+      let rationale = "";
+      if (trimmed.startsWith("[AR:accept]")) {
+        decision = "accept";
+        rationale = trimmed.slice("[AR:accept]".length).trim();
+      } else if (trimmed.startsWith("[AR:reject]")) {
+        decision = "reject";
+        rationale = trimmed.slice("[AR:reject]".length).trim();
+      } else if (trimmed.startsWith("[AR:discuss]")) {
+        decision = "discuss";
+        rationale = trimmed.slice("[AR:discuss]".length).trim();
+      }
+
+      parsed[label] = {
+        label,
+        type: "revision",
+        decision,
+        rationale,
+        raw: trimmed,
+        originalId: annotations[label]?.id || null,
+        originalType: annotations[label]?.type || null,
+      };
+    } else {
+      let resolve = false;
+      let reply = trimmed;
+      if (trimmed.startsWith("[AR:resolve]")) {
+        resolve = true;
+        reply = trimmed.slice("[AR:resolve]".length).trim();
+      }
+
+      parsed[label] = {
+        label,
+        type: "comment",
+        resolve,
+        reply,
+        raw: trimmed,
+        originalId: annotations[label]?.id || null,
+      };
+    }
+  }
+
+  // G1 -- Duplicate labels
+  if (duplicateLabels.size > 0) {
+    return {
+      ok: false,
+      gate: "G1",
+      message: `The following labels are addressed more than once: ${[...duplicateLabels].sort().join(", ")}`,
+    };
+  }
+
+  // G1 -- Unknown labels
+  if (unknownLabels.length > 0) {
+    return {
+      ok: false,
+      gate: "G1",
+      message: `The response contains unknown labels not present in the document: ${unknownLabels.sort().join(", ")}`,
+    };
+  }
+
+  // G1 -- Invalid or missing decision prefix for revisions
+  for (const label of expectedLabels) {
+    if (label.startsWith("R")) {
+      const entry = parsed[label];
+      if (entry && !entry.decision) {
+        return {
+          ok: false,
+          gate: "G1",
+          message: `Label ${label} has an invalid or missing decision prefix. Expected [AR:accept], [AR:reject], or [AR:discuss].`,
+        };
+      }
+    }
+  }
+
+  // G2 -- Missing labels (coverage check)
+  const missingLabels = expectedLabels.filter((l) => !parsed[l]);
+  if (missingLabels.length > 0) {
+    return {
+      ok: false,
+      gate: "G2",
+      message: `The response is missing replies for the following labels: ${missingLabels.sort().join(", ")}`,
+    };
+  }
+
+  // G1 -- Free-text length caps (1000 characters)
+  for (const label of expectedLabels) {
+    const entry = parsed[label];
+    const text = entry.type === "revision" ? entry.rationale : entry.reply;
+    if (text && text.length > 1000) {
+      return {
+        ok: false,
+        gate: "G1",
+        message: `Label ${label} exceeds the reply/rationale length cap of 1000 characters.`,
+      };
+    }
+  }
+
+  return { ok: true, decisions: Object.values(parsed), decisionsMap: parsed };
+}

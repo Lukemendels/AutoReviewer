@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { exportDocx } from "../src/ooxml/export.js";
-import { validate } from "../src/validate.js";
+import { loadDocxFromBytes } from "../src/ui/load.js";
+import { validate, validateResponseBlock } from "../src/validate.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixturesDir = path.join(root, "fixtures");
@@ -298,5 +299,137 @@ describe("G5 -- sanity report (warns, never blocks)", () => {
     const result = validate({ responseMarkdown: response, exportedMarkdown: exported, sourceMap });
     expect(result.ok).toBe(true);
     expect(result.warnings.some((w) => w.code === "duplicate-comment")).toBe(true);
+  });
+});
+
+describe("sentinel validation (M6a)", () => {
+  it("validates a byte-perfect echo of a sentinelized document with zero edits", async () => {
+    const bytes = loadDocx("comments-threaded-nested");
+    const exported = await exportDocx(bytes, { DOMParserImpl: DOMParser, filename: "comments-threaded-nested", sentinel: true });
+    const result = validate({ responseMarkdown: exported.markdown, exportedMarkdown: exported.markdown, sourceMap: exported.sourceMap });
+    expect(result.ok).toBe(true);
+    expect(result.edits).toHaveLength(0);
+  });
+
+  it("Run Review's load path sentinelizes annotated documents (regression: M6a dropped the preflight fence for run-review, but load.js still passed sentinel: flowType === 'respond-review', so Run Review loaded annotated docs with sentinelization off)", async () => {
+    const bytes = loadDocx("comments-threaded-nested");
+    const result = await loadDocxFromBytes(bytes, {
+      originalFilename: "comments-threaded-nested.docx",
+      DOMParserImpl: DOMParser,
+      flowType: "run-review",
+    });
+    expect(result.ok).toBe(true);
+    const { exported } = result;
+    const echoResult = validate({ responseMarkdown: exported.markdown, exportedMarkdown: exported.markdown, sourceMap: exported.sourceMap });
+    expect(echoResult.ok).toBe(true);
+    expect(echoResult.edits).toHaveLength(0);
+  });
+
+  it("a real model edit on top of a sentinelized Run Review export still parses as exactly one edit (sentinels must not swallow real edits)", async () => {
+    const bytes = loadDocx("comments-threaded-nested");
+    const result = await loadDocxFromBytes(bytes, {
+      originalFilename: "comments-threaded-nested.docx",
+      DOMParserImpl: DOMParser,
+      flowType: "run-review",
+    });
+    expect(result.ok).toBe(true);
+    const { exported } = result;
+    const editedMarkdown = `${exported.markdown}{++ inserted by model ++}`;
+    const editResult = validate({ responseMarkdown: editedMarkdown, exportedMarkdown: exported.markdown, sourceMap: exported.sourceMap });
+    expect(editResult.ok).toBe(true);
+    expect(editResult.edits).toHaveLength(1);
+  });
+});
+
+describe("validateResponseBlock: M6b grammar and coverage (unit)", () => {
+  const fakeSourceMap = {
+    annotations: {
+      C1: { type: "comment", id: "comment-1" },
+      C2: { type: "comment", id: "comment-2" },
+      R1: { type: "ins", id: "ins-1" },
+      R2: { type: "del", id: "del-2" },
+    },
+  };
+
+  it("passes a valid response block", () => {
+    const response = `
+      [C1] {>>Agreed -- will update.<<}
+      [C2] {>>[AR:resolve] Fixed in text.<<}
+      [R1] {>>[AR:accept] Important correction.<<}
+      [R2] {>>[AR:reject] Reverting to original.<<}
+    `;
+    const result = validateResponseBlock({ responseMarkdown: response, sourceMap: fakeSourceMap });
+    expect(result.ok).toBe(true);
+    expect(result.decisions).toHaveLength(4);
+    expect(result.decisionsMap.C1).toEqual(expect.objectContaining({ label: "C1", type: "comment", resolve: false, reply: "Agreed -- will update." }));
+    expect(result.decisionsMap.C2).toEqual(expect.objectContaining({ label: "C2", type: "comment", resolve: true, reply: "Fixed in text." }));
+    expect(result.decisionsMap.R1).toEqual(expect.objectContaining({ label: "R1", type: "revision", decision: "accept", rationale: "Important correction." }));
+  });
+
+  it("fails (G1) on duplicate labels", () => {
+    const response = `
+      [C1] {>>Agreed -- will update.<<}
+      [C1] {>>Agreed -- duplicate.<<}
+      [C2] {>>[AR:resolve] Fixed.<<}
+      [R1] {>>[AR:accept] Yes.<<}
+      [R2] {>>[AR:reject] No.<<}
+    `;
+    const result = validateResponseBlock({ responseMarkdown: response, sourceMap: fakeSourceMap });
+    expect(result.ok).toBe(false);
+    expect(result.gate).toBe("G1");
+    expect(result.message).toContain("addressed more than once: C1");
+  });
+
+  it("fails (G1) on unknown labels", () => {
+    const response = `
+      [C1] {>>Agreed -- will update.<<}
+      [C2] {>>[AR:resolve] Fixed.<<}
+      [R1] {>>[AR:accept] Yes.<<}
+      [R2] {>>[AR:reject] No.<<}
+      [R99] {>>[AR:accept] Whoops.<<}
+    `;
+    const result = validateResponseBlock({ responseMarkdown: response, sourceMap: fakeSourceMap });
+    expect(result.ok).toBe(false);
+    expect(result.gate).toBe("G1");
+    expect(result.message).toContain("unknown labels not present in the document: R99");
+  });
+
+  it("fails (G1) on invalid revision decision prefix", () => {
+    const response = `
+      [C1] {>>Agreed -- will update.<<}
+      [C2] {>>[AR:resolve] Fixed.<<}
+      [R1] {>>No decision prefix here.<<}
+      [R2] {>>[AR:reject] No.<<}
+    `;
+    const result = validateResponseBlock({ responseMarkdown: response, sourceMap: fakeSourceMap });
+    expect(result.ok).toBe(false);
+    expect(result.gate).toBe("G1");
+    expect(result.message).toContain("invalid or missing decision prefix");
+  });
+
+  it("fails (G2) on missing labels (coverage check)", () => {
+    const response = `
+      [C1] {>>Agreed -- will update.<<}
+      [R1] {>>[AR:accept] Yes.<<}
+      [R2] {>>[AR:reject] No.<<}
+    `;
+    const result = validateResponseBlock({ responseMarkdown: response, sourceMap: fakeSourceMap });
+    expect(result.ok).toBe(false);
+    expect(result.gate).toBe("G2");
+    expect(result.message).toContain("missing replies for the following labels: C2");
+  });
+
+  it("fails (G1) on reply exceeding 1000 characters limit", () => {
+    const longText = "a".repeat(1001);
+    const response = `
+      [C1] {>>${longText}<<}
+      [C2] {>>Fixed.<<}
+      [R1] {>>[AR:accept] Yes.<<}
+      [R2] {>>[AR:reject] No.<<}
+    `;
+    const result = validateResponseBlock({ responseMarkdown: response, sourceMap: fakeSourceMap });
+    expect(result.ok).toBe(false);
+    expect(result.gate).toBe("G1");
+    expect(result.message).toContain("exceeds the reply/rationale length cap");
   });
 });

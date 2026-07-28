@@ -359,3 +359,14 @@ Ship after M4; M5/M6 follow.
 1. Confirm the default author string (`AutoReviewer — {persona}`) satisfies the attribution requirement for documents that leave the branch (Jim's terminal review).
 2. Test once, early: does DHSChat's UI preserve `{++ ++}` inside fenced blocks verbatim on copy-out? (Expected yes; if not, switch the envelope to a downloadable/uploadable `.md` attachment flow.)
 3. Decide whether Respond-flow recommendation comments should carry a machine-parseable prefix (e.g., `[AR:accept]`) to enable a future v2 auto-apply pass.
+
+---
+
+## 18. Milestone 6b - Dated Rulings (2026-07-15)
+
+### 18.1 Respond Flow Grammar & Coverage Validation
+The Respond to Review flow accepts a structured response block where comments (`[Cn]`) and revisions (`[Rn]`) are addressed via a strict grammar:
+- Every comment label `[Cn]` must receive a reply wrapped in `{>>...<<}`.
+- Revisions `[Rn]` must receive a recommendation with a decision prefix: `[AR:accept]`, `[AR:reject]`, or `[AR:discuss]`.
+- Comment replies may optionally request resolution using the `[AR:resolve]` prefix.
+- The validator enforces that every annotation label present in the document is addressed exactly once. Any missing, duplicate, or unknown labels will fail the G1/G2 validation gates.

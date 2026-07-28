@@ -33,33 +33,11 @@ async function docxWithBody(bodyInner) {
   return writeZip(zip, { "word/document.xml": newXml });
 }
 
-describe("checkPreflight: M4d structural + annotation fences (unit)", () => {
+describe("checkPreflight: M4d structural fence (unit)", () => {
   it("blocks with the structural message when structuralHazard is set", () => {
     const result = checkPreflight({ counts: { ins: 0, del: 0, sub: 0 }, comments: {}, structuralHazard: true });
     expect(result.ok).toBe(false);
     expect(result.message).toContain(STRUCTURAL_FENCE_MESSAGE);
-  });
-
-  it("blocks with the annotation message on ANY comment, not just a reply", () => {
-    const result = checkPreflight({
-      counts: { ins: 0, del: 0, sub: 0 },
-      comments: { c1: { id: "c1", parentId: null } }, // top-level, not a reply
-      structuralHazard: false,
-    });
-    expect(result.ok).toBe(false);
-    expect(result.message).toContain(ANNOTATION_FENCE_MESSAGE);
-  });
-
-  it("reports every applicable reason together, not just the first hit", () => {
-    const result = checkPreflight({
-      counts: { ins: 1, del: 0, sub: 0 },
-      comments: { c1: { id: "c1", parentId: null } },
-      structuralHazard: true,
-    });
-    expect(result.ok).toBe(false);
-    expect(result.message).toContain(STRUCTURAL_FENCE_MESSAGE);
-    expect(result.message).toContain(D4_ERROR_MESSAGE);
-    expect(result.message).toContain(ANNOTATION_FENCE_MESSAGE);
   });
 });
 
@@ -87,39 +65,19 @@ describe("loadDocxFromBytes: structural fence triggers (end-to-end, synthesized 
     expect(result.message).toContain(STRUCTURAL_FENCE_MESSAGE);
   });
 
-  it("rejects a tracked deletion's w:delText inside a paragraph", async () => {
+  it("rejects a tracked deletion's w:delText inside a paragraph (retaining structural hazard check)", async () => {
     const bytes = await docxWithBody(
       '<w:p><w:r><w:t>Before </w:t></w:r><w:del w:id="1" w:author="A" w:date="2026-01-01T00:00:00Z">' +
         '<w:r><w:delText>gone</w:delText></w:r></w:del><w:r><w:t> after</w:t></w:r></w:p>'
     );
     const result = await loadDocxFromBytes(bytes, { originalFilename: "hazard-deltext.docx", DOMParserImpl: DOMParser });
     expect(result.ok).toBe(false);
-    // Also a pre-existing tracked change, so both fences fire -- this fixture doubles as
-    // proof the two messages coexist rather than one masking the other.
     expect(result.message).toContain(STRUCTURAL_FENCE_MESSAGE);
-    expect(result.message).toContain(D4_ERROR_MESSAGE);
-    expect(result.message).toContain(ANNOTATION_FENCE_MESSAGE);
   });
 
   it("loads a clean document with none of the hazards", async () => {
     const bytes = await docxWithBody("<w:p><w:r><w:t>Clean paragraph, no hazards.</w:t></w:r></w:p>");
     const result = await loadDocxFromBytes(bytes, { originalFilename: "clean.docx", DOMParserImpl: DOMParser });
     expect(result.ok).toBe(true);
-  });
-});
-
-describe("loadDocxFromBytes: annotation fence triggers (end-to-end, real fixtures)", () => {
-  it("rejects a document with pre-existing tracked insertions/deletions", async () => {
-    const bytes = loadDocxBytes("tracked-changes");
-    const result = await loadDocxFromBytes(bytes, { originalFilename: "tracked-changes.docx", DOMParserImpl: DOMParser });
-    expect(result.ok).toBe(false);
-    expect(result.message).toContain(ANNOTATION_FENCE_MESSAGE);
-  });
-
-  it("rejects a document with pre-existing comments, even non-reply ones", async () => {
-    const bytes = loadDocxBytes("comments-threaded");
-    const result = await loadDocxFromBytes(bytes, { originalFilename: "comments-threaded.docx", DOMParserImpl: DOMParser });
-    expect(result.ok).toBe(false);
-    expect(result.message).toContain(ANNOTATION_FENCE_MESSAGE);
   });
 });

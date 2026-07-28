@@ -1,6 +1,6 @@
-import { validate, validateText, resolveEdits } from "../validate.js";
+import { validate, validateText, resolveEdits, validateResponseBlock } from "../validate.js";
 import { splitIntoChunks, translateEdits } from "../chunk.js";
-import { buildPrompt } from "../prompt.js";
+import { buildPrompt, buildRespondPrompt } from "../prompt.js";
 import { composeRepair } from "../repair.js";
 import { buildAuditRecord } from "../audit.js";
 import { saveSession, loadSession } from "../session.js";
@@ -12,7 +12,7 @@ import { DEMO_DOCX_BASE64 } from "./demo-doc.js";
 import { unzip, readEntry } from "../zip/reader.js";
 import { writeZip } from "../zip/writer.js";
 import { parseXml } from "../ooxml/parse.js";
-import { injectEdits } from "../ooxml/inject.js";
+import { injectEdits, injectResponses } from "../ooxml/inject.js";
 import { upsertComments } from "../ooxml/comments.js";
 import { serializePart } from "../ooxml/serialize.js";
 import { diffWords } from "./diff.js";
@@ -43,6 +43,8 @@ function renderShell(root) {
     panel.dataset.flow = flow.id;
     if (flow.id === "run-review") {
       renderRunReviewPanel(panel);
+    } else if (flow.id === "respond-review") {
+      renderRespondReviewPanel(panel);
     } else {
       panel.innerHTML = `<p class="ar-coming-soon">${flow.label} is not implemented yet.</p>`;
     }
@@ -114,6 +116,37 @@ export async function buildReviewedDocx({
   const zip = await unzip(docxBytes);
   const docDoc = parseXml(await readEntry(zip, "word/document.xml"), DOMParserImpl);
   const { newComments } = injectEdits(docDoc, acceptedEdits, sourceMap, { author, date });
+  const mutatedParts = { "word/document.xml": serializePart(docDoc, XMLSerializerImpl) };
+
+  if (newComments.length) {
+    const existingParts = {
+      commentsXml: await readEntry(zip, "word/comments.xml"),
+      commentsExtendedXml: await readEntry(zip, "word/commentsExtended.xml"),
+      relsXml: await readEntry(zip, "word/_rels/document.xml.rels"),
+      contentTypesXml: await readEntry(zip, "[Content_Types].xml"),
+    };
+    const updated = upsertComments(existingParts, newComments, { DOMParserImpl, XMLSerializerImpl });
+    mutatedParts["word/comments.xml"] = updated.commentsXml;
+    mutatedParts["word/commentsExtended.xml"] = updated.commentsExtendedXml;
+    mutatedParts["word/_rels/document.xml.rels"] = updated.relsXml;
+    mutatedParts["[Content_Types].xml"] = updated.contentTypesXml;
+  }
+
+  return writeZip(zip, mutatedParts);
+}
+
+export async function buildReviewedResponsesDocx({
+  docxBytes,
+  acceptedDecisions,
+  sourceMap,
+  author,
+  date,
+  DOMParserImpl,
+  XMLSerializerImpl,
+}) {
+  const zip = await unzip(docxBytes);
+  const docDoc = parseXml(await readEntry(zip, "word/document.xml"), DOMParserImpl);
+  const { newComments } = injectResponses(docDoc, acceptedDecisions, sourceMap, { author, date });
   const mutatedParts = { "word/document.xml": serializePart(docDoc, XMLSerializerImpl) };
 
   if (newComments.length) {
@@ -823,6 +856,320 @@ function renderRunReviewPanel(panel) {
     const wrap = document.createElement("div");
     wrap.innerHTML = `
       <p class="ar-hint">Reviewed document downloaded. Open it in Word to check the tracked changes and comments.</p>
+      <button type="button" id="ar-new-review" class="ar-primary">Start a new review</button>
+    `;
+    container.appendChild(wrap);
+    wrap.querySelector("#ar-new-review").addEventListener("click", () => appState.reset());
+  }
+
+  appState.onChange(render);
+  render();
+}
+
+function renderRespondReviewPanel(panel) {
+  const appState = createAppState();
+  let loadError = null;
+
+  function regeneratePrompt(persona) {
+    const ctx = appState.context;
+    const built = buildRespondPrompt({
+      persona,
+      exportedMarkdown: ctx.exported.markdown,
+      filename: ctx.filename,
+      sourceMap: ctx.exported.sourceMap,
+    });
+    appState.setPrompt(built);
+  }
+
+  async function handleDocFiles(files) {
+    const file = files[0];
+    if (!file) return;
+    loadError = null;
+    render();
+    const statusEl = panel.querySelector("#ar-load-status");
+    if (statusEl) statusEl.textContent = `Reading "${file.name}"...`;
+    let bytes;
+    try {
+      bytes = await readFileAsArrayBuffer(file);
+    } catch (err) {
+      loadError = `Could not read "${file.name}": ${err.message}`;
+      render();
+      return;
+    }
+    const result = await loadDocxFromBytes(bytes, { originalFilename: file.name, flowType: "respond-review" });
+    if (!result.ok) {
+      loadError = result.message;
+      render();
+      return;
+    }
+    appState.loadDocument({ docxBytes: result.docxBytes, filename: result.filename, exported: result.exported });
+    regeneratePrompt(null);
+  }
+
+  async function handlePersonaFiles(files) {
+    const file = files[0];
+    if (!file) return;
+    if (!/\.md$/i.test(file.name)) {
+      loadError = `"${file.name}" is not a persona .md file.`;
+      render();
+      return;
+    }
+    const text = await readFileAsText(file);
+    const persona = loadPersonaFromText(text, { filename: file.name });
+    appState.loadPersona(persona);
+    regeneratePrompt(persona);
+  }
+
+  function render() {
+    panel.innerHTML = "";
+    const state = appState.state;
+    const ctx = appState.context;
+
+    if (state === STATES.EMPTY) {
+      renderLoadStep(panel);
+      return;
+    }
+
+    renderPersonaControls(panel, ctx);
+    renderModelField(panel, ctx);
+
+    if (state === STATES.DOC_LOADED || state === STATES.PROMPT_READY) {
+      renderPromptStep(panel, ctx);
+    } else if (state === STATES.AWAITING_RESPONSE || state === STATES.VALIDATION_FAILED) {
+      renderPromptStep(panel, ctx, { collapsed: true });
+      renderResponseStep(panel, ctx);
+    } else if (state === STATES.RATIFYING) {
+      renderRatifyStep(panel, ctx);
+    } else if (state === STATES.INJECTED) {
+      renderInjectedStep(panel, ctx);
+    }
+  }
+
+  function renderLoadStep(container) {
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `
+      <p class="ar-hint">Drop a Word <code>.docx</code> document containing pre-existing tracked changes or comments to respond to.</p>
+      <div id="ar-dropzone" class="ar-dropzone" tabindex="0">
+        <p>Drop a <code>.docx</code> here, or click to browse.</p>
+      </div>
+      <input type="file" id="ar-doc-input" accept=".docx" style="display:none" />
+      <p id="ar-load-status" class="ar-hint">${loadError ? formatLoadError(loadError) : ""}</p>
+    `;
+    container.appendChild(wrap);
+    const dz = wrap.querySelector("#ar-dropzone");
+    const input = wrap.querySelector("#ar-doc-input");
+    attachDropZone(dz, input, { onFiles: handleDocFiles });
+  }
+
+  function renderPersonaControls(container, ctx) {
+    const wrap = document.createElement("div");
+    wrap.className = "ar-persona-controls";
+    const persona = ctx.persona;
+    wrap.innerHTML = `
+      <p class="ar-hint">
+        Persona: <strong>${escapeHtml(persona ? persona.name : "Default Persona (built-in)")}</strong>
+      </p>
+      <div id="ar-persona-dropzone" class="ar-dropzone ar-dropzone-small" tabindex="0">
+        <p>Drop a persona <code>.md</code> here, or click to browse.</p>
+      </div>
+      <input type="file" id="ar-persona-input" accept=".md" style="display:none" />
+    `;
+    container.appendChild(wrap);
+    const dz = wrap.querySelector("#ar-persona-dropzone");
+    const input = wrap.querySelector("#ar-persona-input");
+    attachDropZone(dz, input, { onFiles: handlePersonaFiles });
+  }
+
+  function renderModelField(container, ctx) {
+    const wrap = document.createElement("div");
+    wrap.className = "ar-model-field ar-field";
+    wrap.innerHTML = `
+      <label for="ar-model">Model (as shown in DHSChat)</label>
+      <input type="text" id="ar-model" class="ar-model" value="${escapeHtml(ctx.model || "")}" placeholder="e.g. GPT-5.5 (Standard)" />
+    `;
+    container.appendChild(wrap);
+    wrap.querySelector("#ar-model").addEventListener("input", (e) => {
+      ctx.model = e.target.value;
+    });
+  }
+
+  function renderPromptStep(container, ctx, { collapsed = false } = {}) {
+    const wrap = document.createElement("div");
+    wrap.className = "ar-prompt-step";
+
+    if (ctx.tokenEstimate == null) {
+      wrap.innerHTML = `<p class="ar-hint">Composing prompt...</p>`;
+      container.appendChild(wrap);
+      return;
+    }
+
+    if (collapsed) {
+      wrap.innerHTML = `
+        <details class="ar-prompt-details">
+          <summary>Composed prompt (${ctx.tokenEstimate} tokens) &mdash; click to re-view</summary>
+          <textarea class="ar-prompt-text" readonly>${escapeHtml(ctx.promptText)}</textarea>
+          <button type="button" id="ar-recopy-prompt" class="ar-primary">Copy prompt again</button>
+        </details>
+      `;
+      container.appendChild(wrap);
+      wrap.querySelector("#ar-recopy-prompt").addEventListener("click", (e) => {
+        if (typeof copyWithFeedback === "function") copyWithFeedback(e.currentTarget, ctx.promptText);
+      });
+      return;
+    }
+
+    wrap.innerHTML = `
+      <p class="ar-hint">Token estimate: ~${ctx.tokenEstimate} (prompt version ${escapeHtml(ctx.promptVersion)})</p>
+      <textarea class="ar-prompt-text" readonly>${escapeHtml(ctx.promptText)}</textarea>
+      <div class="ar-controls">
+        <button type="button" id="ar-copy-prompt" class="ar-primary">Copy prompt</button>
+      </div>
+      <p class="ar-hint">Paste this into DHSChat, copy the reply, then paste it below.</p>
+    `;
+    container.appendChild(wrap);
+    wrap.querySelector("#ar-copy-prompt").addEventListener("click", (e) => {
+      if (typeof copyWithFeedback === "function") copyWithFeedback(e.currentTarget, ctx.promptText);
+      appState.copyPrompt();
+    });
+  }
+
+  function renderResponseStep(container, ctx) {
+    const wrap = document.createElement("div");
+    wrap.className = "ar-response-step";
+    container.appendChild(wrap);
+
+    if (ctx.validation && !ctx.validation.ok) {
+      const box = document.createElement("div");
+      box.className = "ar-gate-failure";
+      box.innerHTML = `<p><strong>${ctx.validation.gate} failed:</strong> ${escapeHtml(ctx.validation.message)}</p>`;
+      wrap.appendChild(box);
+    }
+
+    const fieldWrap = document.createElement("div");
+    fieldWrap.innerHTML = `
+      <div class="ar-field">
+        <label for="ar-response">Response</label>
+        <textarea id="ar-response" class="ar-response" spellcheck="false"></textarea>
+      </div>
+      <div class="ar-controls">
+        <button type="button" id="ar-validate" class="ar-primary">Validate</button>
+      </div>
+      <div id="ar-picker"></div>
+    `;
+    wrap.appendChild(fieldWrap);
+
+    const responseEl = fieldWrap.querySelector("#ar-response");
+    const pickerEl = fieldWrap.querySelector("#ar-picker");
+
+    function runEnvelope(pastedText) {
+      const referenceLength = ctx.exported.markdown.length;
+      const { candidates, noFencesFound } = extractCandidates(pastedText, { exportedLength: referenceLength });
+      if (candidates.length === 1 && !noFencesFound) {
+        runValidation(candidates[0].content);
+        return;
+      }
+      if (!noFencesFound && candidates.length === 0) {
+        pickerEl.innerHTML = `<p class="ar-hint">No fenced code block was found -- using the entire paste.</p>`;
+        runValidation(pastedText);
+        return;
+      }
+      pickerEl.innerHTML = noFencesFound
+        ? `<p class="ar-hint">No fenced code block was found -- using the entire paste.</p>`
+        : `<p class="ar-hint">${candidates.length} fenced blocks were found -- pick the right one:</p>`;
+      if (!noFencesFound) {
+        candidates.forEach((c, i) => {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = `Use block ${i + 1} (${c.content.length} chars)`;
+          btn.addEventListener("click", () => runValidation(c.content));
+          pickerEl.appendChild(btn);
+        });
+      } else {
+        runValidation(pastedText);
+      }
+    }
+
+    function runValidation(responseText) {
+      pickerEl.innerHTML = "";
+      if (appState.state === STATES.VALIDATION_FAILED) appState.acknowledgeFailure();
+      appState.submitResponse(responseText);
+      const result = validateResponseBlock({ responseMarkdown: responseText, sourceMap: ctx.exported.sourceMap });
+      if (result.ok) appState.validationPassed(result);
+      else appState.validationFailed(result);
+    }
+
+    wrap.querySelector("#ar-validate").addEventListener("click", () => runEnvelope(responseEl.value));
+    responseEl.addEventListener("paste", () => {
+      setTimeout(() => runEnvelope(responseEl.value), 0);
+    });
+  }
+
+  function renderRatifyStep(container, ctx) {
+    const wrap = document.createElement("div");
+    container.appendChild(wrap);
+
+    const authorField = document.createElement("div");
+    authorField.className = "ar-field";
+    const personaName = ctx.persona ? ctx.persona.name : "Default Persona";
+    authorField.innerHTML = `
+      <label for="ar-author">Author (comment attribution)</label>
+      <input type="text" id="ar-author" class="ar-author" value="AutoReviewer — ${escapeHtml(personaName)}" />
+    `;
+    wrap.appendChild(authorField);
+    const authorEl = authorField.querySelector("#ar-author");
+
+    const ratifyContainer = document.createElement("div");
+    wrap.appendChild(ratifyContainer);
+
+    const syntheticEdits = ctx.validation.decisions.map((dec) => {
+      const mdPos = ctx.exported.markdown.indexOf(`⟦${dec.label}:`);
+      return {
+        type: "comment",
+        commentText: dec.type === "comment"
+          ? (dec.resolve ? "[AR:resolve] " : "") + dec.reply
+          : `[AR:${dec.decision}] ` + dec.rationale,
+        mdStart: mdPos !== -1 ? mdPos : 0,
+        mdEnd: mdPos !== -1 ? mdPos + `⟦${dec.label}:`.length : 0,
+        decisionObj: dec,
+      };
+    });
+
+    const state = createRatificationState(syntheticEdits);
+    renderRatificationUI(ratifyContainer, state, { sourceText: ctx.exported.markdown });
+
+    const statusEl = document.createElement("p");
+    statusEl.className = "ar-hint";
+    wrap.appendChild(statusEl);
+
+    const injectBtn = ratifyContainer.querySelector('[data-action="inject"]');
+    if (injectBtn) {
+      injectBtn.addEventListener("click", async () => {
+        injectBtn.disabled = true;
+        statusEl.textContent = "Injecting replies...";
+        const author = authorEl.value.trim() || "AutoReviewer";
+        try {
+          const acceptedDecisions = state.acceptedEdits().map(edit => edit.decisionObj);
+          const rewritten = await buildReviewedResponsesDocx({
+            docxBytes: ctx.docxBytes,
+            acceptedDecisions,
+            sourceMap: ctx.exported.sourceMap,
+            author,
+            date: new Date().toISOString(),
+          });
+          downloadBlob(rewritten, `${ctx.filename} — responded.docx`);
+          appState.inject();
+        } catch (err) {
+          statusEl.textContent = `Injection failed: ${err.message}`;
+          injectBtn.disabled = false;
+        }
+      });
+    }
+  }
+
+  function renderInjectedStep(container) {
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `
+      <p class="ar-hint">Responded document downloaded. Open it in Word to check the comment thread replies.</p>
       <button type="button" id="ar-new-review" class="ar-primary">Start a new review</button>
     `;
     container.appendChild(wrap);

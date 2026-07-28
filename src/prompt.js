@@ -218,3 +218,68 @@ export function buildPrompt({ persona, exportedMarkdown, filename, chunk = null,
     filename,
   };
 }
+
+export const RESPOND_PROMPT_TEMPLATE_VERSION = "m6b-respond-2026.07-1";
+
+export function buildRespondPrompt({ persona, exportedMarkdown, filename, sourceMap = null }) {
+  const p = persona || DEFAULT_PERSONA;
+
+  const personaSection = buildPersonaSection(p);
+
+  const taskText =
+    "[TASK]\n" +
+    "You are given an exported document below that contains pre-existing comments and tracked changes " +
+    "represented as double-bracketed sentinels:\n" +
+    "  - Revisions are labeled as ⟦R1: ...⟧, ⟦R2: ...⟧, etc.\n" +
+    "  - Comments are labeled as ⟦C1: ... >> ...⟧, ⟦C2: ... >> ...⟧, etc.\n\n" +
+    "You must respond to every single comment and revision. Your response must consist ONLY of a " +
+    "structured response block (do not return the full document). Do not write any preamble, chatter, " +
+    "or postamble outside the fenced block.";
+
+  const grammarText =
+    "[RESPOND GRAMMAR]\n" +
+    "For every label C1...Cn and R1...Rn present in the document, you must output exactly one line in the " +
+    "following format:\n\n" +
+    "For comments [Cn]:\n" +
+    "  [Cn] {>>reply text<<}                    <-- to reply to the comment\n" +
+    "  [Cn] {>>[AR:resolve] reply text<<}      <-- to reply and recommend resolving/closing the comment\n\n" +
+    "For revisions [Rn]:\n" +
+    "  [Rn] {>>[AR:accept] rationale<<}         <-- to recommend accepting the tracked change\n" +
+    "  [Rn] {>>[AR:reject] rationale<<}         <-- to recommend rejecting the tracked change\n" +
+    "  [Rn] {>>[AR:discuss] rationale<<}        <-- to recommend discussing the tracked change\n\n" +
+    "Constraints:\n" +
+    "- You must address every single label exactly once. Zero skips, zero duplicates, zero invented labels.\n" +
+    "- Write your response inside CriticMarkup comments: {>>...<<}.\n" +
+    "- Rationale/reply texts must be concise, economic, and compliant with the persona above (max 1000 characters per reply).";
+
+  const examplesText =
+    "[WORKED EXAMPLES]\n" +
+    "If the document contains [C1], [C2], [R1], and [R2], your response must look exactly like this:\n" +
+    "```markdown\n" +
+    "[C1] {>>Agreed -- will clarify this in the next draft.<<}\n" +
+    "[C2] {>>[AR:resolve] Citation added in the bibliography.<<}\n" +
+    "[R1] {>>[AR:accept] This aligns with the updated statutory definitions.<<}\n" +
+    "[R2] {>>[AR:reject] The original phrasing is required by OMB guidelines.<<}\n" +
+    "```";
+
+  const docText = buildDocumentSection(exportedMarkdown);
+
+  const sections = [
+    personaSection,
+    taskText,
+    grammarText,
+    examplesText,
+    docText
+  ];
+
+  const text = sections.join("\n\n");
+  const words = wordCount(exportedMarkdown);
+
+  return {
+    text,
+    tokenEstimate: estimateTokens(text),
+    promptVersion: RESPOND_PROMPT_TEMPLATE_VERSION,
+    documentWordCount: words,
+    filename,
+  };
+}

@@ -545,3 +545,55 @@ export function injectEdits(documentXmlDoc, acceptedEdits, _sourceMap, opts = {}
 
   return { newComments: commentState.newComments };
 }
+
+export function injectResponses(documentXmlDoc, ratifiedDecisions, sourceMap, opts = {}) {
+  const author = opts.author || "AutoReviewer";
+  const date = opts.date || new Date().toISOString();
+
+  const commentState = { next: maxIdAmong(documentXmlDoc, COMMENT_MARKER_TAGS) + 1, newComments: [] };
+
+  for (const decision of ratifiedDecisions) {
+    if (decision.type === "comment") {
+      const commentId = commentState.next++;
+      commentState.newComments.push({
+        id: commentId,
+        parentId: decision.originalId,
+        author,
+        date,
+        text: decision.reply,
+        done: !!decision.resolve,
+      });
+    } else if (decision.type === "revision") {
+      let revEl = null;
+      for (const el of documentXmlDoc.getElementsByTagName("*")) {
+        if ((el.localName === "ins" || el.localName === "del") && el.getAttributeNS(NS.w, "id") === String(decision.originalId)) {
+          revEl = el;
+          break;
+        }
+      }
+      if (!revEl) {
+        continue;
+      }
+
+      const commentId = commentState.next++;
+      commentState.newComments.push({
+        id: commentId,
+        author,
+        date,
+        text: `[AR:${decision.decision}] ${decision.rationale}`,
+      });
+
+      const start = buildCommentMarker(documentXmlDoc, "commentRangeStart", commentId);
+      const end = buildCommentMarker(documentXmlDoc, "commentRangeEnd", commentId);
+      const ref = buildCommentReferenceRun(documentXmlDoc, commentId);
+
+      const parent = revEl.parentNode;
+      const next = revEl.nextSibling;
+      parent.insertBefore(start, next);
+      parent.insertBefore(end, next);
+      parent.insertBefore(ref, next);
+    }
+  }
+
+  return { newComments: commentState.newComments };
+}
