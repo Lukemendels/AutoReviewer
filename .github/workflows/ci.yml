@@ -25,6 +25,28 @@ jobs:
       - name: Unit + invariant tests
         run: npm test
 
+      # Build and inspect the authoritative source artifact before the independent Word/ZIP
+      # oracle. A failure in either domain still fails CI, but one no longer hides evidence
+      # from the other behind step ordering.
+      - name: Build fresh (to a temp path, not the committed html/ file)
+        run: node build/build.js --release /tmp/fresh-autoreviewer-workbench.html
+
+      - name: Compliance checklist against fresh source build
+        run: npm run check:compliance -- /tmp/fresh-autoreviewer-workbench.html
+
+      - name: Assert fresh build is single-file
+        run: |
+          test -f /tmp/fresh-autoreviewer-workbench.html
+          ! grep -qE '(src|href)="https?://' /tmp/fresh-autoreviewer-workbench.html
+          ! grep -q 'fetch(' /tmp/fresh-autoreviewer-workbench.html
+
+      - name: Upload fresh integrated HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: fresh-autoreviewer-workbench
+          path: /tmp/fresh-autoreviewer-workbench.html
+          if-no-files-found: error
+
       - name: ZIP writer -- independent verification (Python zipfile)
         run: npm run verify:zip
 
@@ -36,9 +58,6 @@ jobs:
           path: /tmp/ar-zip-roundtrip
           if-no-files-found: error
 
-      - name: Build fresh (to a temp path, not the committed html/ file)
-        run: node build/build.js --release /tmp/fresh-autoreviewer-workbench.html
-
       - name: Committed html/autoreviewer-workbench.html must match a fresh build from source
         run: |
           if ! diff -q html/autoreviewer-workbench.html /tmp/fresh-autoreviewer-workbench.html > /dev/null; then
@@ -46,12 +65,3 @@ jobs:
             diff html/autoreviewer-workbench.html /tmp/fresh-autoreviewer-workbench.html | head -50
             exit 1
           fi
-
-      - name: Compliance checklist
-        run: npm run check:compliance -- html/autoreviewer-workbench.html
-
-      - name: Assert committed build is single-file
-        run: |
-          test -f html/autoreviewer-workbench.html
-          ! grep -qE '(src|href)="https?://' html/autoreviewer-workbench.html
-          ! grep -q 'fetch(' html/autoreviewer-workbench.html
