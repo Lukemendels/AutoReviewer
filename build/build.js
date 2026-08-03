@@ -17,7 +17,7 @@ function escapeForInlineScript(js) {
 
 async function main() {
   const bundleResult = await build({
-    entryPoints: [path.join(root, "src/ui/app.js")],
+    entryPoints: [path.join(root, "src/ui/integrated-entry.js")],
     bundle: true,
     format: "iife",
     platform: "browser",
