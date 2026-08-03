@@ -10,15 +10,19 @@ describe("deterministic Markdown diff compiler", () => {
     const result = compileMarkdownDiff(source, source);
     expect(result.criticMarkup).toBe(source);
     expect(result.editGroups).toBe(0);
+    expect(result.invariants).toEqual({ originalViewMatches: true, acceptedViewMatches: true });
   });
 
-  it("derives a valid inline substitution while preserving the original view", () => {
+  it("derives a valid inline substitution while proving both authoritative views", () => {
     const source = `${preface}The rule shall apply.\n`;
     const revised = `${preface}The rule must apply.\n`;
     const prefix = deriveProtectedPrefixLength(source);
     const result = compileMarkdownDiff(source, revised, { protectedPrefixLength: prefix });
     expect(result.criticMarkup).toContain("{~~shall~>must~~}");
     expect(strip(result.criticMarkup, { skipBefore: prefix })).toBe(source);
+    expect(result.originalView).toBe(source);
+    expect(result.acceptedView).toBe(revised);
+    expect(result.invariants).toEqual({ originalViewMatches: true, acceptedViewMatches: true });
   });
 
   it("treats case and punctuation changes as real edits", () => {
@@ -26,6 +30,7 @@ describe("deterministic Markdown diff compiler", () => {
     const revised = `${preface}program \"estimate\".\n`;
     const result = compileMarkdownDiff(source, revised);
     expect(result.criticMarkup).not.toBe(source);
+    expect(result.acceptedView).toBe(revised);
   });
 
   it("fails closed when the protected exporter preface changes", () => {
